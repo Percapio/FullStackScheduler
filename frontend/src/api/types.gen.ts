@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Job History */
+        get: operations["list_job_history_api_jobs_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -98,6 +115,23 @@ export interface paths {
         };
         /** Get Job */
         get: operations["get_job_api_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/lineage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job Lineage */
+        get: operations["get_job_lineage_api_jobs__job_id__lineage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -157,6 +191,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ingest Upload */
+        post: operations["ingest_upload_api_ingest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -171,12 +222,12 @@ export interface components {
             smt_placements?: number | null;
             /**
              * Base Pcb Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             base_pcb_notes?: string | null;
             /**
              * Base Mfg Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             base_mfg_notes?: string | null;
             /** Id */
@@ -204,12 +255,12 @@ export interface components {
             smt_placements?: number | null;
             /**
              * Base Pcb Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             base_pcb_notes?: string | null;
             /**
              * Base Mfg Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             base_mfg_notes?: string | null;
             /** Id */
@@ -228,6 +279,14 @@ export interface components {
             classifications?: components["schemas"]["ClassificationRead"][];
             /** Jobs */
             jobs?: components["schemas"]["JobRead"][];
+        };
+        /** Body_ingest_upload_api_ingest_post */
+        Body_ingest_upload_api_ingest_post: {
+            /**
+             * File
+             * @description Excel workbook (.xlsx) to ingest
+             */
+            file: string;
         };
         /**
          * BuildType
@@ -353,22 +412,22 @@ export interface components {
             bom_compare_photos?: string | null;
             /**
              * Run Pcb Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             run_pcb_notes?: string | null;
             /**
              * Run Mfg Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             run_mfg_notes?: string | null;
             /**
              * Kit Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             kit_notes?: string | null;
             /**
              * Scheduling Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             scheduling_notes?: string | null;
             /**
@@ -444,22 +503,22 @@ export interface components {
             bom_compare_photos?: string | null;
             /**
              * Run Pcb Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             run_pcb_notes?: string | null;
             /**
              * Run Mfg Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             run_mfg_notes?: string | null;
             /**
              * Kit Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             kit_notes?: string | null;
             /**
              * Scheduling Notes
-             * @description CommonMark-formatted Markdown. Client must render via a Markdown library (e.g. marked).
+             * @description CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked).
              */
             scheduling_notes?: string | null;
             /**
@@ -564,6 +623,48 @@ export interface components {
         };
         /** StagingRowDetailRead */
         StagingRowDetailRead: {
+            /** Raw Shipped */
+            raw_shipped?: string | null;
+            /** Raw Pcb Notes */
+            raw_pcb_notes?: string | null;
+            /** Raw Kit Notes */
+            raw_kit_notes?: string | null;
+            /** Raw Scheduling Notes */
+            raw_scheduling_notes?: string | null;
+            /** Raw Line 1 */
+            raw_line_1?: string | null;
+            /** Raw Line 2 */
+            raw_line_2?: string | null;
+            /** Raw Line 3 */
+            raw_line_3?: string | null;
+            /** Raw Job */
+            raw_job?: string | null;
+            /** Raw Qty */
+            raw_qty?: string | null;
+            /** Raw Ship Date */
+            raw_ship_date?: string | null;
+            /** Raw Prog */
+            raw_prog?: string | null;
+            /** Raw Mfg Notes */
+            raw_mfg_notes?: string | null;
+            /** Raw Smt Lines */
+            raw_smt_lines?: string | null;
+            /** Raw Smt Plcmnts */
+            raw_smt_plcmnts?: string | null;
+            /** Raw Ship Method */
+            raw_ship_method?: string | null;
+            /** Raw Customer */
+            raw_customer?: string | null;
+            /** Raw Sales P */
+            raw_sales_p?: string | null;
+            /** Raw Doc Rel */
+            raw_doc_rel?: string | null;
+            /** Raw Kit Rel */
+            raw_kit_rel?: string | null;
+            /** Raw Code */
+            raw_code?: string | null;
+            /** Raw Bom Compare Photos */
+            raw_bom_compare_photos?: string | null;
             /** Id */
             id: number;
             /** Batch Id */
@@ -589,48 +690,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
-            /** Raw Shipped */
-            raw_shipped: string | null;
-            /** Raw Pcb Notes */
-            raw_pcb_notes: string | null;
-            /** Raw Kit Notes */
-            raw_kit_notes: string | null;
-            /** Raw Scheduling Notes */
-            raw_scheduling_notes: string | null;
-            /** Raw Line 1 */
-            raw_line_1: string | null;
-            /** Raw Line 2 */
-            raw_line_2: string | null;
-            /** Raw Line 3 */
-            raw_line_3: string | null;
-            /** Raw Job */
-            raw_job: string | null;
-            /** Raw Qty */
-            raw_qty: string | null;
-            /** Raw Ship Date */
-            raw_ship_date: string | null;
-            /** Raw Prog */
-            raw_prog: string | null;
-            /** Raw Mfg Notes */
-            raw_mfg_notes: string | null;
-            /** Raw Smt Lines */
-            raw_smt_lines: string | null;
-            /** Raw Smt Plcmnts */
-            raw_smt_plcmnts: string | null;
-            /** Raw Ship Method */
-            raw_ship_method: string | null;
-            /** Raw Customer */
-            raw_customer: string | null;
-            /** Raw Sales P */
-            raw_sales_p: string | null;
-            /** Raw Doc Rel */
-            raw_doc_rel: string | null;
-            /** Raw Kit Rel */
-            raw_kit_rel: string | null;
-            /** Raw Code */
-            raw_code: string | null;
-            /** Raw Bom Compare Photos */
-            raw_bom_compare_photos: string | null;
+            /** Highlight Fields */
+            readonly highlight_fields: string[];
         };
         /** ValidationError */
         ValidationError: {
@@ -820,6 +881,39 @@ export interface operations {
             };
         };
     };
+    list_job_history_api_jobs_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReadExpanded"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_job_api_jobs__job_id__get: {
         parameters: {
             query?: never;
@@ -838,6 +932,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobReadExpanded"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_lineage_api_jobs__job_id__lineage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReadExpanded"][];
                 };
             };
             /** @description Validation Error */
@@ -935,6 +1060,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssemblyWithJobs"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_upload_api_ingest_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_ingest_upload_api_ingest_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
