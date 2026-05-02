@@ -2,11 +2,11 @@
 import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStagingStore } from '@/stores/staging'
-import ErroredRowAccordion from '@/components/ErroredRowAccordion.vue'
+import ReconciliationSidebar from '@/components/ReconciliationSidebar.vue'
 import WarnIcon from '@/components/WarnIcon.vue'
 
 const store = useStagingStore()
-const { rows, total, loading, expandedId } = storeToRefs(store)
+const { rows, total, loading } = storeToRefs(store)
 
 onMounted(() => store.loadErrored())
 
@@ -41,47 +41,33 @@ function truncate(s: string | null, n = 80) {
           </tr>
         </thead>
         <tbody>
-          <template v-for="row in rows" :key="row.id">
-            <tr
-              class="border-t border-slate-100 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-750 transition-colors"
-              :class="{ 'bg-slate-50 dark:bg-slate-750': expandedId === row.id }"
-              @click="store.expand(row.id)"
-            >
-              <td class="px-4 py-3 text-slate-500 dark:text-slate-400 font-mono">{{ row.source_row_number }}</td>
-              <td class="px-4 py-3 text-warn-800 dark:text-warn-200">
-                <span class="inline-flex items-center gap-1">
-                  <WarnIcon class="text-warn-600" />
-                  {{ truncate(row.processing_error) }}
-                </span>
-              </td>
-              <td class="px-4 py-3">
-                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-warn-50 dark:bg-warn-800/20 text-warn-600 dark:text-warn-200 text-xs font-medium">
-                  <WarnIcon />
-                  {{ row.processing_status }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-slate-400">
-                <span class="inline-block transition-transform"
-                      :class="expandedId === row.id ? 'rotate-90' : ''">▶</span>
-              </td>
-            </tr>
-            <Transition
-              enter-active-class="transition-opacity duration-200 ease-out"
-              enter-from-class="opacity-0"
-              enter-to-class="opacity-100"
-              leave-active-class="transition-opacity duration-150 ease-in"
-              leave-from-class="opacity-100"
-              leave-to-class="opacity-0"
-            >
-              <tr v-if="expandedId === row.id" class="border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
-                <td colspan="4" class="px-4 py-4">
-                  <ErroredRowAccordion :row-id="row.id" />
-                </td>
-              </tr>
-            </Transition>
-          </template>
+          <tr
+            v-for="row in rows"
+            :key="row.id"
+            class="border-t border-slate-100 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-750 transition-colors"
+            @click="store.openError(row.id)"
+          >
+            <td class="px-4 py-3 text-slate-500 dark:text-slate-400 font-mono">{{ row.source_row_number }}</td>
+            <td class="px-4 py-3 text-warn-800 dark:text-warn-200">
+              <span class="inline-flex items-center gap-1">
+                <WarnIcon class="text-warn-600" />
+                {{ truncate(row.processing_error) }}
+              </span>
+            </td>
+            <td class="px-4 py-3">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-warn-50 dark:bg-warn-800/20 text-warn-600 dark:text-warn-200 text-xs font-medium">
+                <WarnIcon />
+                {{ row.processing_status }}
+              </span>
+            </td>
+            <td class="px-4 py-3 text-slate-400">
+              <span aria-hidden="true">↗</span>
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
+
+    <ReconciliationSidebar />
   </section>
 </template>
