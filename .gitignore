@@ -22,6 +22,7 @@ frontend\node_modules
 
 venv
 
+Scheduler.spec
 CLAUDE.md
 gemini_context_dump.txt
 ctags.txt
