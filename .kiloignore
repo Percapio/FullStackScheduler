@@ -1,0 +1,10 @@
+.ctags.d
+.github
+.kilo
+.pytest_cache
+.vscode
+Architecture
+
+backend\data
+
+venv

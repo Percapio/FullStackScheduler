@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --color-warn-50:  #fffbeb;
+  --color-warn-100: #fef3c7;
+  --color-warn-200: #fde68a;
+  --color-warn-600: #d97706;
+  --color-warn-800: #92400e;
+
+  --color-slate-820: #28344a;
+  --color-slate-840: #3a4763;
+
+  --shadow-hover:    0 1px 2px rgba(15,23,42,0.04), 0 4px 12px rgba(15,23,42,0.06);
+  --shadow-elevated: 0 10px 15px -3px rgba(15,23,42,0.10), 0 4px 6px -4px rgba(15,23,42,0.08);
+  --shadow-anchor:   inset 4px 0 0 rgba(59,130,246,0.85);
+}
+
+:root {
+  font-size: clamp(0.875rem, 0.75rem + 0.4vw, 1.125rem);
+}
+
+html, body, #app { height: 100%; }
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+  margin: 0;
+  font-family: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-feature-settings: 'cv11', 'ss01', 'calt', 'liga';
+  font-optical-sizing: auto;
+}
+
+textarea {
+  @apply w-full rounded-md border-2 border-slate-300 bg-transparent px-3 py-2 text-sm shadow-sm ring-slate-200 focus:border-sky-500 focus:ring-sky-500 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 disabled:ring-slate-200;
+}
+
+header {
+  @apply flex justify-end;
+}
+
+#app {
+  @apply flex flex-col;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    @apply bg-slate-900 text-slate-100;
+  }
+  :root {
+    --shadow-hover:    0 1px 2px rgba(0,0,0,0.35), 0 4px 14px rgba(0,0,0,0.45);
+    --shadow-elevated: 0 12px 24px rgba(0,0,0,0.55), 0 4px 8px rgba(0,0,0,0.45);
+    --shadow-anchor:   inset 4px 0 0 rgba(96,165,250,0.9);
+  }
+}
+
+@layer components {
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70
+           focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50
+           dark:focus-visible:ring-offset-slate-900;
+  }
+  .lineage-anchor {
+    box-shadow: var(--shadow-anchor);
+  }
+}

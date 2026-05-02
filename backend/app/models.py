@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+import enum
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class JobStatus(str, enum.Enum):
+    planned = "planned"
+    wip = "wip"
+    shipped = "shipped"
+
+
+class BuildType(str, enum.Enum):
+    new = "new"
+    ronc = "ronc"
+    rowc = "rowc"
+    rwk = "rwk"
+
+
+class ImportStatus(str, enum.Enum):
+    pending = "pending"
+    processed = "processed"
+    error = "error"
+
+
+assembly_classifications = Table(
+    "assembly_classifications",
+    Base.metadata,
+    Column("assembly_id", ForeignKey("assemblies.id", ondelete="CASCADE"), primary_key=True),
+    Column("classification_id", ForeignKey("classifications.id", ondelete="RESTRICT"), primary_key=True),
+)
+
+
+
+
+class Customer(Base, TimestampMixin):
+    __tablename__ = "customers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+
+    jobs: Mapped[list[Job]] = relationship(back_populates="customer")
+
+
+class Salesperson(Base, TimestampMixin):
+    __tablename__ = "salespeople"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(128))
+
+    jobs: Mapped[list[Job]] = relationship(back_populates="salesperson")
+
+
+class Classification(Base, TimestampMixin):
+    __tablename__ = "classifications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255))
+
+    assemblies: Mapped[list[Assembly]] = relationship(
+        secondary=assembly_classifications, back_populates="classifications"
+    )
+
+
+class Assembly(Base, TimestampMixin):
+    __tablename__ = "assemblies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    part_number: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+
+    program_name: Mapped[str | None] = mapped_column(String(64))
+    smt_placements: Mapped[int | None] = mapped_column(Integer)
+
+    base_pcb_notes: Mapped[str | None] = mapped_column(Text)
+    base_mfg_notes: Mapped[str | None] = mapped_column(Text)
+
+    classifications: Mapped[list[Classification]] = relationship(
+        secondary=assembly_classifications, back_populates="assemblies"
+    )
+    jobs: Mapped[list[Job]] = relationship(
+        back_populates="assembly", cascade="all, delete-orphan"
+    )
+
+
+class Job(Base, TimestampMixin):
+    __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "assembly_id", "build_type", "split_suffix", "repeat_reference",
+            name="uq_job_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    assembly_id: Mapped[int] = mapped_column(
+        ForeignKey("assemblies.id", ondelete="RESTRICT"), nullable=False
+    )
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False
+    )
+    salesperson_id: Mapped[int | None] = mapped_column(
+        ForeignKey("salespeople.id", ondelete="SET NULL")
+    )
+
+    split_suffix: Mapped[str | None] = mapped_column(String(32))
+    repeat_reference: Mapped[str | None] = mapped_column(String(32))
+    build_type: Mapped[BuildType | None] = mapped_column(Enum(BuildType, name="build_type"))
+    status: Mapped[JobStatus] = mapped_column(
+        Enum(JobStatus, name="job_status"), default=JobStatus.planned, nullable=False
+    )
+
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    ship_date_text: Mapped[str | None] = mapped_column(String(5))
+    ship_lead_time_raw: Mapped[str | None] = mapped_column(String(16))
+    resolved_ship_date: Mapped[date | None] = mapped_column(Date)
+    shipped_at: Mapped[date | None] = mapped_column(Date)
+
+    ship_method: Mapped[str | None] = mapped_column(String(64))
+    smt_feeder_count: Mapped[int | None] = mapped_column(Integer)
+
+    doc_released_at: Mapped[date | None] = mapped_column(Date)
+    kit_released_at: Mapped[date | None] = mapped_column(Date)
+
+    wip_status_note: Mapped[str | None] = mapped_column(Text)
+    wip_expected_clear_date: Mapped[date | None] = mapped_column(Date)
+
+    notes_clear_date_raw: Mapped[str | None] = mapped_column(String(16))
+
+    run_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+
+    bom_compare_photos: Mapped[str | None] = mapped_column(Text)
+
+    run_pcb_notes: Mapped[str | None] = mapped_column(Text)
+    run_mfg_notes: Mapped[str | None] = mapped_column(Text)
+    kit_notes: Mapped[str | None] = mapped_column(Text)
+    scheduling_notes: Mapped[str | None] = mapped_column(Text)
+
+    line_1: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    line_2: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    line_3: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    assembly: Mapped[Assembly] = relationship(back_populates="jobs")
+    customer: Mapped[Customer] = relationship(back_populates="jobs")
+    salesperson: Mapped[Salesperson | None] = relationship(back_populates="jobs")
+
+
+class ImportBatch(Base, TimestampMixin):
+    __tablename__ = "import_batches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_file: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_sha256: Mapped[str | None] = mapped_column(String(64))
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[ImportStatus] = mapped_column(
+        Enum(ImportStatus, name="import_batch_status"),
+        default=ImportStatus.pending,
+        nullable=False,
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    rows: Mapped[list[ImportStagingRow]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class ImportStagingRow(Base, TimestampMixin):
+    __tablename__ = "import_staging"
+    __table_args__ = (
+        Index("ix_import_staging_batch_id", "batch_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="CASCADE"), nullable=False
+    )
+    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    raw_shipped: Mapped[str | None] = mapped_column(Text)
+    raw_pcb_notes: Mapped[str | None] = mapped_column(Text)
+    raw_kit_notes: Mapped[str | None] = mapped_column(Text)
+    raw_scheduling_notes: Mapped[str | None] = mapped_column(Text)
+    raw_line_1: Mapped[str | None] = mapped_column(Text)
+    raw_line_2: Mapped[str | None] = mapped_column(Text)
+    raw_line_3: Mapped[str | None] = mapped_column(Text)
+    raw_job: Mapped[str | None] = mapped_column(Text)
+    raw_qty: Mapped[str | None] = mapped_column(Text)
+    raw_ship_date: Mapped[str | None] = mapped_column(Text)
+    raw_prog: Mapped[str | None] = mapped_column(Text)
+    raw_mfg_notes: Mapped[str | None] = mapped_column(Text)
+    raw_smt_lines: Mapped[str | None] = mapped_column(Text)
+    raw_smt_plcmnts: Mapped[str | None] = mapped_column(Text)
+    raw_ship_method: Mapped[str | None] = mapped_column(Text)
+    raw_customer: Mapped[str | None] = mapped_column(Text)
+    raw_sales_p: Mapped[str | None] = mapped_column(Text)
+    raw_doc_rel: Mapped[str | None] = mapped_column(Text)
+    raw_kit_rel: Mapped[str | None] = mapped_column(Text)
+    raw_code: Mapped[str | None] = mapped_column(Text)
+    raw_bom_compare_photos: Mapped[str | None] = mapped_column(Text)
+
+    processing_status: Mapped[ImportStatus] = mapped_column(
+        Enum(ImportStatus, name="import_row_status"),
+        default=ImportStatus.pending,
+        nullable=False,
+    )
+    processing_error: Mapped[str | None] = mapped_column(Text)
+    suggested_correction: Mapped[str | None] = mapped_column(Text)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    resolved_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+
+    batch: Mapped[ImportBatch] = relationship(back_populates="rows")
