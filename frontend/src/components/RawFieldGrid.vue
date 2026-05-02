@@ -2,14 +2,22 @@
 import RawFieldInput from './RawFieldInput.vue'
 import { RAW_KEYS, type Draft, type DraftKey } from '@/composables/useCorrectionDraft'
 
-defineProps<{
-  draft: Draft
-  originalFor: (key: DraftKey) => string
-}>()
+const props = withDefaults(
+  defineProps<{
+    draft: Draft
+    originalFor: (key: DraftKey) => string
+    highlightFields?: readonly string[]
+  }>(),
+  { highlightFields: () => [] as readonly string[] },
+)
 
 const emit = defineEmits<{
   'update:field': [key: DraftKey, value: string]
 }>()
+
+function isHighlighted(key: DraftKey): boolean {
+  return props.highlightFields.includes(key)
+}
 </script>
 
 <template>
@@ -20,6 +28,7 @@ const emit = defineEmits<{
       :field-key="key"
       :model-value="draft[key]"
       :original-value="originalFor(key)"
+      :highlighted="isHighlighted(key)"
       @update:model-value="(v: string) => emit('update:field', key, v)"
     />
   </div>

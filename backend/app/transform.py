@@ -169,7 +169,7 @@ def _apply_row_to_job(
     job: Job,
     *,
     decomp: JobDecomposition,
-) -> str | None:
+) -> bool:
     ship_date_text, lead_time = (
         extract_ship_fields(row.raw_ship_date) if row.raw_ship_date else (None, None)
     )
@@ -192,9 +192,8 @@ def _apply_row_to_job(
     if row.raw_sales_p and row.raw_sales_p.strip():
         job.salesperson_id = _upsert_salesperson(session, row.raw_sales_p.strip()).id
 
-    shipped_err = _apply_shipped(row, job)
-    if shipped_err:
-        return shipped_err
+    if not _apply_shipped(row, job):
+        return False
 
     job.resolved_ship_date = resolve_ship_date(
         ship_date_text=job.ship_date_text,
@@ -202,19 +201,31 @@ def _apply_row_to_job(
         shipped_at=job.shipped_at,
         today=_today(),
     )
-    return None
+    return True
 
 
-def _apply_shipped(row: ImportStagingRow, job: Job) -> str | None:
+def _apply_shipped(row: ImportStagingRow, job: Job) -> bool:
+    """Apply the SHIPPED column to ``job``.
+
+    Returns ``True`` on success (including the no-op blank-raw case), ``False``
+    if an error was marked at source. On error, this function has already
+    called :func:`_mark_error` with the full message and suggestion — callers
+    MUST NOT mark the error again.
+    """
     raw = row.raw_shipped
     if not raw or not raw.strip():
-        return None
+        return True
     job.status = JobStatus.shipped
     parsed = extract_shipped_date(raw)
     if parsed is not None:
         job.shipped_at = parsed
-        return None
-    return f"Unparseable SHIPPED date: {raw!r}"
+        return True
+    _mark_error(
+        row,
+        f"Unparseable SHIPPED date: {raw!r}",
+        suggestion="SHIPPED must be blank or a date like '2025-09-15' or '9/15/2025'.",
+    )
+    return False
 
 
 def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformOutcome:
@@ -310,13 +321,7 @@ def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformO
         job = existing
         action = "updated"
 
-    shipped_err = _apply_row_to_job(session, row, job, decomp=decomp)
-    if shipped_err:
-        _mark_error(
-            row,
-            shipped_err,
-            suggestion="SHIPPED must be blank or a date like '2025-09-15' or '9/15/2025'.",
-        )
+    if not _apply_row_to_job(session, row, job, decomp=decomp):
         return TransformOutcome(None, "errored")
 
     if action == "inserted":

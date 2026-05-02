@@ -72,6 +72,23 @@ class TestResolvedShipDateOnUpdate:
         assert job.resolved_ship_date == date(2026, 9, 15)
 
 
+class TestApplyShippedRegression:
+    def test_apply_shipped_marks_error_with_unchanged_message(self, session, engine):
+        """Regression: F9 refactor preserves the SHIPPED-error literal verbatim."""
+        batch = ImportBatch(source_file="test.xlsx")
+        session.add(batch)
+        session.flush()
+
+        row = _seed_staging_row(session, batch.id, raw_shipped="not-a-date")
+        outcome = transform_staging_row(session, row)
+
+        assert outcome.action == "errored"
+        assert row.processing_status == ImportStatus.error
+        assert row.processing_error == "Unparseable SHIPPED date: 'not-a-date'"
+        assert row.suggested_correction is not None
+        assert row.suggested_correction.startswith("SHIPPED must be blank")
+
+
 class TestSentinelShipDate:
     def test_transform_persists_sentinel_ship_date(self, session, engine):
         batch = ImportBatch(source_file="test.xlsx")

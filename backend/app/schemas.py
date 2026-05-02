@@ -5,8 +5,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer
 
+from .errors import resolve_highlight_fields
 from .models import BuildType, ImportStatus, JobStatus
 
 
@@ -249,7 +250,10 @@ class _StagingRawFields(BaseModel):
 
 
 class StagingRowDetailRead(ImportStagingRowRead, _StagingRawFields):
-    pass
+    @computed_field
+    @property
+    def highlight_fields(self) -> list[str]:
+        return resolve_highlight_fields(self.processing_error)
 
 
 class StagingRowCorrectionRequest(_StagingRawFields):

@@ -13,11 +13,11 @@ type SubmitOutcome =
   | { kind: 'network'; message: string }
 
 export const useStagingStore = defineStore('staging', () => {
-  const rows         = ref<StagingRowSummary[]>([])
-  const total        = ref(0)
-  const loading      = ref(false)
-  const details      = ref<Record<number, StagingRowDetail>>({})
-  const expandedId   = ref<number | null>(null)
+  const rows             = ref<StagingRowSummary[]>([])
+  const total            = ref(0)
+  const loading          = ref(false)
+  const details          = ref<Record<number, StagingRowDetail>>({})
+  const activeErrorRowId = ref<number | null>(null)
 
   const visibleRows = computed(() => rows.value)
 
@@ -32,11 +32,17 @@ export const useStagingStore = defineStore('staging', () => {
     }
   }
 
-  async function expand(rowId: number) {
-    expandedId.value = expandedId.value === rowId ? null : rowId
-    if (expandedId.value === rowId && !details.value[rowId]) {
-      details.value[rowId] = await fetchDetail(rowId)
-    }
+  async function loadDetail(rowId: number) {
+    details.value[rowId] = await fetchDetail(rowId)
+  }
+
+  async function openError(rowId: number) {
+    activeErrorRowId.value = rowId
+    if (!details.value[rowId]) await loadDetail(rowId)
+  }
+
+  function closeError() {
+    activeErrorRowId.value = null
   }
 
   async function correct(
@@ -50,7 +56,9 @@ export const useStagingStore = defineStore('staging', () => {
       await submitCorrection(rowId, payload)
       delete details.value[rowId]
       total.value = Math.max(0, total.value - 1)
-      if (expandedId.value === rowId) expandedId.value = null
+      // The sidebar's stale-row watcher closes us on the 200 path; the 409
+      // path closes via the sidebar's onSubmit handler explicitly. The store
+      // never touches activeErrorRowId on its own.
       return { kind: 'ok' }
     } catch (err) {
       rows.value.splice(idx, 0, removed)
@@ -75,7 +83,8 @@ export const useStagingStore = defineStore('staging', () => {
   }
 
   return {
-    rows, visibleRows, total, loading, details, expandedId,
-    loadErrored, expand, correct,
+    rows, visibleRows, total, loading, details,
+    activeErrorRowId,
+    loadErrored, openError, closeError, loadDetail, correct,
   }
 })
