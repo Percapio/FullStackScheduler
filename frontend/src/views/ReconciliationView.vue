@@ -3,12 +3,16 @@ import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStagingStore } from '@/stores/staging'
 import ReconciliationSidebar from '@/components/ReconciliationSidebar.vue'
+import DiscardedRowsDrawer from '@/components/DiscardedRowsDrawer.vue'
 import WarnIcon from '@/components/WarnIcon.vue'
 
 const store = useStagingStore()
-const { rows, total, loading } = storeToRefs(store)
+const { rows, total, loading, discardedTotal } = storeToRefs(store)
 
-onMounted(() => store.loadErrored())
+onMounted(() => {
+  store.loadErrored()
+  store.loadDiscarded()
+})
 
 function truncate(s: string | null, n = 80) {
   if (!s) return ''
@@ -23,6 +27,17 @@ function truncate(s: string | null, n = 80) {
         <template v-if="loading">Loading…</template>
         <template v-else>{{ rows.length }} of {{ total }} errored rows</template>
       </span>
+      <button
+        type="button"
+        data-testid="discarded-pill-btn"
+        class="text-xs font-medium px-2 py-1 rounded-full
+               bg-stone-100 hover:bg-stone-200 text-stone-700
+               ring-1 ring-stone-300"
+        @click="store.openDiscardedDrawer()"
+      >
+        Discarded
+        <span v-if="discardedTotal > 0" class="ml-1 tabular-nums">({{ discardedTotal }})</span>
+      </button>
     </header>
 
     <div v-if="!loading && rows.length === 0"
@@ -69,5 +84,6 @@ function truncate(s: string | null, n = 80) {
     </div>
 
     <ReconciliationSidebar />
+    <DiscardedRowsDrawer />
   </section>
 </template>

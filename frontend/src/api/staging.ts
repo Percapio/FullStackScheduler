@@ -36,3 +36,26 @@ export async function submitCorrection(
   )
   return resp.data
 }
+
+export async function fetchDiscarded(
+  limit = 100, offset = 0,
+): Promise<{ rows: StagingRowSummary[]; total: number }> {
+  const resp = await apiClient.get<StagingRowSummary[]>('/api/staging/discarded', {
+    params: { limit, offset },
+  })
+  const total = Number(resp.headers['x-total-count'] ?? resp.data.length)
+  return { rows: resp.data, total }
+}
+
+export async function deleteStagingRow(rowId: number): Promise<void> {
+  await apiClient.delete(`/api/staging/${rowId}`)
+}
+
+export async function postRestoreStagingRow(
+  rowId: number,
+): Promise<StagingRowSummary> {
+  const resp = await apiClient.post<StagingRowSummary>(
+    `/api/staging/${rowId}/restore`,
+  )
+  return resp.data
+}

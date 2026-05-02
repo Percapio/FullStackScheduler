@@ -18,10 +18,33 @@ const detail = computed(() =>
 const { draft, changedPayload, hasChanges, setField, originalFor } = useCorrectionDraft(detail)
 
 const submitting = ref(false)
+const discarding = ref(false)
 
 watch([activeErrorRowId, rows], ([id, list]) => {
   if (id != null && !list.some(r => r.id === id)) store.closeError()
 })
+
+async function onDiscard() {
+  if (activeErrorRowId.value === null) return
+  if (discarding.value) return
+  discarding.value = true
+  const result = await store.discardRow(activeErrorRowId.value)
+  discarding.value = false
+
+  if (result.kind === 'ok') {
+    showToast('Row discarded', 'success')
+    // store.discardRow already cleared activeErrorRowId; the panel unmounts.
+  } else if (result.kind === 'stale') {
+    // Row already gone — close quietly; nothing actionable for the user.
+    store.closeError()
+  } else if (result.kind === 'conflict') {
+    showToast(result.message, 'error')
+    await store.loadErrored()
+    store.closeError()
+  } else {
+    showToast(result.message, 'error')  // network — user can retry
+  }
+}
 
 async function onSubmit() {
   if (!hasChanges.value || submitting.value) return
@@ -101,7 +124,20 @@ async function onSubmit() {
           :highlight-fields="detail.highlight_fields"
           @update:field="setField"
         />
-        <div class="flex items-center justify-end pt-2 border-t border-slate-200 dark:border-slate-700">
+        <div class="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-700">
+          <button
+            type="button"
+            :disabled="hasChanges || discarding"
+            :title="hasChanges ? 'Reset edits to enable Discard' : 'Discard this row'"
+            tabindex="-1"
+            data-testid="sidebar-discard-btn"
+            class="px-4 py-2 rounded-md text-rose-700 text-sm font-medium
+                   hover:bg-rose-50 dark:hover:bg-rose-900/30 transition-colors
+                   disabled:opacity-40 disabled:cursor-not-allowed"
+            @click="onDiscard"
+          >
+            Discard
+          </button>
           <button
             type="submit"
             :disabled="!hasChanges || submitting"

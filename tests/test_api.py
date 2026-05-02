@@ -33,6 +33,34 @@ class TestStagingErroredList:
         resp = client.get("/api/staging/errored?limit=10000")
         assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
+    def test_list_errored_excludes_discarded(self, client, session, open_batch):
+        from datetime import UTC, datetime
+        from backend.app.models import ImportStagingRow, ImportStatus
+
+        rows = []
+        for i in range(3):
+            r = ImportStagingRow(
+                batch_id=open_batch.id,
+                source_row_number=i + 1,
+                processing_status=ImportStatus.error,
+                processing_error=f"error {i}",
+            )
+            session.add(r)
+            rows.append(r)
+        session.flush()
+
+        rows[0].discarded_at = datetime.now(UTC)
+        session.flush()
+
+        resp = client.get("/api/staging/errored")
+        assert resp.status_code == status.HTTP_200_OK
+        body = resp.json()
+        ids = {r["id"] for r in body}
+        assert rows[0].id not in ids
+        assert rows[1].id in ids
+        assert rows[2].id in ids
+        assert int(resp.headers["x-total-count"]) == 2
+
 
 class TestStagingRowDetail:
     def test_returns_full_raw_payload(self, client, seeded_errored_row):

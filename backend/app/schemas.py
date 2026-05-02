@@ -221,6 +221,7 @@ class ImportStagingRowRead(_ORMModel):
     suggested_correction: str | None
     resolved_job_id: int | None
     processed_at: datetime | None
+    discarded_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

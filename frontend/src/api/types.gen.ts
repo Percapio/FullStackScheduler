@@ -351,6 +351,8 @@ export interface components {
             resolved_job_id: number | null;
             /** Processed At */
             processed_at: string | null;
+            /** Discarded At */
+            discarded_at?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -680,6 +682,8 @@ export interface components {
             resolved_job_id: number | null;
             /** Processed At */
             processed_at: string | null;
+            /** Discarded At */
+            discarded_at?: string | null;
             /**
              * Created At
              * Format: date-time

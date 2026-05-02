@@ -239,4 +239,115 @@ describe('ReconciliationSidebar', () => {
     expect(mockShowToast).toHaveBeenCalledWith('Could not reach the API', 'error')
     expect(closeSpy).not.toHaveBeenCalled()
   })
+
+  // ---- Discard button (Phase 2) ----
+
+  it('discard button is present in the DOM when activeErrorRowId is set', async () => {
+    mountWithStore({
+      activeErrorRowId: 7,
+      details: { 7: makeDetail() },
+      rows: [summaryFixture(7)],
+    })
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="sidebar-discard-btn"]')).not.toBeNull()
+  })
+
+  it('discard button is disabled when hasChanges is true', async () => {
+    mountWithStore({
+      activeErrorRowId: 7,
+      details: { 7: makeDetail() },
+      rows: [summaryFixture(7)],
+    })
+    await flushPromises()
+
+    // Edit a field to make hasChanges true.
+    const rawQty = document.body.querySelector('textarea[name="raw_qty"]') as HTMLTextAreaElement
+    rawQty.value = '5'
+    rawQty.dispatchEvent(new Event('input'))
+    await flushPromises()
+
+    const discardBtn = document.body.querySelector('[data-testid="sidebar-discard-btn"]') as HTMLButtonElement
+    expect(discardBtn.disabled).toBe(true)
+    expect(discardBtn.title).toContain('Reset edits')
+  })
+
+  it('discard click with ok result shows success toast and closes panel', async () => {
+    const { store } = mountWithStore({
+      activeErrorRowId: 7,
+      details: { 7: makeDetail() },
+      rows: [summaryFixture(7)],
+    })
+    await flushPromises()
+
+    const discardSpy = vi.spyOn(store, 'discardRow').mockResolvedValueOnce({ kind: 'ok' })
+    const discardBtn = document.body.querySelector('[data-testid="sidebar-discard-btn"]') as HTMLButtonElement
+    discardBtn.click()
+    await flushPromises()
+
+    expect(discardSpy).toHaveBeenCalledTimes(1)
+    expect(discardSpy).toHaveBeenCalledWith(7)
+    expect(mockShowToast).toHaveBeenCalledWith('Row discarded', 'success')
+  })
+
+  it('discard click with stale result closes quietly with no toast', async () => {
+    const { store } = mountWithStore({
+      activeErrorRowId: 7,
+      details: { 7: makeDetail() },
+      rows: [summaryFixture(7)],
+    })
+    await flushPromises()
+
+    vi.spyOn(store, 'discardRow').mockResolvedValueOnce({ kind: 'stale' })
+    const closeSpy = vi.spyOn(store, 'closeError')
+    const discardBtn = document.body.querySelector('[data-testid="sidebar-discard-btn"]') as HTMLButtonElement
+    discardBtn.click()
+    await flushPromises()
+
+    expect(mockShowToast).not.toHaveBeenCalled()
+    expect(closeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('discard click with conflict result shows error toast, reloads, and closes', async () => {
+    const { store } = mountWithStore({
+      activeErrorRowId: 7,
+      details: { 7: makeDetail() },
+      rows: [summaryFixture(7)],
+    })
+    await flushPromises()
+
+    vi.spyOn(store, 'discardRow').mockResolvedValueOnce({
+      kind: 'conflict',
+      message: 'Row already resolved',
+    })
+    const loadErroredSpy = vi.spyOn(store, 'loadErrored').mockResolvedValueOnce(undefined)
+    const closeSpy = vi.spyOn(store, 'closeError')
+    const discardBtn = document.body.querySelector('[data-testid="sidebar-discard-btn"]') as HTMLButtonElement
+    discardBtn.click()
+    await flushPromises()
+
+    expect(mockShowToast).toHaveBeenCalledWith('Row already resolved', 'error')
+    expect(loadErroredSpy).toHaveBeenCalledTimes(1)
+    expect(closeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('discard click with network result shows error toast and keeps panel open', async () => {
+    const { store } = mountWithStore({
+      activeErrorRowId: 7,
+      details: { 7: makeDetail() },
+      rows: [summaryFixture(7)],
+    })
+    await flushPromises()
+
+    vi.spyOn(store, 'discardRow').mockResolvedValueOnce({
+      kind: 'network',
+      message: 'Could not reach the API',
+    })
+    const closeSpy = vi.spyOn(store, 'closeError')
+    const discardBtn = document.body.querySelector('[data-testid="sidebar-discard-btn"]') as HTMLButtonElement
+    discardBtn.click()
+    await flushPromises()
+
+    expect(mockShowToast).toHaveBeenCalledWith('Could not reach the API', 'error')
+    expect(closeSpy).not.toHaveBeenCalled()
+  })
 })
