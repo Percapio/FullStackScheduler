@@ -49,7 +49,18 @@ class BuildType(str, enum.Enum):
     new = "new"
     ronc = "ronc"
     rowc = "rowc"
+
+
+class BuildQualifier(str, enum.Enum):
+    """Suffix-grade work-class qualifier (TDD §3.1.1).
+
+    Pre:  raw cell line matches /^(RWK|REWORK|RMA)\b/i.
+    Post: cardinality is 3, bounded by business intent.
+    Note: independent dimension from split_suffix; co-exists with BuildType.
+    """
     rwk = "rwk"
+    rework = "rework"
+    rma = "rma"
 
 
 class ImportStatus(str, enum.Enum):
@@ -123,7 +134,7 @@ class Job(Base, TimestampMixin):
     __tablename__ = "jobs"
     __table_args__ = (
         UniqueConstraint(
-            "assembly_id", "build_type", "split_suffix", "repeat_reference",
+            "assembly_id", "build_type", "split_suffix", "repeat_reference", "build_qualifier",
             name="uq_job_identity",
         ),
     )
@@ -143,6 +154,9 @@ class Job(Base, TimestampMixin):
     split_suffix: Mapped[str | None] = mapped_column(String(32))
     repeat_reference: Mapped[str | None] = mapped_column(String(32))
     build_type: Mapped[BuildType | None] = mapped_column(Enum(BuildType, name="build_type"))
+    build_qualifier: Mapped[BuildQualifier | None] = mapped_column(
+        Enum(BuildQualifier, name="build_qualifier"), nullable=True
+    )
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus, name="job_status"), default=JobStatus.planned, nullable=False
     )
@@ -237,6 +251,9 @@ class ImportStagingRow(Base, TimestampMixin):
     raw_kit_rel: Mapped[str | None] = mapped_column(Text)
     raw_code: Mapped[str | None] = mapped_column(Text)
     raw_bom_compare_photos: Mapped[str | None] = mapped_column(Text)
+    build_qualifier: Mapped[BuildQualifier | None] = mapped_column(
+        Enum(BuildQualifier, name="build_qualifier"), nullable=True
+    )
 
     processing_status: Mapped[ImportStatus] = mapped_column(
         Enum(ImportStatus, name="import_row_status"),

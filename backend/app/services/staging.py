@@ -84,9 +84,11 @@ def _identity_key_after_payload(
     decomp = decompose_job_string(new_raw_job)
     if decomp is None:
         return None
+    qualifier_segment: str = decomp.build_qualifier.value if decomp.build_qualifier else ""
     return (
         f"{decomp.part_number}|{decomp.build_type.value}"
         f"|{decomp.split_suffix or ''}|{decomp.repeat_reference or ''}"
+        f"|{qualifier_segment}"
     )
 
 
@@ -179,6 +181,58 @@ def _expanded_job(session: Session, job_id: int) -> Job:
         .where(Job.id == job_id)
         .options(*JOB_EXPAND_OPTIONS)
     ).unique().scalar_one()
+
+
+# ---------------------------------------------------------------------------
+# Savepoint error-capture helper (§3 of 20260503-ProjectRefactor02Patch01Implementation01.md)
+# ---------------------------------------------------------------------------
+
+def _rollback_with_error_capture(
+    session: Session,
+    row: ImportStagingRow,
+    savepoint,
+) -> None:
+    """Roll back ``savepoint`` while preserving the error markers that
+    :func:`~backend.app.transform._mark_error` wrote to ``row`` inside it.
+
+    Pre-conditions:
+      - ``row`` is attached to ``session``
+      - ``row.processing_status == ImportStatus.error`` (i.e. ``_mark_error``
+        already ran inside the savepoint)
+      - ``savepoint`` is the open nested transaction wrapping the transform
+
+    Post-conditions:
+      - ``savepoint`` is closed via rollback
+      - ``row.processing_status == ImportStatus.error``
+      - ``row.processing_error`` matches the value ``_mark_error`` wrote
+      - ``row.suggested_correction`` matches the value ``_mark_error`` wrote
+      - No Job insert or mutation from inside the savepoint survives
+    """
+    captured_error: str | None = row.processing_error
+    captured_suggestion: str | None = row.suggested_correction
+
+    savepoint.rollback()
+
+    row.processing_status = ImportStatus.error
+    row.processing_error = captured_error
+    row.suggested_correction = captured_suggestion
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-collision message helpers (§6 of 20260503-ProjectRefactor02Patch01Implementation01.md)
+# ---------------------------------------------------------------------------
+
+def _duplicate_collision_error_message(new_key: str) -> str:
+    """User-facing error for the sibling-collision arm of apply_correction."""
+    return f"{_DUPLICATE_ERROR_PREFIX} {new_key} — a corrected row already resolves to this identity"
+
+
+def _duplicate_collision_suggestion() -> str:
+    """User-facing correction hint for a sibling-collision error."""
+    return (
+        "Another staging row already occupies this JOB identity. "
+        "Add a split suffix (e.g. '-1par', '-2par') to make the identities unique."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -321,11 +375,16 @@ def apply_correction(
     row.resolved_job_id = None
     row.processed_at = None
 
-    outcome_action: str
+    final_disposition: str  # "processed" | "transform_errored" | "duplicate_collision"
     nested = session.begin_nested()
     try:
         outcome = transform_staging_row(session, row)
-        if outcome.action != "errored":
+        if outcome.action == "errored":
+            # Transform itself produced an error — roll back the Job mutation but
+            # preserve the error markers _mark_error wrote to row.
+            _rollback_with_error_capture(session, row, nested)
+            final_disposition = "transform_errored"
+        else:
             # Transform succeeded — but check whether the new identity has active
             # staging siblings.  If so, roll back the job insert/update and join
             # the duplicate group instead (§3.3.2 data-corruption hazard).
@@ -336,26 +395,26 @@ def apply_correction(
             if siblings_at_new_key >= 1:
                 nested.rollback()
                 row.processing_status = ImportStatus.error
+                row.processing_error = _duplicate_collision_error_message(new_key)
+                row.suggested_correction = _duplicate_collision_suggestion()
                 row.resolved_job_id = None
                 row.processed_at = None
                 row.duplicate_group_key = new_key
-                outcome_action = "errored"
+                final_disposition = "duplicate_collision"
             else:
                 nested.commit()
                 row.duplicate_group_key = None
-                outcome_action = outcome.action
-        else:
-            # Transform itself produced an error (not a duplicate-group issue).
-            nested.commit()
-            # §3.3.2 audit 1.1: only assign group key when the error IS a duplicate
-            # error; other error classes must not be relabeled.
-            row.duplicate_group_key = (
-                new_key if _is_intra_file_duplicate_error(row.processing_error) else None
-            )
-            outcome_action = "errored"
+                final_disposition = "processed"
     except Exception:
         nested.rollback()
         raise
+
+    if final_disposition == "transform_errored":
+        # §3.3.2 audit 1.1: only assign group key when the error IS a duplicate
+        # error; other error classes must not be relabeled.
+        row.duplicate_group_key = (
+            new_key if _is_intra_file_duplicate_error(row.processing_error) else None
+        )
 
     # duplicate_group_key must be set before commit so the helper's WHERE finds this row.
     session.commit()
@@ -371,7 +430,7 @@ def apply_correction(
         _reevaluate_group_siblings(session, row.batch_id, row.duplicate_group_key, exclude_id=None)
         session.commit()
 
-    if outcome_action == "errored":
+    if final_disposition != "processed":
         return None
     return _expanded_job(session, row.resolved_job_id)
 

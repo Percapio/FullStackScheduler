@@ -10,6 +10,7 @@ from __future__ import annotations
 
 HIGHLIGHT_RULES: list[tuple[str, list[str]]] = [
     ("Invalid JOB cell",                              ["raw_job"]),
+    ("Multiple build qualifiers in JOB cell",         ["raw_job"]),
     ("Invalid QTY",                                   ["raw_qty"]),
     ("raw_customer is empty",                         ["raw_customer"]),
     ("split_suffix overflow",                         ["raw_job"]),

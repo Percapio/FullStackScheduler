@@ -125,25 +125,26 @@ export const useStagingStore = defineStore('staging', () => {
   ): Promise<SubmitOutcome> {
     const idx = rows.value.findIndex(r => r.id === rowId)
     if (idx < 0) return { kind: 'network', message: 'Row vanished from store' }
-    const removed = rows.value.splice(idx, 1)[0]
+    const snapshot = rows.value[idx]      // read without optimistic splice
 
     try {
       await submitCorrection(rowId, payload)
-      delete details.value[rowId]
+      delete details.value[rowId]         // 1. cache cleared first
+      rows.value.splice(idx, 1)           // 2. then row removed (watcher fires here)
       total.value = Math.max(0, total.value - 1)
       // The sidebar's stale-row watcher closes us on the 200 path; the 409
       // path closes via the sidebar's onSubmit handler explicitly. The store
       // never touches activeErrorRowId on its own.
       return { kind: 'ok' }
     } catch (err) {
-      rows.value.splice(idx, 0, removed)
+      // row was never removed (splice is on the success path only)
 
       if (isApiError(err) && err.response) {
         const status = err.response.status
         const detail = err.response.data?.detail
 
         if (status === 422 && typeof detail === 'string') {
-          rows.value[idx] = { ...removed, processing_error: detail }
+          rows.value[idx] = { ...snapshot, processing_error: detail }
           if (details.value[rowId]) {
             details.value[rowId] = { ...details.value[rowId], processing_error: detail }
           }

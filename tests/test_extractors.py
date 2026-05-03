@@ -3,13 +3,15 @@ from datetime import date
 import pytest
 
 from backend.app.extractors import (
+    DecomposeError,
     JobDecomposition,
     decompose_job_string,
+    decompose_job_string_with_diagnostic,
     extract_clear_date_from_notes,
     extract_ship_fields,
     extract_shipped_date,
 )
-from backend.app.models import BuildType
+from backend.app.models import BuildQualifier, BuildType
 
 
 # ---- JOB decomposition -------------------------------------------------------
@@ -114,9 +116,6 @@ def test_decompose_rejects_unknown_build_token():
     ("128764-1par NEW",         "128764", BuildType.new,  None),
     ("128764 RONC 123456",      "128764", BuildType.ronc, "123456"),
     ("128764 ROWC 1st Article", "128764", BuildType.rowc, "1st article"),
-    ("128764 RWK",              "128764", BuildType.rwk,  None),
-    ("128764 RWK 123456",       "128764", BuildType.rwk,  "123456"),
-    ("128764-1par RWK",         "128764", BuildType.rwk,  None),
 ])
 def test_decompose_whitespace_delimited_job_cell(
     raw, expected_part, expected_bt, expected_ref,
@@ -245,3 +244,89 @@ def test_clear_date_case_insensitive():
 
 def test_clear_date_with_year():
     assert extract_clear_date_from_notes("clear 4/14/2026") == "4/14/2026"
+
+
+# ---- build qualifier recognition (Phase 4) -----------------------------------
+
+def test_decompose_recognises_rwk_as_qualifier_with_default_build_type():
+    """R5: qualifier-only cell defaults build_type to NEW (D1 fix)."""
+    result = decompose_job_string("138924\nRWK")
+    assert result is not None
+    assert result.part_number == "138924"
+    assert result.build_type == BuildType.new
+    assert result.build_qualifier == BuildQualifier.rwk
+    assert result.repeat_reference is None
+
+
+@pytest.mark.parametrize("raw,expected_q", [
+    ("138924\nREWORK",  BuildQualifier.rework),
+    ("138924\nRMA",     BuildQualifier.rma),
+    ("138924\nrework",  BuildQualifier.rework),
+    ("138924\nrma",     BuildQualifier.rma),
+])
+def test_decompose_recognises_rework_and_rma(raw, expected_q):
+    result = decompose_job_string(raw)
+    assert result is not None
+    assert result.build_type == BuildType.new
+    assert result.build_qualifier == expected_q
+
+
+def test_decompose_combines_build_type_and_qualifier():
+    """R3: both build type and qualifier lines may coexist."""
+    result = decompose_job_string("138924\nNEW\nRWK")
+    assert result is not None
+    assert result.build_type == BuildType.new
+    assert result.build_qualifier == BuildQualifier.rwk
+
+
+def test_decompose_qualifier_with_repeat_reference():
+    """Repeat reference on qualifier line is captured when no build-type ref precedes it."""
+    result = decompose_job_string("138924\nRWK 123456")
+    assert result is not None
+    assert result.build_qualifier == BuildQualifier.rwk
+    assert result.repeat_reference == "123456"
+
+
+def test_decompose_build_type_ref_takes_precedence_over_qualifier_ref():
+    """First-writer-wins: build-type line's repeat_reference wins over qualifier line's ref."""
+    result = decompose_job_string("138924\nROWC 100\nRWK 200")
+    assert result is not None
+    assert result.build_type == BuildType.rowc
+    assert result.repeat_reference == "100"
+    assert result.build_qualifier == BuildQualifier.rwk
+
+
+def test_decompose_rejects_multiple_qualifiers():
+    """R2: two qualifier lines in the same cell → DecomposeError with R2 code."""
+    result = decompose_job_string_with_diagnostic("138924\nRWK\nREWORK")
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R2_multiple_qualifiers"
+    assert "138924" in result.message
+
+
+def test_decompose_multiple_qualifiers_returns_none_via_wrapper():
+    """decompose_job_string (back-compat wrapper) returns None on R2."""
+    assert decompose_job_string("138924\nRWK\nREWORK") is None
+
+
+def test_decompose_qualifier_does_not_set_build_qualifier_on_unqualified_cell():
+    """Cells without a qualifier token must have build_qualifier=None."""
+    result = decompose_job_string("137845\nNEW")
+    assert result is not None
+    assert result.build_qualifier is None
+
+
+@pytest.mark.parametrize("raw,expected_part,expected_q,expected_ref", [
+    ("128764 RWK",       "128764", BuildQualifier.rwk,    None),
+    ("128764 RWK 123456","128764", BuildQualifier.rwk,    "123456"),
+    ("128764 REWORK",    "128764", BuildQualifier.rework, None),
+    ("128764 RMA",       "128764", BuildQualifier.rma,    None),
+])
+def test_decompose_whitespace_delimited_qualifier_cell(raw, expected_part, expected_q, expected_ref):
+    """Whitespace-delimited qualifier cells parse correctly via the two-token fallback."""
+    result = decompose_job_string(raw)
+    assert result is not None
+    assert result.part_number == expected_part
+    assert result.build_type == BuildType.new
+    assert result.build_qualifier == expected_q
+    assert result.repeat_reference == expected_ref

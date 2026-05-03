@@ -10,14 +10,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .extractors import (
+    DecomposeError,
     JobDecomposition,
-    decompose_job_string,
+    decompose_job_string_with_diagnostic,
     extract_clear_date_from_notes,
     extract_ship_fields,
     extract_shipped_date,
 )
 from .models import (
     Assembly,
+    BuildQualifier,
     Classification,
     Customer,
     ImportStagingRow,
@@ -211,35 +213,46 @@ def _apply_shipped(row: ImportStagingRow, job: Job) -> bool:
     if an error was marked at source. On error, this function has already
     called :func:`_mark_error` with the full message and suggestion — callers
     MUST NOT mark the error again.
+
+    Parse is attempted before any mutation so that an unparseable value never
+    leaves ``job.status`` set to shipped with ``job.shipped_at`` still None.
     """
     raw = row.raw_shipped
     if not raw or not raw.strip():
         return True
-    job.status = JobStatus.shipped
     parsed = extract_shipped_date(raw)
-    if parsed is not None:
-        job.shipped_at = parsed
-        return True
-    _mark_error(
-        row,
-        f"Unparseable SHIPPED date: {raw!r}",
-        suggestion="SHIPPED must be blank or a date like '2025-09-15' or '9/15/2025'.",
-    )
-    return False
+    if parsed is None:
+        _mark_error(
+            row,
+            f"Unparseable SHIPPED date: {raw!r}",
+            suggestion="SHIPPED must be blank or a date like '2025-09-15' or '9/15/2025'.",
+        )
+        return False
+    job.status = JobStatus.shipped
+    job.shipped_at = parsed
+    return True
 
 
 def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformOutcome:
-    decomp = decompose_job_string(row.raw_job) if row.raw_job else None
-    if decomp is None:
-        _mark_error(
-            row,
-            f"Invalid JOB cell: {row.raw_job!r}",
-            suggestion=(
-                "JOB cell must contain a part number and a build type — "
-                "e.g., '128764 NEW' or '128764\\nRONC 123456'."
-            ),
-        )
+    decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
+    if decomp_result is None or isinstance(decomp_result, DecomposeError):
+        if isinstance(decomp_result, DecomposeError) and decomp_result.code == "R2_multiple_qualifiers":
+            _mark_error(
+                row,
+                f"Multiple build qualifiers in JOB cell: {row.raw_job!r}",
+                suggestion="JOB cell may contain at most one of RWK, REWORK, or RMA. Remove the redundant token.",
+            )
+        else:
+            _mark_error(
+                row,
+                f"Invalid JOB cell: {row.raw_job!r}",
+                suggestion=(
+                    "JOB cell must contain a part number and a build type — "
+                    "e.g., '128764 NEW' or '128764\\nRONC 123456'."
+                ),
+            )
         return TransformOutcome(None, "errored")
+    decomp: JobDecomposition = decomp_result
 
     if decomp.split_suffix and len(decomp.split_suffix) > 32:
         _mark_error(
@@ -291,6 +304,7 @@ def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformO
         .where(Job.build_type == decomp.build_type)
         .where(Job.split_suffix.is_not_distinct_from(decomp.split_suffix))
         .where(Job.repeat_reference.is_not_distinct_from(decomp.repeat_reference))
+        .where(Job.build_qualifier.is_not_distinct_from(decomp.build_qualifier))
     ).scalar_one_or_none()
 
     if existing is None:
@@ -300,6 +314,7 @@ def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformO
             build_type=decomp.build_type,
             split_suffix=decomp.split_suffix,
             repeat_reference=decomp.repeat_reference,
+            build_qualifier=decomp.build_qualifier,
             quantity=quantity,
         )
         session.add(job)
@@ -329,6 +344,7 @@ def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformO
 
     _apply_lines(row, job)
 
+    row.build_qualifier = decomp.build_qualifier
     row.processing_status = ImportStatus.processed
     session.flush()
     row.resolved_job_id = job.id

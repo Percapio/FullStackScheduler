@@ -33,7 +33,7 @@ const panelOpen = computed(() =>
 
 watch([activeErrorRowId, rows], ([id, list]) => {
   if (id != null && !list.some(r => r.id === id)) store.closeError()
-})
+}, { deep: true })
 
 async function onDiscard() {
   if (activeErrorRowId.value === null) return

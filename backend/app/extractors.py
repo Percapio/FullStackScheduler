@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Literal
 
-from .models import BuildType
+from .models import BuildQualifier, BuildType
 
 _BUILD_TYPES = {bt.value.upper(): bt for bt in BuildType}
+_BUILD_QUALIFIERS: dict[str, BuildQualifier] = {q.value.upper(): q for q in BuildQualifier}
 _LEAD_TIME_RE = re.compile(r"\b(\d+D)\b", re.IGNORECASE)
 _CLEAR_KEYWORD_RE = re.compile(
     r"(?:(\d{1,2}/\d{1,2}(?:/\d{4})?)\s*[-\s]\s*(?:clear(?:s|ed)?))"
@@ -15,7 +17,11 @@ _CLEAR_KEYWORD_RE = re.compile(
 )
 _SUFFIX_RE = re.compile(r"^(?P<part>.+?)(?P<suffix>[-. ][A-Za-z0-9]+)?$")
 _REPEAT_RE = re.compile(
-    r"^(?P<bt>RONC|ROWC|RWK)(?:\s+(?P<ref>[^(]+?))?\s*(?:\(.*)?$",
+    r"^(?P<bt>RONC|ROWC)(?:\s+(?P<ref>[^(]+?))?\s*(?:\(.*)?$",
+    re.IGNORECASE,
+)
+_QUALIFIER_RE = re.compile(
+    r"^(?P<q>RWK|REWORK|RMA)(?:\s+(?P<ref>[^(]+?))?\s*(?:\(.*)?$",
     re.IGNORECASE,
 )
 _SHIPPED_DATE_FORMATS: tuple[str, ...] = ("%Y-%m-%d", "%m/%d/%Y")
@@ -31,6 +37,18 @@ class JobDecomposition:
     build_type: BuildType
     repeat_reference: str | None
     classification_codes: tuple[str, ...]
+    build_qualifier: BuildQualifier | None = None
+
+
+@dataclass(frozen=True)
+class DecomposeError:
+    """Structured failure from decompose_job_string_with_diagnostic.
+
+    Pre:  raw is the staging row's raw_job string.
+    Post: code identifies the rule (R1 or R2); message is the user-facing surfaced text.
+    """
+    code: Literal["R1_no_classifier", "R2_multiple_qualifiers"]
+    message: str
 
 
 def _extract_classifications(lines: list[str]) -> tuple[str, ...]:
@@ -58,22 +76,53 @@ def _parse_build_line(line: str) -> tuple[BuildType, str | None] | None:
     m = _REPEAT_RE.match(token)
     if m is None:
         return None
-    bt = {"RONC": BuildType.ronc, "ROWC": BuildType.rowc, "RWK": BuildType.rwk}[m.group("bt").upper()]
+    bt = {"RONC": BuildType.ronc, "ROWC": BuildType.rowc}[m.group("bt").upper()]
     ref = m.group("ref")
     return bt, (" ".join(ref.split()).lower() if ref else None)
 
 
-def decompose_job_string(raw: str) -> JobDecomposition | None:
+def _parse_qualifier_line(line: str) -> tuple[BuildQualifier, str | None] | None:
+    """Parse a single line as a qualifier-with-optional-repeat-ref.
+
+    Pre:  line is a single, possibly whitespace-padded raw cell line.
+    Post: returns (qualifier, normalised_repeat_ref) on match; None otherwise.
+          repeat_ref is lower-cased and inner whitespace is collapsed (mirrors _parse_build_line).
+    Raises: never.
+    """
+    token = line.strip()
+    m = _QUALIFIER_RE.match(token)
+    if m is None:
+        return None
+    qualifier = _BUILD_QUALIFIERS[m.group("q").upper()]
+    raw_ref = m.group("ref")
+    normalised_ref = " ".join(raw_ref.split()).lower() if raw_ref else None
+    return qualifier, normalised_ref
+
+
+def decompose_job_string_with_diagnostic(raw: str) -> JobDecomposition | DecomposeError:
+    """Decompose a raw JOB cell string into a JobDecomposition, or return a
+    DecomposeError with a specific failure code and user-visible message.
+
+    Pre:  raw is a non-empty string.
+    Post: returns JobDecomposition on success; DecomposeError(R1 or R2) on structural failure.
+    Raises: never.
+    """
     lines = raw.split("\n")
     if len(lines) < 2:
         tokens = raw.strip().split(None, 1)
         if len(tokens) < 2:
-            return None
+            return DecomposeError(
+                code="R1_no_classifier",
+                message=f"Invalid JOB cell: {raw!r}",
+            )
         lines = [tokens[0], tokens[1]]
 
     line0 = lines[0].strip()
     if not line0:
-        return None
+        return DecomposeError(
+            code="R1_no_classifier",
+            message=f"Invalid JOB cell: {raw!r}",
+        )
 
     m = _SUFFIX_RE.match(line0)
     part_number = m.group("part").strip() if m else line0
@@ -81,27 +130,58 @@ def decompose_job_string(raw: str) -> JobDecomposition | None:
     split_suffix = raw_suffix.strip().lower() if raw_suffix else None
 
     intermediates: list[str] = []
-    build_idx: int | None = None
-    parsed: tuple[BuildType, str | None] | None = None
+    build_type: BuildType | None = None
+    build_qualifier: BuildQualifier | None = None
+    repeat_reference: str | None = None
+    last_classified_idx: int = 0
+
     for idx in range(1, len(lines)):
-        candidate = _parse_build_line(lines[idx])
-        if candidate is not None:
-            build_idx = idx
-            parsed = candidate
-            break
-        stripped = lines[idx].strip()
-        if stripped:
+        line = lines[idx]
+
+        if build_type is None:
+            candidate_bt = _parse_build_line(line)
+            if candidate_bt is not None:
+                build_type, candidate_ref = candidate_bt
+                if candidate_ref is not None:
+                    repeat_reference = candidate_ref
+                last_classified_idx = idx
+                continue
+
+        candidate_q = _parse_qualifier_line(line)
+        if candidate_q is not None:
+            if build_qualifier is not None:
+                return DecomposeError(
+                    code="R2_multiple_qualifiers",
+                    message=f"Multiple build qualifiers in JOB cell: {raw!r}",
+                )
+            build_qualifier, candidate_q_ref = candidate_q
+            if candidate_q_ref is not None and repeat_reference is None:
+                repeat_reference = candidate_q_ref
+            last_classified_idx = idx
+            continue
+
+        stripped = line.strip()
+        # Lines starting with '(' are classification tokens — consumed by
+        # _extract_classifications below, not intermediates.
+        if stripped and not stripped.startswith("("):
             intermediates.append(stripped.lower())
-    if parsed is None or build_idx is None:
-        return None
-    build_type, repeat_reference = parsed
+
+    if build_type is None and build_qualifier is None:
+        return DecomposeError(
+            code="R1_no_classifier",
+            message=f"Invalid JOB cell: {raw!r}",
+        )
+
+    if build_type is None and build_qualifier is not None:
+        # R5 default: qualifier-only cell implies build_type=new
+        build_type = BuildType.new
 
     if intermediates:
         parts = [split_suffix] if split_suffix else []
         parts.extend(intermediates)
         split_suffix = " ".join(parts)
 
-    classifications = _extract_classifications(lines[build_idx + 1:])
+    classifications = _extract_classifications(lines[last_classified_idx + 1:])
 
     return JobDecomposition(
         part_number=part_number,
@@ -109,7 +189,14 @@ def decompose_job_string(raw: str) -> JobDecomposition | None:
         build_type=build_type,
         repeat_reference=repeat_reference,
         classification_codes=classifications,
+        build_qualifier=build_qualifier,
     )
+
+
+def decompose_job_string(raw: str) -> JobDecomposition | None:
+    """Back-compat wrapper. Returns None on any structural failure; loses error specificity."""
+    out = decompose_job_string_with_diagnostic(raw)
+    return out if isinstance(out, JobDecomposition) else None
 
 
 def extract_ship_fields(raw: str) -> tuple[str | None, str | None]:

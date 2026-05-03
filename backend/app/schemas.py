@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer
 
 from .errors import resolve_highlight_fields
-from .models import BuildType, ImportStatus, JobStatus
+from .models import BuildType, BuildQualifier, ImportStatus, JobStatus
 
 
 _MARKDOWN_NOTE = "CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked)."
@@ -197,6 +197,7 @@ class JobReadExpanded(JobRead):
     assembly: AssemblyRead
     customer: CustomerRead
     salesperson: SalespersonRead | None = None
+    build_qualifier: BuildQualifier | None = None
 
 
 # ---- import models -----------------------------------------------------------
@@ -253,6 +254,8 @@ class _StagingRawFields(BaseModel):
 
 
 class StagingRowDetailRead(ImportStagingRowRead, _StagingRawFields):
+    build_qualifier: BuildQualifier | None = None
+
     @computed_field
     @property
     def highlight_fields(self) -> list[str]:

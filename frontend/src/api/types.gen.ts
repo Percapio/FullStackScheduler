@@ -292,7 +292,12 @@ export interface components {
          * BuildType
          * @enum {string}
          */
-        BuildType: "new" | "ronc" | "rowc" | "rwk";
+        BuildType: "new" | "ronc" | "rowc";
+        /**
+         * BuildQualifier
+         * @enum {string}
+         */
+        BuildQualifier: "rwk" | "rework" | "rma";
         /** ClassificationRead */
         ClassificationRead: {
             /** Code */
@@ -570,6 +575,7 @@ export interface components {
             assembly: components["schemas"]["AssemblyRead"];
             customer: components["schemas"]["CustomerRead"];
             salesperson?: components["schemas"]["SalespersonRead"] | null;
+            build_qualifier?: components["schemas"]["BuildQualifier"] | null;
         };
         /**
          * JobStatus
@@ -713,6 +719,7 @@ export interface components {
             updated_at: string;
             /** Highlight Fields */
             readonly highlight_fields: string[];
+            build_qualifier?: components["schemas"]["BuildQualifier"] | null;
         };
         /** ValidationError */
         ValidationError: {

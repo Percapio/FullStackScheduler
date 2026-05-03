@@ -15,6 +15,7 @@ from . import reader
 from .db import SessionLocal
 from .extractors import decompose_job_string
 from .models import ImportBatch, ImportStagingRow, ImportStatus
+from .services.staging import _rollback_with_error_capture
 from .transform import transform_staging_row
 
 
@@ -165,14 +166,15 @@ def ingest_workbook(
                         "e.g., '128764 NEW' or '128764\\nRONC 123456'."
                     )
                     continue
-                key = (decomp.part_number, decomp.build_type, decomp.split_suffix, decomp.repeat_reference)
+                key = (decomp.part_number, decomp.build_type, decomp.split_suffix, decomp.repeat_reference, decomp.build_qualifier)
                 by_identity.setdefault(key, []).append(row)
 
             for identity, rows in by_identity.items():
                 if len(rows) < 2:
                     continue
                 other_ids = sorted(r.id for r in rows)
-                canonical_key: str = f"{identity[0]}|{identity[1].value}|{identity[2] or ''}|{identity[3] or ''}"
+                qualifier_segment: str = identity[4].value if identity[4] else ""
+                canonical_key: str = f"{identity[0]}|{identity[1].value}|{identity[2] or ''}|{identity[3] or ''}|{qualifier_segment}"
                 for row in rows:
                     row.duplicate_group_key = canonical_key
                     row.processing_status = ImportStatus.error
@@ -198,8 +200,12 @@ def ingest_workbook(
                 nested = session.begin_nested()
                 try:
                     outcome = transform_staging_row(session, row)
-                    nested.commit()
-                    counters[outcome.action] += 1
+                    if outcome.action == "errored":
+                        _rollback_with_error_capture(session, row, nested)
+                        counters["errored"] += 1
+                    else:
+                        nested.commit()
+                        counters[outcome.action] += 1
                 except Exception as exc:
                     nested.rollback()
                     row.processing_status = ImportStatus.error
