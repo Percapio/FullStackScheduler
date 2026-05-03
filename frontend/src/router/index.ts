@@ -9,7 +9,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/reconciliation', name: 'reconciliation',
     component: ReconciliationView, meta: { label: 'Reconciliation' } },
   { path: '/schedule',     name: 'schedule',
-    component: PlaceholderView, meta: { label: 'Production Schedule', phase: '11' } },
+    component: PlaceholderView, meta: { label: 'Production Schedule', phase: 'TBD' } },
   { path: '/shipping',     name: 'shipping',
     component: ShippingView,    meta: { label: 'Shipping' } },
   { path: '/history',      name: 'history',

@@ -15,7 +15,13 @@ _CLEAR_KEYWORD_RE = re.compile(
     r"|(?:(?:clear(?:s|ed)?)\s+(\d{1,2}/\d{1,2}(?:/\d{4})?))",
     re.IGNORECASE,
 )
-_SUFFIX_RE = re.compile(r"^(?P<part>.+?)(?P<suffix>[-. ][A-Za-z0-9]+)?$")
+_SPLIT_SUFFIX_LEXICON: tuple[str, ...] = ("par", "bal", "ser")
+SPLIT_SUFFIX_RE = re.compile(
+    r"-(?P<digits>\d+)(?P<token>" + "|".join(_SPLIT_SUFFIX_LEXICON) + r")$",
+    re.IGNORECASE,
+)
+SO_NUMBER_RE = re.compile(r"SO#", re.IGNORECASE)
+_PART_NUMBER_SHAPED_RE = re.compile(r"^[A-Za-z0-9._\-\s]+$")
 _REPEAT_RE = re.compile(
     r"^(?P<bt>RONC|ROWC)(?:\s+(?P<ref>[^(]+?))?\s*(?:\(.*)?$",
     re.IGNORECASE,
@@ -45,10 +51,18 @@ class DecomposeError:
     """Structured failure from decompose_job_string_with_diagnostic.
 
     Pre:  raw is the staging row's raw_job string.
-    Post: code identifies the rule (R1 or R2); message is the user-facing surfaced text.
+    Post: code identifies the rule; message is the user-facing surfaced text;
+          recovered_classifications is populated on R1 failures when
+          classification tokens were detected in the cell.
     """
-    code: Literal["R1_no_classifier", "R2_multiple_qualifiers"]
+    code: Literal[
+        "R1_no_classifier",
+        "R2_multiple_qualifiers",
+        "R3_multi_part_cell",
+        "R4_so_number_in_job",
+    ]
     message: str
+    recovered_classifications: tuple[str, ...] = ()
 
 
 def _extract_classifications(lines: list[str]) -> tuple[str, ...]:
@@ -99,21 +113,76 @@ def _parse_qualifier_line(line: str) -> tuple[BuildQualifier, str | None] | None
     return qualifier, normalised_ref
 
 
+def parse_part_line(line: str) -> tuple[str, str | None]:
+    """Apply SPLIT_SUFFIX_RE to a stripped, non-empty line.
+
+    Pre:  line is stripped and non-empty (caller guarantees).
+    Post: when SPLIT_SUFFIX_RE matches the tail, split_suffix includes the
+          leading "-" and is lower-cased; part_number is the remainder with
+          trailing whitespace stripped.  Otherwise part_number is line
+          verbatim and split_suffix is None.
+    Raises: never.
+    """
+    m = SPLIT_SUFFIX_RE.search(line)
+    if m is None:
+        return line, None
+    return line[: m.start()].rstrip(), line[m.start():].lower()
+
+
+def looks_like_multi_part_cell(lines: list[str]) -> bool:
+    """Return True when every non-empty line is part-number-shaped and none
+    carries a build-type or build-qualifier token.
+
+    Pre:  lines is the result of raw.split("\\n"); raw was non-empty.
+    Post: True iff the cell is a multi-part candidate (R3 guard).
+          Single-line cells return False (they belong to the single-line
+          fallback path).
+    Raises: never.
+    """
+    non_empty = [ln.strip() for ln in lines if ln.strip()]
+    if len(non_empty) < 2:
+        return False
+    for ln in non_empty:
+        if _parse_build_line(ln) is not None:
+            return False
+        if _parse_qualifier_line(ln) is not None:
+            return False
+        if _PART_NUMBER_SHAPED_RE.match(ln) is None:
+            return False
+    return True
+
+
 def decompose_job_string_with_diagnostic(raw: str) -> JobDecomposition | DecomposeError:
     """Decompose a raw JOB cell string into a JobDecomposition, or return a
     DecomposeError with a specific failure code and user-visible message.
 
     Pre:  raw is a non-empty string.
-    Post: returns JobDecomposition on success; DecomposeError(R1 or R2) on structural failure.
+    Post: returns JobDecomposition on success; DecomposeError (R1–R4) on
+          structural failure.  Check order: R4 (SO#) → R3 (multi-part) →
+          single-line fallback → R1/R2 from line scan.
     Raises: never.
     """
+    if SO_NUMBER_RE.search(raw):
+        return DecomposeError(
+            code="R4_so_number_in_job",
+            message=f"SO# is not allowed in JOB cell: {raw!r}",
+        )
+
     lines = raw.split("\n")
+
+    if looks_like_multi_part_cell(lines):
+        return DecomposeError(
+            code="R3_multi_part_cell",
+            message=f"JOB cell appears to contain multiple part numbers: {raw!r}",
+        )
+
     if len(lines) < 2:
         tokens = raw.strip().split(None, 1)
         if len(tokens) < 2:
             return DecomposeError(
                 code="R1_no_classifier",
                 message=f"Invalid JOB cell: {raw!r}",
+                recovered_classifications=_extract_classifications(lines),
             )
         lines = [tokens[0], tokens[1]]
 
@@ -122,12 +191,10 @@ def decompose_job_string_with_diagnostic(raw: str) -> JobDecomposition | Decompo
         return DecomposeError(
             code="R1_no_classifier",
             message=f"Invalid JOB cell: {raw!r}",
+            recovered_classifications=_extract_classifications(lines),
         )
 
-    m = _SUFFIX_RE.match(line0)
-    part_number = m.group("part").strip() if m else line0
-    raw_suffix = m.group("suffix") if m else None
-    split_suffix = raw_suffix.strip().lower() if raw_suffix else None
+    part_number, split_suffix = parse_part_line(line0)
 
     intermediates: list[str] = []
     build_type: BuildType | None = None
@@ -170,6 +237,7 @@ def decompose_job_string_with_diagnostic(raw: str) -> JobDecomposition | Decompo
         return DecomposeError(
             code="R1_no_classifier",
             message=f"Invalid JOB cell: {raw!r}",
+            recovered_classifications=_extract_classifications(lines),
         )
 
     if build_type is None and build_qualifier is not None:

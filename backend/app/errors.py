@@ -9,15 +9,17 @@ from __future__ import annotations
 
 
 HIGHLIGHT_RULES: list[tuple[str, list[str]]] = [
-    ("Invalid JOB cell",                              ["raw_job"]),
-    ("Multiple build qualifiers in JOB cell",         ["raw_job"]),
-    ("Invalid QTY",                                   ["raw_qty"]),
-    ("raw_customer is empty",                         ["raw_customer"]),
-    ("split_suffix overflow",                         ["raw_job"]),
-    ("repeat_reference overflow",                     ["raw_job"]),
-    ("Unparseable SHIPPED date",                      ["raw_shipped"]),
-    ("Conflict: Attempting to update a shipped job",  ["raw_job"]),
-    ("Intra-file duplicate JOB identity",             ["raw_job"]),
+    ("Invalid JOB cell",                                    ["raw_job"]),
+    ("Multiple build qualifiers in JOB cell",               ["raw_job"]),
+    ("JOB cell appears to contain multiple part numbers",   ["raw_job"]),  # R3
+    ("SO# is not allowed in JOB cell",                      ["raw_job"]),  # R4
+    ("Invalid QTY",                                         ["raw_qty"]),
+    ("raw_customer is empty",                               ["raw_customer"]),
+    ("split_suffix overflow",                               ["raw_job"]),
+    ("repeat_reference overflow",                           ["raw_job"]),
+    ("Unparseable SHIPPED date",                            ["raw_shipped"]),
+    ("Conflict: Attempting to update a shipped job",        ["raw_job"]),
+    ("Intra-file duplicate JOB identity",                   ["raw_job"]),
 ]
 
 

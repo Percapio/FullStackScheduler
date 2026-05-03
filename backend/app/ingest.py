@@ -13,10 +13,10 @@ from sqlalchemy.orm import Session
 
 from . import reader
 from .db import SessionLocal
-from .extractors import decompose_job_string
+from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
 from .models import ImportBatch, ImportStagingRow, ImportStatus
 from .services.staging import _rollback_with_error_capture
-from .transform import transform_staging_row
+from .transform import transform_staging_row, _mark_decompose_error
 
 
 class DuplicateBatchError(Exception):
@@ -157,15 +157,11 @@ def ingest_workbook(
             # Stage 4 — intra-file collision scan
             by_identity: dict[tuple, list[ImportStagingRow]] = {}
             for row in pending:
-                decomp = decompose_job_string(row.raw_job) if row.raw_job else None
-                if decomp is None:
-                    row.processing_status = ImportStatus.error
-                    row.processing_error = f"Invalid JOB cell: {row.raw_job!r}"
-                    row.suggested_correction = (
-                        "JOB cell must contain a part number and a build type \u2014 "
-                        "e.g., '128764 NEW' or '128764\\nRONC 123456'."
-                    )
+                decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
+                if decomp_result is None or isinstance(decomp_result, DecomposeError):
+                    _mark_decompose_error(row, decomp_result)
                     continue
+                decomp = decomp_result
                 key = (decomp.part_number, decomp.build_type, decomp.split_suffix, decomp.repeat_reference, decomp.build_qualifier)
                 by_identity.setdefault(key, []).append(row)
 

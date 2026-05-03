@@ -59,6 +59,66 @@ def _mark_error(
     row.suggested_correction = suggestion
 
 
+def _build_r1_suggestion(err: DecomposeError | None) -> str:
+    """Return the R1 suggestion text, appending recovered classification codes
+    when the parser detected any in the failing cell.
+
+    Pre:  err is None or a DecomposeError with code == 'R1_no_classifier'.
+    Post: base suggestion always returned; recovered codes appended when present.
+    Raises: never.
+    """
+    base = (
+        "JOB cell must contain a part number and a build type — "
+        "e.g., '128764 NEW' or '128764\\nRONC 123456'."
+    )
+    if err and err.recovered_classifications:
+        codes = ", ".join(err.recovered_classifications)
+        return base + f" Detected classification codes ({codes}) will be preserved on retry."
+    return base
+
+
+def _mark_decompose_error(row: ImportStagingRow, err: DecomposeError | None) -> None:
+    """Mark row as errored with a code-specific message and suggestion.
+
+    Pre:  err is None (raw_job was empty/None) or a DecomposeError.
+    Post: row.processing_status, row.processing_error, and
+          row.suggested_correction are all set.  No other mutations.
+    Raises: never.
+    """
+    if err is None or err.code == "R1_no_classifier":
+        _mark_error(
+            row,
+            f"Invalid JOB cell: {row.raw_job!r}",
+            suggestion=_build_r1_suggestion(err),
+        )
+    elif err.code == "R2_multiple_qualifiers":
+        _mark_error(
+            row,
+            f"Multiple build qualifiers in JOB cell: {row.raw_job!r}",
+            suggestion="JOB cell may contain at most one of RWK, REWORK, or RMA. Remove the redundant token.",
+        )
+    elif err.code == "R3_multi_part_cell":
+        _mark_error(
+            row,
+            f"JOB cell appears to contain multiple part numbers: {row.raw_job!r}",
+            suggestion=(
+                "This JOB cell looks like several part numbers stacked together. "
+                "Each job needs its own row with its own QTY, customer, and ship date. "
+                "Split the cell into separate rows, then re-ingest."
+            ),
+        )
+    elif err.code == "R4_so_number_in_job":
+        _mark_error(
+            row,
+            f"SO# is not allowed in JOB cell: {row.raw_job!r}",
+            suggestion=(
+                "SO# (Sales Order Number) belongs in MFG NOTES, not the JOB cell. "
+                "Move the SO# value to MFG NOTES and use a part-number-style "
+                "reference in the JOB cell (e.g. 'RONC 332-0034 revB')."
+            ),
+        )
+
+
 def _upsert_customer(session: Session, name: str) -> Customer:
     customer = session.execute(
         select(Customer).where(Customer.name == name)
@@ -236,21 +296,7 @@ def _apply_shipped(row: ImportStagingRow, job: Job) -> bool:
 def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformOutcome:
     decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
     if decomp_result is None or isinstance(decomp_result, DecomposeError):
-        if isinstance(decomp_result, DecomposeError) and decomp_result.code == "R2_multiple_qualifiers":
-            _mark_error(
-                row,
-                f"Multiple build qualifiers in JOB cell: {row.raw_job!r}",
-                suggestion="JOB cell may contain at most one of RWK, REWORK, or RMA. Remove the redundant token.",
-            )
-        else:
-            _mark_error(
-                row,
-                f"Invalid JOB cell: {row.raw_job!r}",
-                suggestion=(
-                    "JOB cell must contain a part number and a build type — "
-                    "e.g., '128764 NEW' or '128764\\nRONC 123456'."
-                ),
-            )
+        _mark_decompose_error(row, decomp_result)
         return TransformOutcome(None, "errored")
     decomp: JobDecomposition = decomp_result
 

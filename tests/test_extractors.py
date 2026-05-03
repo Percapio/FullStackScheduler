@@ -10,6 +10,7 @@ from backend.app.extractors import (
     extract_clear_date_from_notes,
     extract_ship_fields,
     extract_shipped_date,
+    parse_part_line,
 )
 from backend.app.models import BuildQualifier, BuildType
 
@@ -64,14 +65,19 @@ def test_decompose_job_unknown_build_type_returns_none():
 
 @pytest.mark.parametrize("raw,expected_part,expected_suffix", [
     ("137845\nNEW", "137845", None),
-    ("137845-1\nNEW", "137845", "-1"),
+    # Non-canonical suffixes (no lexicon token) stay in part_number:
+    ("137845-1\nNEW", "137845-1", None),
+    # Canonical lexicon suffixes are split out:
     ("137845-1par\nNEW", "137845", "-1par"),
     ("137845-3bal\nNEW", "137845", "-3bal"),
-    ("137845-A\nNEW", "137845", "-a"),
-    ("137845.1\nNEW", "137845", ".1"),
-    ("137845 -1\nNEW", "137845", "-1"),
+    # Non-canonical single-letter / dotted variants stay in part_number:
+    ("137845-A\nNEW", "137845-A", None),
+    ("137845.1\nNEW", "137845.1", None),
+    ("137845 -1\nNEW", "137845 -1", None),
+    # Canonical suffix after a compound part number:
     ("ABC-123-1par\nNEW", "ABC-123", "-1par"),
-    ("ABC-123.A\nNEW", "ABC-123", ".a"),
+    # Non-canonical dotted version stays verbatim:
+    ("ABC-123.A\nNEW", "ABC-123.A", None),
 ])
 def test_decompose_parses_split_suffix(raw, expected_part, expected_suffix):
     result = decompose_job_string(raw)
@@ -145,8 +151,10 @@ def test_decompose_single_intermediate_folds_into_split_suffix():
     raw = "131635-2nd\n4BAL\nROWC 1st Article"
     result = decompose_job_string(raw)
     assert result is not None
-    assert result.part_number == "131635"
-    assert result.split_suffix == "-2nd 4bal"
+    # "-2nd" has no canonical lexicon token, so stays in part_number verbatim.
+    assert result.part_number == "131635-2nd"
+    # The intermediate "4BAL" folds into split_suffix (no line-0 suffix to prepend).
+    assert result.split_suffix == "4bal"
     assert result.build_type == BuildType.rowc
     assert result.repeat_reference == "1st article"
     assert result.classification_codes == ()
@@ -330,3 +338,139 @@ def test_decompose_whitespace_delimited_qualifier_cell(raw, expected_part, expec
     assert result.build_type == BuildType.new
     assert result.build_qualifier == expected_q
     assert result.repeat_reference == expected_ref
+
+
+# ---- Stage 1: parse_part_line canonical lexicon ------------------------------
+
+@pytest.mark.parametrize("line,expected_part,expected_suffix", [
+    ("332-0034-1par",    "332-0034",         "-1par"),
+    ("FOO-12bal",        "FOO",              "-12bal"),
+    ("BAR-3ser",         "BAR",              "-3ser"),
+    ("332-0034 RevD-2bal", "332-0034 RevD",  "-2bal"),
+    ("FMC-SSB1-1.A.1",  "FMC-SSB1-1.A.1",  None),
+    ("332-0034 Rev E",  "332-0034 Rev E",   None),
+    ("332-0034",        "332-0034",         None),
+    ("332-0034 RevD",   "332-0034 RevD",    None),
+])
+def test_part_line_canonical_lexicon(line, expected_part, expected_suffix):
+    part, suffix = parse_part_line(line)
+    assert part == expected_part
+    assert suffix == expected_suffix
+
+
+def test_part_line_canonical_suffix_par():
+    assert parse_part_line("332-0034-1par") == ("332-0034", "-1par")
+
+
+def test_part_line_canonical_suffix_bal():
+    assert parse_part_line("FOO-12bal") == ("FOO", "-12bal")
+
+
+def test_part_line_canonical_suffix_ser():
+    assert parse_part_line("BAR-3ser") == ("BAR", "-3ser")
+
+
+def test_part_line_no_suffix_when_unknown_token():
+    """Non-lexicon suffix token stays in part_number verbatim."""
+    assert parse_part_line("332-0034 RevD") == ("332-0034 RevD", None)
+
+
+def test_part_line_dotted_version_preserved():
+    """Dotted version strings are not split — the leading '-' is mandatory."""
+    assert parse_part_line("FMC-SSB1-1.A.1") == ("FMC-SSB1-1.A.1", None)
+
+
+# ---- Stage 2: R4_so_number_in_job -------------------------------------------
+
+def test_r4_so_number_anywhere_errors():
+    result = decompose_job_string_with_diagnostic(
+        "332-0034 revC SO#014931 RONC SO#014814"
+    )
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R4_so_number_in_job"
+    assert "SO#" in result.message
+
+
+def test_r4_so_number_inline_with_ronc_errors():
+    result = decompose_job_string_with_diagnostic("332-0034\nRONC SO#015063")
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R4_so_number_in_job"
+
+
+def test_r4_case_insensitive():
+    result = decompose_job_string_with_diagnostic("foo\nso#bar")
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R4_so_number_in_job"
+
+
+def test_r4_returns_none_via_wrapper():
+    assert decompose_job_string("137845\nRONC SO#015063") is None
+
+
+def test_canonical_repeat_ref_without_so_number_succeeds():
+    """Part-number-style repeat references (no SO#) still parse cleanly."""
+    result = decompose_job_string("332-0034 revC\nRONC 332-0034 revB")
+    assert result is not None
+    assert result.build_type == BuildType.ronc
+    assert result.repeat_reference == "332-0034 revb"
+
+
+# ---- Stage 3: R3_multi_part_cell --------------------------------------------
+
+def test_r3_multi_part_eight_numerics():
+    raw = "15635\n15636\n15637\n15638\n15639\n15640\n15641\n15642"
+    result = decompose_job_string_with_diagnostic(raw)
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R3_multi_part_cell"
+    assert "multiple part numbers" in result.message
+
+
+def test_r3_does_not_fire_with_build_type_line():
+    """A cell with a valid build-type line is not R3."""
+    result = decompose_job_string("15635\nNEW")
+    assert result is not None
+    assert result.build_type == BuildType.new
+
+
+def test_r3_does_not_fire_with_classifications():
+    """Parens disqualify R3; the cell falls through to R1 with recovered codes."""
+    result = decompose_job_string_with_diagnostic("FOO\n(CUI/ITAR)")
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R1_no_classifier"
+    assert result.recovered_classifications == ("CUI", "ITAR")
+
+
+def test_r3_alphabetic_part_number_shaped_lines():
+    result = decompose_job_string_with_diagnostic("FOO\nBAR")
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R3_multi_part_cell"
+
+
+# ---- Stage 4: R1 recovered_classifications ----------------------------------
+
+def test_r1_recovers_classifications_for_suggestion():
+    raw = 'OCTO-QUAD-H1_REV.2.B.4 "ACE PCB"-1\n (CUI/ITAR)'
+    result = decompose_job_string_with_diagnostic(raw)
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R1_no_classifier"
+    assert result.recovered_classifications == ("CUI", "ITAR")
+
+
+def test_r1_recovers_single_classification():
+    result = decompose_job_string_with_diagnostic("FOO\n(NCNR)")
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R1_no_classifier"
+    assert result.recovered_classifications == ("NCNR",)
+
+
+def test_r1_recovered_classifications_empty_when_none_present():
+    result = decompose_job_string_with_diagnostic("137845")
+    assert isinstance(result, DecomposeError)
+    assert result.code == "R1_no_classifier"
+    assert result.recovered_classifications == ()
+
+
+def test_successful_decomp_does_not_have_recovered_classifications():
+    """Successful path returns JobDecomposition, not DecomposeError."""
+    result = decompose_job_string("137845\nNEW")
+    assert isinstance(result, JobDecomposition)
