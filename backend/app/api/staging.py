@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..models import ImportStatus
 from ..schemas import (
+    ConflictGroup,
     ImportStagingRowRead,
     JobReadExpanded,
     StagingRowCorrectionRequest,
@@ -19,6 +20,11 @@ router = APIRouter()
 # NOTE: literal-path routes (`/errored`, `/discarded`, and Phase 3's `/conflicts`)
 # MUST be declared above the catch-all `GET /{row_id}` so FastAPI does not match
 # them as `int(row_id)` and raise 422.
+
+
+@router.get("/conflicts", response_model=list[ConflictGroup])
+def list_conflicts(session: Session = Depends(get_session)):
+    return staging_service.list_conflicts(session)
 
 
 @router.get("/errored", response_model=list[ImportStagingRowRead])

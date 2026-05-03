@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer
@@ -222,6 +223,7 @@ class ImportStagingRowRead(_ORMModel):
     resolved_job_id: int | None
     processed_at: datetime | None
     discarded_at: datetime | None = None
+    duplicate_group_key: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -259,3 +261,18 @@ class StagingRowDetailRead(ImportStagingRowRead, _StagingRawFields):
 
 class StagingRowCorrectionRequest(_StagingRawFields):
     model_config = ConfigDict(extra="forbid")
+
+
+# ---- conflict group ----------------------------------------------------------
+
+
+class ConflictKind(str, Enum):
+    intra_file_duplicate = "intra_file_duplicate"
+
+
+class ConflictGroup(BaseModel):
+    batch_id: int
+    group_key: str
+    kind: ConflictKind
+    rows: list[StagingRowDetailRead]
+    # NB: rows is invariant len >= 2 by construction (see list_conflicts builder)

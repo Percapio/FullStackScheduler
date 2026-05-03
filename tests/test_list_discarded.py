@@ -64,6 +64,8 @@ class TestListDiscarded:
             r = _errored_row(session, open_batch, source_row_number=i + 1)
             _discard(r, session, base + timedelta(seconds=i))
             rows.append(r)
+        # Commit so each API call's session rollback doesn't wipe setup data.
+        session.commit()
 
         page0 = client.get("/api/staging/discarded?limit=2&offset=0")
         assert page0.status_code == status.HTTP_200_OK

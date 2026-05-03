@@ -8,6 +8,7 @@ export type StagingRowSummary  = components['schemas']['ImportStagingRowRead']
 export type StagingRowDetail   = components['schemas']['StagingRowDetailRead']
 export type CorrectionPayload  = components['schemas']['StagingRowCorrectionRequest']
 export type JobReadExpanded    = components['schemas']['JobReadExpanded']
+export type ConflictGroup      = components['schemas']['ConflictGroup']
 
 export async function fetchErrored(
   limit = 100, offset = 0,
@@ -57,5 +58,10 @@ export async function postRestoreStagingRow(
   const resp = await apiClient.post<StagingRowSummary>(
     `/api/staging/${rowId}/restore`,
   )
+  return resp.data
+}
+
+export async function fetchConflicts(): Promise<ConflictGroup[]> {
+  const resp = await apiClient.get<ConflictGroup[]>('/api/staging/conflicts')
   return resp.data
 }

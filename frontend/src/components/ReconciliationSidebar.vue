@@ -7,9 +7,10 @@ import { useToast } from '@/composables/useToast'
 import SlideOverPanel from './SlideOverPanel.vue'
 import RawFieldGrid from './RawFieldGrid.vue'
 import WarnIcon from './WarnIcon.vue'
+import ConflictRowComparison from './ConflictRowComparison.vue'
 
 const store = useStagingStore()
-const { activeErrorRowId, details, rows } = storeToRefs(store)
+const { activeErrorRowId, details, rows, sidebarMode, conflictGroups } = storeToRefs(store)
 const { show: showToast } = useToast()
 
 const detail = computed(() =>
@@ -19,6 +20,16 @@ const { draft, changedPayload, hasChanges, setField, originalFor } = useCorrecti
 
 const submitting = ref(false)
 const discarding = ref(false)
+
+const currentGroup = computed(() => {
+  if (sidebarMode.value.kind !== 'group') return undefined
+  const { batchId, groupKey } = sidebarMode.value
+  return conflictGroups.value.find(g => g.batch_id === batchId && g.group_key === groupKey)
+})
+
+const panelOpen = computed(() =>
+  sidebarMode.value.kind === 'group' || activeErrorRowId.value !== null,
+)
 
 watch([activeErrorRowId, rows], ([id, list]) => {
   if (id != null && !list.some(r => r.id === id)) store.closeError()
@@ -72,12 +83,19 @@ async function onSubmit() {
 
 <template>
   <SlideOverPanel
-    :open="activeErrorRowId !== null"
+    :open="panelOpen"
     width="xl"
-    :ariaLabel="detail ? `Reconcile row ${detail.source_row_number}` : 'Reconciliation editor'"
+    :ariaLabel="sidebarMode.kind === 'group' ? 'Conflict group comparison' : (detail ? `Reconcile row ${detail.source_row_number}` : 'Reconciliation editor')"
     @close="store.closeError()"
   >
-    <template #header>
+    <!-- Conflict-group mode -->
+    <template v-if="sidebarMode.kind === 'group'">
+      <ConflictRowComparison :group="currentGroup" />
+    </template>
+
+    <!-- Single-row mode (existing UI, unchanged) -->
+    <template v-else>
+      <template #header>
       <div class="flex items-center justify-between w-full">
         <h2 class="text-base font-semibold text-slate-800 dark:text-slate-100">
           Row {{ detail?.source_row_number }} · Batch {{ detail?.batch_id }}
@@ -151,5 +169,6 @@ async function onSubmit() {
         </div>
       </form>
     </div>
+    </template><!-- end single-row mode -->
   </SlideOverPanel>
 </template>

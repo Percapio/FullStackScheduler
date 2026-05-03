@@ -353,6 +353,8 @@ export interface components {
             processed_at: string | null;
             /** Discarded At */
             discarded_at?: string | null;
+            /** Duplicate Group Key */
+            duplicate_group_key?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -363,6 +365,21 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * ConflictKind
+         * @enum {string}
+         */
+        ConflictKind: "intra_file_duplicate";
+        /** ConflictGroup */
+        ConflictGroup: {
+            /** Batch Id */
+            batch_id: number;
+            /** Group Key */
+            group_key: string;
+            kind: components["schemas"]["ConflictKind"];
+            /** Rows (StagingRowDetailRead, len >= 2) */
+            rows: components["schemas"]["StagingRowDetailRead"][];
         };
         /**
          * ImportStatus

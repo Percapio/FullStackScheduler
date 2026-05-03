@@ -172,11 +172,13 @@ def ingest_workbook(
                 if len(rows) < 2:
                     continue
                 other_ids = sorted(r.id for r in rows)
+                canonical_key: str = f"{identity[0]}|{identity[1].value}|{identity[2] or ''}|{identity[3] or ''}"
                 for row in rows:
+                    row.duplicate_group_key = canonical_key
                     row.processing_status = ImportStatus.error
                     row.processing_error = (
                         f"Intra-file duplicate JOB identity "
-                        f"{identity[0]}|{identity[1].value}|{identity[2] or ''}|{identity[3] or ''} "
+                        f"{canonical_key} "
                         f"(staging rows {other_ids})"
                     )
                     row.suggested_correction = (

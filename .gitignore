@@ -7,12 +7,12 @@ __pycache__
 
 Architecture
 
-backend/__pycache__
-backend/alembic/__pycache__
-backend/app/__pycache__
-backend/app/api/__pycache__
-backend/app/services/__pycache__
-backend/data
+*/__pycache__
+*.db
+*.xlsx
+*.log
+*.csv
+
 backend/outputs/db
 
 build

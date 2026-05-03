@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useStagingStore } from '@/stores/staging'
 import ReconciliationSidebar from '@/components/ReconciliationSidebar.vue'
 import DiscardedRowsDrawer from '@/components/DiscardedRowsDrawer.vue'
+import ConflictGroupList from '@/components/ConflictGroupList.vue'
 import WarnIcon from '@/components/WarnIcon.vue'
 
 const store = useStagingStore()
@@ -12,6 +13,7 @@ const { rows, total, loading, discardedTotal } = storeToRefs(store)
 onMounted(() => {
   store.loadErrored()
   store.loadDiscarded()
+  store.loadConflicts()
 })
 
 function truncate(s: string | null, n = 80) {
@@ -39,6 +41,9 @@ function truncate(s: string | null, n = 80) {
         <span v-if="discardedTotal > 0" class="ml-1 tabular-nums">({{ discardedTotal }})</span>
       </button>
     </header>
+
+    <!-- Conflict group cards — rendered above the errored table (§3.5.5) -->
+    <ConflictGroupList />
 
     <div v-if="!loading && rows.length === 0"
          class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center text-slate-500 dark:text-slate-400">

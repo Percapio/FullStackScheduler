@@ -3,7 +3,9 @@ import { ref, computed } from 'vue'
 import {
   fetchErrored, fetchDetail, submitCorrection,
   fetchDiscarded, deleteStagingRow, postRestoreStagingRow,
+  fetchConflicts,
   type StagingRowSummary, type StagingRowDetail, type CorrectionPayload,
+  type ConflictGroup,
 } from '@/api/staging'
 import { isApiError } from '@/api/client'
 
@@ -25,6 +27,13 @@ type RestoreOutcome =
   | { kind: 'conflict'; message: string }
   | { kind: 'network'; message: string }
 
+/** Discriminated union for the sidebar's two render modes.
+ *  A tagged union forces every render path to pattern-match; two independent
+ *  booleans produce "panel open with no contents" bugs on state-drift. */
+type ConflictMode =
+  | { kind: 'single' }
+  | { kind: 'group'; batchId: number; groupKey: string }
+
 export const useStagingStore = defineStore('staging', () => {
   const rows             = ref<StagingRowSummary[]>([])
   const total            = ref(0)
@@ -36,6 +45,15 @@ export const useStagingStore = defineStore('staging', () => {
   const discardedTotal      = ref(0)
   const discardedLoading    = ref(false)
   const discardedDrawerOpen = ref(false)
+
+  // Conflict-group state (§3.5.1)
+  const conflictGroups        = ref<ConflictGroup[]>([])
+  const conflictsLoading      = ref(false)
+  const sidebarMode           = ref<ConflictMode>({ kind: 'single' })
+  // Reconciled (server-truth) snapshot — read by the disabled-state rule (§3.5.4)
+  const reconciledConflictGroups = ref<ConflictGroup[]>([])
+  // Per-group busy flag: key = `${batchId}:${groupKey}`
+  const groupBusy             = ref<Map<string, boolean>>(new Map())
 
   const visibleRows = computed(() => rows.value)
 
@@ -55,11 +73,30 @@ export const useStagingStore = defineStore('staging', () => {
   }
 
   async function openError(rowId: number) {
+    sidebarMode.value = { kind: 'single' }
     activeErrorRowId.value = rowId
     if (!details.value[rowId]) await loadDetail(rowId)
   }
 
   function closeError() {
+    activeErrorRowId.value = null
+    sidebarMode.value = { kind: 'single' }
+  }
+
+  async function loadConflicts(): Promise<void> {
+    conflictsLoading.value = true
+    try {
+      const groups = await fetchConflicts()
+      conflictGroups.value = groups
+      reconciledConflictGroups.value = groups
+    } finally {
+      conflictsLoading.value = false
+    }
+  }
+
+  async function openConflictGroup(batchId: number, groupKey: string): Promise<void> {
+    if (!conflictGroups.value.length) await loadConflicts()
+    sidebarMode.value = { kind: 'group', batchId, groupKey }
     activeErrorRowId.value = null
   }
 
@@ -175,7 +212,9 @@ export const useStagingStore = defineStore('staging', () => {
     rows, visibleRows, total, loading, details,
     activeErrorRowId,
     discardedRows, discardedTotal, discardedLoading, discardedDrawerOpen,
+    conflictGroups, reconciledConflictGroups, conflictsLoading, sidebarMode, groupBusy,
     loadErrored, openError, closeError, loadDetail, correct,
+    loadConflicts, openConflictGroup,
     loadDiscarded, openDiscardedDrawer, closeDiscardedDrawer,
     discardRow, restoreRow,
   }

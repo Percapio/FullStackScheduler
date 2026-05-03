@@ -207,6 +207,7 @@ class ImportStagingRow(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_import_staging_batch_id", "batch_id"),
         Index("ix_import_staging_discarded_at", "discarded_at"),
+        Index("ix_import_staging_dup_group", "batch_id", "duplicate_group_key"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -249,5 +250,6 @@ class ImportStagingRow(Base, TimestampMixin):
         ForeignKey("jobs.id", ondelete="SET NULL")
     )
     discarded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duplicate_group_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     batch: Mapped[ImportBatch] = relationship(back_populates="rows")

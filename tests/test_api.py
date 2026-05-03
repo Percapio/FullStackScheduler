@@ -164,6 +164,122 @@ class TestStagingCorrection:
         assert updated.suggested_correction is None
 
 
+class TestStagingConflicts:
+    """Tests for GET /api/staging/conflicts (§3.4 of Phase 3 TDD)."""
+
+    def _make_dup_row(self, session, batch, source_row_number: int, group_key: str = "128764|new||"):
+        from backend.app.models import ImportStagingRow, ImportStatus
+        row = ImportStagingRow(
+            batch_id=batch.id,
+            source_row_number=source_row_number,
+            raw_job="128764 NEW",
+            processing_status=ImportStatus.error,
+            processing_error=f"Intra-file duplicate JOB identity {group_key} (staging rows [1, 2])",
+            duplicate_group_key=group_key,
+        )
+        session.add(row)
+        session.flush()
+        return row
+
+    def test_conflicts_returns_empty_when_none(self, client, session, open_batch):
+        resp = client.get("/api/staging/conflicts")
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json() == []
+
+    def test_conflicts_returns_two_member_group(self, client, session, open_batch):
+        row_a = self._make_dup_row(session, open_batch, 1)
+        row_b = self._make_dup_row(session, open_batch, 2)
+        session.commit()
+
+        resp = client.get("/api/staging/conflicts")
+        assert resp.status_code == status.HTTP_200_OK
+        body = resp.json()
+        assert len(body) == 1
+        group = body[0]
+        assert group["batch_id"] == open_batch.id
+        assert group["group_key"] == "128764|new||"
+        assert group["kind"] == "intra_file_duplicate"
+        assert len(group["rows"]) == 2
+        row_ids = {r["id"] for r in group["rows"]}
+        assert row_a.id in row_ids
+        assert row_b.id in row_ids
+
+    def test_conflicts_rows_include_raw_fields(self, client, session, open_batch):
+        """ConflictGroup rows must be StagingRowDetailRead (21 raw_* fields included)."""
+        self._make_dup_row(session, open_batch, 1)
+        self._make_dup_row(session, open_batch, 2)
+        session.commit()
+
+        resp = client.get("/api/staging/conflicts")
+        body = resp.json()
+        assert len(body) == 1
+        first_row = body[0]["rows"][0]
+        assert "raw_job" in first_row
+        assert "highlight_fields" in first_row
+
+    def test_conflicts_singleton_is_excluded(self, client, session, open_batch):
+        """A singleton group (invariant violation) is excluded from the response."""
+        from backend.app.models import ImportStagingRow, ImportStatus
+        row = ImportStagingRow(
+            batch_id=open_batch.id,
+            source_row_number=1,
+            processing_status=ImportStatus.error,
+            processing_error="Intra-file duplicate JOB identity 128764|new|| (staging rows [1])",
+            duplicate_group_key="128764|new||",
+        )
+        session.add(row)
+        session.commit()
+
+        resp = client.get("/api/staging/conflicts")
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json() == []
+
+    def test_errored_excludes_conflict_group_rows(self, client, session, open_batch):
+        """GET /api/staging/errored must not return rows with non-null duplicate_group_key."""
+        from backend.app.models import ImportStagingRow, ImportStatus
+        plain_row = ImportStagingRow(
+            batch_id=open_batch.id,
+            source_row_number=10,
+            processing_status=ImportStatus.error,
+            processing_error="plain error",
+        )
+        session.add(plain_row)
+        dup_a = self._make_dup_row(session, open_batch, 1)
+        dup_b = self._make_dup_row(session, open_batch, 2)
+        session.commit()
+
+        resp = client.get("/api/staging/errored")
+        assert resp.status_code == status.HTTP_200_OK
+        body = resp.json()
+        ids = {r["id"] for r in body}
+        assert plain_row.id in ids
+        assert dup_a.id not in ids
+        assert dup_b.id not in ids
+        assert int(resp.headers["x-total-count"]) == 1
+
+    def test_conflicts_scoped_per_batch(self, client, session):
+        """Groups from different batches appear as separate ConflictGroup entries."""
+        from backend.app.models import ImportBatch
+        batch1 = ImportBatch(source_file="a.xlsx")
+        batch2 = ImportBatch(source_file="b.xlsx")
+        session.add_all([batch1, batch2])
+        session.flush()
+
+        self._make_dup_row(session, batch1, 1)
+        self._make_dup_row(session, batch1, 2)
+        self._make_dup_row(session, batch2, 1)
+        self._make_dup_row(session, batch2, 2)
+        session.commit()
+
+        resp = client.get("/api/staging/conflicts")
+        assert resp.status_code == status.HTTP_200_OK
+        body = resp.json()
+        assert len(body) == 2
+        batch_ids = {g["batch_id"] for g in body}
+        assert batch1.id in batch_ids
+        assert batch2.id in batch_ids
+
+
 # ---- /api/jobs ---------------------------------------------------------------
 
 
