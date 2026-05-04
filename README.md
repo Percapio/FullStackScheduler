@@ -92,13 +92,13 @@ the workbooks the project was built around look like:
 - `ADV ALL IN ONE SCHEDULE (2023) - HISTORY.xlsx`
 - `Schedule Shipped History 2024+.xlsx`
 
-### 3b. The workbook must contain a sheet named `SHIPPED (AA)`
+### 3b. The workbook must contain a sheet named `SCHD`
 
 The sheet name is hard-coded as the default in
 [backend/app/reader.py](backend/app/reader.py#L9). If your workbook uses a
 different name, either:
 
-- rename the worksheet in Excel to `SHIPPED (AA)`, **or**
+- rename the worksheet in Excel to `SCHD`, **or**
 - pass `--sheet "Your Sheet Name"` to the ingest command, **or**
 - change the `SHEET_NAME` constant in [backend/app/reader.py](backend/app/reader.py#L9).
 

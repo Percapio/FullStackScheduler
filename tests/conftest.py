@@ -92,6 +92,49 @@ def workbook_factory(tmp_path):
     return _create
 
 
+@pytest.fixture()
+def schd_workbook_factory(tmp_path):
+    """Factory that produces a SCHD-shape workbook for testing.
+
+    The returned callable accepts:
+        rows     — list of entry dicts, each with:
+                     "data":    dict[str, Any]  — values keyed by header name.
+                     "divider": bool (default False) — when True, the DIVIDER
+                                cell is set to "X" and data columns default to
+                                echoing the header name; keys in "data" override.
+        title    — row-1 title cell value (default "Production Schedule")
+        filename — output filename (default "schd.xlsx")
+    """
+    from openpyxl import Workbook
+
+    from backend.app.reader import KNOWN_HEADERS
+
+    headers = sorted(KNOWN_HEADERS) + ["DIVIDER"]
+
+    def _create(rows, *, title="Production Schedule", filename="schd.xlsx"):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "SCHD"
+        ws.append([title])   # row 1: title
+        ws.append(headers)   # row 2: column headers
+        for entry in rows:
+            row_data = entry["data"]
+            is_divider = entry.get("divider", False)
+            if is_divider:
+                # Default: echo header text in every data column; "data" overrides.
+                row_values = [row_data.get(h, h) for h in headers[:-1]]
+                row_values.append("X")
+            else:
+                row_values = [row_data.get(h) for h in headers[:-1]]
+                row_values.append(None)
+            ws.append(row_values)
+        path = tmp_path / filename
+        wb.save(path)
+        return path
+
+    return _create
+
+
 # ---- FastAPI test client ------------------------------------------------------
 
 

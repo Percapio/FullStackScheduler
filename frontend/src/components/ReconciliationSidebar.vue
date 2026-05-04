@@ -94,8 +94,7 @@ async function onSubmit() {
     </template>
 
     <!-- Single-row mode (existing UI, unchanged) -->
-    <template v-else>
-      <template #header>
+    <template v-if="sidebarMode.kind !== 'group'" #header>
       <div class="flex items-center justify-between w-full">
         <h2 class="text-base font-semibold text-slate-800 dark:text-slate-100">
           Row {{ detail?.source_row_number }} · Batch {{ detail?.batch_id }}
@@ -115,6 +114,7 @@ async function onSubmit() {
       </div>
     </template>
 
+    <template v-if="sidebarMode.kind !== 'group'">
     <div v-if="!detail" class="text-slate-500 dark:text-slate-400 text-sm">Loading detail…</div>
 
     <div v-else class="space-y-4">
@@ -169,6 +169,6 @@ async function onSubmit() {
         </div>
       </form>
     </div>
-    </template><!-- end single-row mode -->
+    </template>
   </SlideOverPanel>
 </template>

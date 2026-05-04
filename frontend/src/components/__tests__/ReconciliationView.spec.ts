@@ -3,11 +3,10 @@ import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ReconciliationView from '../../views/ReconciliationView.vue'
 import { useStagingStore } from '@/stores/staging'
-import type { StagingRowSummary } from '@/api/staging'
-
 const mockFetchErrored   = vi.fn()
 const mockFetchDetail    = vi.fn()
 const mockFetchDiscarded = vi.fn()
+const mockFetchConflicts = vi.fn()
 const mockDeleteStagingRow = vi.fn()
 const mockPostRestoreStagingRow = vi.fn()
 
@@ -15,6 +14,7 @@ vi.mock('@/api/staging', () => ({
   fetchErrored:           (...a: unknown[]) => mockFetchErrored(...a),
   fetchDetail:            (...a: unknown[]) => mockFetchDetail(...a),
   fetchDiscarded:         (...a: unknown[]) => mockFetchDiscarded(...a),
+  fetchConflicts:         (...a: unknown[]) => mockFetchConflicts(...a),
   deleteStagingRow:       (...a: unknown[]) => mockDeleteStagingRow(...a),
   postRestoreStagingRow:  (...a: unknown[]) => mockPostRestoreStagingRow(...a),
 }))
@@ -23,30 +23,13 @@ vi.mock('@/composables/useToast', () => ({
   useToast: () => ({ toasts: { value: [] }, show: vi.fn(), dismiss: vi.fn() }),
 }))
 
-const TS = '2026-05-01T12:00:00Z'
-
-function summaryFixture(id: number): StagingRowSummary {
-  return {
-    id,
-    batch_id: 1,
-    source_row_number: id,
-    processing_status: 'error',
-    processing_error: 'err',
-    suggested_correction: null,
-    resolved_job_id: null,
-    processed_at: null,
-    discarded_at: null,
-    created_at: TS,
-    updated_at: TS,
-  } as StagingRowSummary
-}
-
 let wrapper: VueWrapper | null = null
 
 function mountView() {
   setActivePinia(createPinia())
   mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
   mockFetchDiscarded.mockResolvedValue({ rows: [], total: 0 })
+  mockFetchConflicts.mockResolvedValue([])
   wrapper = mount(ReconciliationView, { attachTo: document.body })
   const store = useStagingStore()
   return { wrapper, store }
@@ -56,8 +39,10 @@ beforeEach(() => {
   mockFetchErrored.mockReset()
   mockFetchDetail.mockReset()
   mockFetchDiscarded.mockReset()
+  mockFetchConflicts.mockReset()
   mockDeleteStagingRow.mockReset()
   mockPostRestoreStagingRow.mockReset()
+  mockFetchConflicts.mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -116,15 +101,19 @@ describe('ReconciliationView', () => {
     expect(openSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('single-page invariant: loadErrored is only ever called with (100, 0)', async () => {
-    // loadDiscarded triggers loadErrored on restore; confirm the parameters.
+  it('single-page invariant: loadErrored passes (100, 0) to fetchErrored', async () => {
+    // Arrange: mount, drain mount-time async work, then isolate the assertion
+    // from the mount-time fetch by resetting the API mock.
     const { store } = mountView()
     await flushPromises()
+    mockFetchErrored.mockReset()
+    mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
 
-    const loadErroredSpy = vi.spyOn(store, 'loadErrored').mockResolvedValue(undefined)
+    // Act: real store.loadErrored runs end-to-end — no spy interposed.
     await store.loadErrored()
-    // Confirm the spy was invoked — our mock resolved without params being checked,
-    // but the store's actual loadErrored passes (100, 0) to fetchErrored.
+
+    // Assert: exactly one call with positional args (100, 0).
+    expect(mockFetchErrored).toHaveBeenCalledTimes(1)
     expect(mockFetchErrored).toHaveBeenCalledWith(100, 0)
   })
 })

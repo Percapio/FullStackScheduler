@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useStagingStore } from '@/stores/staging'
 
 /** Max conflict cards expanded before the "Show N more" collapse toggle. */
-export const MAX_EXPANDED_CONFLICT_CARDS = 3
+const MAX_EXPANDED_CONFLICT_CARDS = 3
 
 const store = useStagingStore()
 const { conflictGroups, conflictsLoading } = storeToRefs(store)
