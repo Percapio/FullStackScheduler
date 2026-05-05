@@ -57,6 +57,14 @@ async function onDiscard() {
   }
 }
 
+/** §4.5 — called when ConflictRowComparison emits 'resolved'.
+ *  store.closeError() already encodes "panel goes away" semantics:
+ *  it clears activeErrorRowId AND resets sidebarMode to { kind: 'single' },
+ *  which causes the SlideOverPanel's `open` predicate to evaluate false. */
+function onGroupResolved(): void {
+  store.closeError()
+}
+
 async function onSubmit() {
   if (!hasChanges.value || submitting.value) return
   if (activeErrorRowId.value == null) return
@@ -90,7 +98,7 @@ async function onSubmit() {
   >
     <!-- Conflict-group mode -->
     <template v-if="sidebarMode.kind === 'group'">
-      <ConflictRowComparison :group="currentGroup" />
+      <ConflictRowComparison :group="currentGroup" @resolved="onGroupResolved" />
     </template>
 
     <!-- Single-row mode (existing UI, unchanged) -->

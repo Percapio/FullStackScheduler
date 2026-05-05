@@ -9,13 +9,13 @@ import {
 } from '@/api/staging'
 import { isApiError } from '@/api/client'
 
-type SubmitOutcome =
+export type SubmitOutcome =
   | { kind: 'ok' }
   | { kind: 'transform-failed'; processingError: string }
   | { kind: 'conflict'; message: string }
   | { kind: 'network'; message: string }
 
-type DiscardOutcome =
+export type DiscardOutcome =
   | { kind: 'ok' }
   | { kind: 'stale' }
   | { kind: 'conflict'; message: string }
@@ -182,6 +182,65 @@ export const useStagingStore = defineStore('staging', () => {
     }
   }
 
+  /**
+   * Submit a correction for a row that belongs to a conflict group.
+   * Unlike `correct`, this method does NOT splice `rows[]` or `conflictGroups[]`;
+   * the caller is responsible for invoking `loadConflicts()` after the batch.
+   */
+  async function correctConflictRow(
+    rowId: number,
+    payload: Partial<CorrectionPayload>,
+    _batchId: number,
+    _groupKey: string,
+  ): Promise<SubmitOutcome> {
+    try {
+      await submitCorrection(rowId, payload)
+      return { kind: 'ok' }
+    } catch (err) {
+      if (isApiError(err) && err.response) {
+        const status = err.response.status
+        const detail = err.response.data?.detail
+        if (status === 422 && typeof detail === 'string') {
+          return { kind: 'transform-failed', processingError: detail }
+        }
+        if (status === 409) {
+          return { kind: 'conflict', message: String(detail ?? 'Row no longer in error state') }
+        }
+      }
+      return { kind: 'network', message: 'Could not reach the API' }
+    }
+  }
+
+  /**
+   * Discard a row that belongs to a conflict group.
+   * Unlike `discardRow`, this method does NOT splice `rows[]` or `conflictGroups[]`;
+   * the caller is responsible for invoking `loadConflicts()` after the batch.
+   * Increments `discardedTotal` on success to keep the global tally accurate.
+   */
+  async function discardConflictRow(
+    rowId: number,
+    _batchId: number,
+    _groupKey: string,
+  ): Promise<DiscardOutcome> {
+    try {
+      await deleteStagingRow(rowId)
+      discardedTotal.value += 1
+      return { kind: 'ok' }
+    } catch (err) {
+      if (isApiError(err) && err.response) {
+        const status = err.response.status
+        const detail = err.response.data?.detail
+        if (status === 409) {
+          return { kind: 'conflict', message: String(detail ?? 'Row cannot be discarded') }
+        }
+        if (status === 404) {
+          return { kind: 'stale' }
+        }
+      }
+      return { kind: 'network', message: 'Could not reach the API' }
+    }
+  }
+
   async function restoreRow(rowId: number): Promise<RestoreOutcome> {
     const idx = discardedRows.value.findIndex(r => r.id === rowId)
     if (idx < 0) return { kind: 'stale' }
@@ -218,5 +277,6 @@ export const useStagingStore = defineStore('staging', () => {
     loadConflicts, openConflictGroup,
     loadDiscarded, openDiscardedDrawer, closeDiscardedDrawer,
     discardRow, restoreRow,
+    correctConflictRow, discardConflictRow,
   }
 })
