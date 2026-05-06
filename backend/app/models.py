@@ -17,8 +17,8 @@ from sqlalchemy import (
     String,
     Table,
     Text,
-    UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -67,6 +67,23 @@ class ImportStatus(str, enum.Enum):
     pending = "pending"
     processed = "processed"
     error = "error"
+
+
+class SheetKind(str, enum.Enum):
+    live = "live"           # SCHD workbook
+    historical = "historical"  # SHIPPED (AA) workbook
+
+
+class CandidateReason(str, enum.Enum):
+    orphan_after_split = "orphan_after_split"
+    orphan_after_recombine = "orphan_after_recombine"
+    orphan_other = "orphan_other"
+
+
+class CandidateResolution(str, enum.Enum):
+    approve = "approve"
+    reject = "reject"
+    auto_returned = "auto_returned"
 
 
 assembly_classifications = Table(
@@ -133,9 +150,14 @@ class Assembly(Base, TimestampMixin):
 class Job(Base, TimestampMixin):
     __tablename__ = "jobs"
     __table_args__ = (
-        UniqueConstraint(
-            "assembly_id", "build_type", "split_suffix", "repeat_reference", "build_qualifier",
-            name="uq_job_identity",
+        # Partial unique index: superseded jobs free their identity slot
+        # so a future ingest of the same identity can land as a new active Job.
+        Index(
+            "ix_job_identity_active",
+            "assembly_id", "build_type", "split_suffix",
+            "repeat_reference", "build_qualifier",
+            unique=True,
+            sqlite_where=text("superseded_at IS NULL"),
         ),
     )
 
@@ -192,6 +214,11 @@ class Job(Base, TimestampMixin):
     line_2: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     line_3: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    superseded_by_batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="RESTRICT"), nullable=True
+    )
+
     assembly: Mapped[Assembly] = relationship(back_populates="jobs")
     customer: Mapped[Customer] = relationship(back_populates="jobs")
     salesperson: Mapped[Salesperson | None] = relationship(back_populates="jobs")
@@ -208,6 +235,11 @@ class ImportBatch(Base, TimestampMixin):
         Enum(ImportStatus, name="import_batch_status"),
         default=ImportStatus.pending,
         nullable=False,
+    )
+    sheet_kind: Mapped[SheetKind] = mapped_column(
+        Enum(SheetKind, name="sheet_kind"),
+        nullable=False,
+        server_default="live",
     )
     notes: Mapped[str | None] = mapped_column(Text)
 
@@ -270,3 +302,51 @@ class ImportStagingRow(Base, TimestampMixin):
     duplicate_group_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     batch: Mapped[ImportBatch] = relationship(back_populates="rows")
+
+
+class JobSupersessionCandidate(Base, TimestampMixin):
+    """Pending or resolved supersession candidate for operator review.
+
+    Invariants (enforced by service layer):
+    - resolution IS NULL iff resolved_at IS NULL
+    - closed_by_shield_reason IS NOT NULL => resolution = CandidateResolution.reject
+    - superseded_at IS NULL iff superseded_by_batch_id IS NULL (on Job)
+
+    The partial unique index ix_candidate_pending_unique enforces at most one
+    pending candidate per job at the database level.
+    """
+
+    __tablename__ = "job_supersession_candidate"
+    __table_args__ = (
+        # Belt-and-suspenders: at most one pending candidate per job.
+        Index(
+            "ix_candidate_pending_unique",
+            "job_id",
+            unique=True,
+            sqlite_where=text("resolved_at IS NULL"),
+        ),
+        Index("ix_candidate_resolved_at", "resolved_at"),
+        Index("ix_candidate_detected_batch", "detected_in_batch_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
+    )
+    detected_in_batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="RESTRICT"), nullable=False
+    )
+    reason: Mapped[CandidateReason] = mapped_column(
+        Enum(CandidateReason, name="candidate_reason"), nullable=False
+    )
+    detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolution: Mapped[CandidateResolution | None] = mapped_column(
+        Enum(CandidateResolution, name="candidate_resolution"), nullable=True
+    )
+    closed_by_shield_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    job: Mapped[Job] = relationship()
+    detected_in_batch: Mapped[ImportBatch] = relationship(
+        foreign_keys=[detected_in_batch_id]
+    )

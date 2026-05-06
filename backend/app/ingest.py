@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import reader
 from .db import SessionLocal
 from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
-from .models import ImportBatch, ImportStagingRow, ImportStatus
+from .models import ImportBatch, ImportStagingRow, ImportStatus, SheetKind
+from .services.jobs_lifecycle import CandidateDelta, detect_supersession_candidates
 from .services.staging import _rollback_with_error_capture
 from .transform import transform_staging_row, _mark_decompose_error
+
+log = logging.getLogger(__name__)
 
 
 class DuplicateBatchError(Exception):
@@ -41,6 +46,9 @@ class IngestResult:
     rows_updated: int
     rows_errored: int
     duplicate_of_batch_id: int | None
+    sheet_kind: SheetKind
+    candidates_opened: int
+    candidates_auto_returned: int
 
 
 _COLUMN_MAP: dict[str, str] = {
@@ -104,7 +112,10 @@ def ingest_workbook(
 
     # Stage 2 — read workbook
     try:
-        raw_rows = list(reader.read_rows(str(path), sheet))
+        _wb = load_workbook(str(path), data_only=True)
+        resolved_sheet = reader.resolve_sheet(_wb, sheet)
+        sheet_kind = reader.classify_sheet(resolved_sheet)
+        raw_rows = list(reader.read_rows(str(path), resolved_sheet))
     except Exception as exc:
         raise ReaderError(str(exc)) from exc
 
@@ -118,6 +129,7 @@ def ingest_workbook(
             source_sha256=sha,
             row_count=rows_total,
             status=ImportStatus.pending,
+            sheet_kind=sheet_kind,
         )
         session.add(batch)
         session.flush()
@@ -135,6 +147,16 @@ def ingest_workbook(
         session.flush()
         session.commit()
         batch_id = batch.id
+
+        log.info(
+            "ingest.sheet_kind_resolved",
+            extra={
+                "batch_id": batch_id,
+                "requested": sheet,
+                "resolved": resolved_sheet,
+                "kind": sheet_kind.value,
+            },
+        )
     except Exception:
         session.rollback()
         raise
@@ -211,6 +233,14 @@ def ingest_workbook(
                     row.processed_at = datetime.now(timezone.utc).replace(tzinfo=None)
                     counters["errored"] += 1
 
+            # Stage 5b — detect supersession candidates (live batches only).
+            # Runs inside the same outer transaction as Stage 5; failures
+            # propagate to the loop_exc handler and force batch.status = error.
+            delta = CandidateDelta.empty()
+            if sheet_kind == SheetKind.live:
+                live_batch = session.get(ImportBatch, batch_id)
+                delta = detect_supersession_candidates(session, live_batch)
+
         except Exception as exc:
             session.rollback()
             loop_exc = exc
@@ -243,6 +273,9 @@ def ingest_workbook(
         rows_updated=counters["updated"],
         rows_errored=counters["errored"],
         duplicate_of_batch_id=duplicate_of,
+        sheet_kind=sheet_kind,
+        candidates_opened=len(delta.new_pending_candidate_ids),
+        candidates_auto_returned=len(delta.auto_returned_candidate_ids),
     )
 
 

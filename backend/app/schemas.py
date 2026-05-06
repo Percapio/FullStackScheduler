@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer
 
 from .errors import resolve_highlight_fields
-from .models import BuildType, BuildQualifier, ImportStatus, JobStatus
+from .models import BuildType, BuildQualifier, CandidateReason, CandidateResolution, ImportStatus, JobStatus, SheetKind
 
 
 _MARKDOWN_NOTE = "CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked)."
@@ -209,6 +209,7 @@ class ImportBatchRead(_ORMModel):
     source_sha256: str | None
     row_count: int
     status: ImportStatus
+    sheet_kind: SheetKind
     notes: str | None
     created_at: datetime
     updated_at: datetime
@@ -279,3 +280,43 @@ class ConflictGroup(BaseModel):
     kind: ConflictKind
     rows: list[StagingRowDetailRead]
     # NB: rows is invariant len >= 2 by construction (see list_conflicts builder)
+
+
+# ---- supersession ------------------------------------------------------------
+
+
+class JobSupersessionCandidateRead(_ORMModel):
+    id: int
+    job_id: int
+    detected_in_batch_id: int
+    reason: CandidateReason
+    detected_at: datetime
+    resolved_at: datetime | None
+    resolution: CandidateResolution | None
+    closed_by_shield_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class JobSupersessionCandidatePage(BaseModel):
+    items: list[JobSupersessionCandidateRead]
+    total: int
+
+
+class SupersessionApprovalRequest(BaseModel):
+    pass
+
+
+class SupersessionRejectionRequest(BaseModel):
+    pass
+
+
+class SupersessionBulkApprovalRequest(BaseModel):
+    ids: list[int] = Field(min_length=1)
+
+
+class BulkApprovalResultRead(BaseModel):
+    approved: list[int]
+    shield_rejected: list[int]
+    already_closed: list[int]
+    not_found: list[int]

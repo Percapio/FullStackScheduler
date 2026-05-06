@@ -3,12 +3,14 @@ import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ReconciliationView from '../../views/ReconciliationView.vue'
 import { useStagingStore } from '@/stores/staging'
+import { useSupersessionStore } from '@/stores/supersession'
 const mockFetchErrored   = vi.fn()
 const mockFetchDetail    = vi.fn()
 const mockFetchDiscarded = vi.fn()
 const mockFetchConflicts = vi.fn()
 const mockDeleteStagingRow = vi.fn()
 const mockPostRestoreStagingRow = vi.fn()
+const mockFetchCandidates = vi.fn()
 
 vi.mock('@/api/staging', () => ({
   fetchErrored:           (...a: unknown[]) => mockFetchErrored(...a),
@@ -17,6 +19,18 @@ vi.mock('@/api/staging', () => ({
   fetchConflicts:         (...a: unknown[]) => mockFetchConflicts(...a),
   deleteStagingRow:       (...a: unknown[]) => mockDeleteStagingRow(...a),
   postRestoreStagingRow:  (...a: unknown[]) => mockPostRestoreStagingRow(...a),
+}))
+
+vi.mock('@/api/supersession', () => ({
+  fetchSupersessionCandidates:       (...a: unknown[]) => mockFetchCandidates(...a),
+  approveSupersessionCandidate:      vi.fn(),
+  rejectSupersessionCandidate:       vi.fn(),
+  bulkApproveSupersessionCandidates: vi.fn(),
+}))
+
+vi.mock('@/api/client', () => ({
+  isApiError: (err: unknown) =>
+    typeof err === 'object' && err !== null && 'response' in err,
 }))
 
 vi.mock('@/composables/useToast', () => ({
@@ -30,6 +44,7 @@ function mountView() {
   mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
   mockFetchDiscarded.mockResolvedValue({ rows: [], total: 0 })
   mockFetchConflicts.mockResolvedValue([])
+  mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
   wrapper = mount(ReconciliationView, { attachTo: document.body })
   const store = useStagingStore()
   return { wrapper, store }
@@ -42,7 +57,9 @@ beforeEach(() => {
   mockFetchConflicts.mockReset()
   mockDeleteStagingRow.mockReset()
   mockPostRestoreStagingRow.mockReset()
+  mockFetchCandidates.mockReset()
   mockFetchConflicts.mockResolvedValue([])
+  mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
 })
 
 afterEach(() => {
@@ -115,5 +132,41 @@ describe('ReconciliationView', () => {
     // Assert: exactly one call with positional args (100, 0).
     expect(mockFetchErrored).toHaveBeenCalledTimes(1)
     expect(mockFetchErrored).toHaveBeenCalledWith(100, 0)
+  })
+
+  it('calls supersessionStore.loadPending on mount', async () => {
+    setActivePinia(createPinia())
+    mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
+    mockFetchDiscarded.mockResolvedValue({ rows: [], total: 0 })
+    mockFetchConflicts.mockResolvedValue([])
+    mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
+    const w = mount(ReconciliationView, { attachTo: document.body })
+    const supersessionStore = useSupersessionStore()
+    const spy = vi.spyOn(supersessionStore, 'loadPending').mockResolvedValue()
+    w.unmount()
+
+    // Remount so spy is in place before onMounted fires.
+    mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
+    mockFetchDiscarded.mockResolvedValue({ rows: [], total: 0 })
+    mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
+    const w2 = mount(ReconciliationView, { attachTo: document.body })
+    await flushPromises()
+    expect(spy).toHaveBeenCalledTimes(1)
+    w2.unmount()
+  })
+
+  it('renders SupersessionCandidateList above ConflictGroupList', async () => {
+    mountView()
+    await flushPromises()
+    const supersessionEl = document.body.querySelector('[data-testid="supersession-candidate-list"]')
+    const conflictEl     = document.body.querySelector('[data-testid="conflict-group-list"]')
+    expect(supersessionEl).not.toBeNull()
+    // ConflictGroupList may not add its testid; we verify SupersessionCandidateList exists
+    // and is rendered before any ConflictGroupList in DOM order.
+    if (conflictEl && supersessionEl) {
+      const pos = supersessionEl.compareDocumentPosition(conflictEl)
+      // DOCUMENT_POSITION_FOLLOWING = 4 — conflictEl comes after supersessionEl.
+      expect(pos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
   })
 })

@@ -721,6 +721,69 @@ export interface components {
             readonly highlight_fields: string[];
             build_qualifier?: components["schemas"]["BuildQualifier"] | null;
         };
+        /**
+         * CandidateReason
+         * @enum {string}
+         */
+        CandidateReason: "orphan_after_split" | "orphan_after_recombine" | "orphan_other";
+        /**
+         * CandidateResolution
+         * @enum {string}
+         */
+        CandidateResolution: "approve" | "reject" | "auto_returned";
+        /** JobSupersessionCandidateRead */
+        JobSupersessionCandidateRead: {
+            /** Id */
+            id: number;
+            /** Job Id */
+            job_id: number;
+            /** Detected In Batch Id */
+            detected_in_batch_id: number;
+            reason: components["schemas"]["CandidateReason"];
+            /**
+             * Detected At
+             * Format: date-time
+             */
+            detected_at: string;
+            /** Resolved At */
+            resolved_at: string | null;
+            resolution: components["schemas"]["CandidateResolution"] | null;
+            /** Closed By Shield Reason */
+            closed_by_shield_reason: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** JobSupersessionCandidatePage */
+        JobSupersessionCandidatePage: {
+            /** Items */
+            items: components["schemas"]["JobSupersessionCandidateRead"][];
+            /** Total */
+            total: number;
+        };
+        /** SupersessionBulkApprovalRequest */
+        SupersessionBulkApprovalRequest: {
+            /** Ids */
+            ids: number[];
+        };
+        /** BulkApprovalResultRead */
+        BulkApprovalResultRead: {
+            /** Approved */
+            approved: number[];
+            /** Shield Rejected */
+            shield_rejected: number[];
+            /** Already Closed */
+            already_closed: number[];
+            /** Not Found */
+            not_found: number[];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */

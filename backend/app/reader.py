@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import NamedTuple
 
 from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText
+
+from .models import SheetKind
 
 PRIMARY_SHEET_NAME: str = "SCHD"
 FALLBACK_SHEET_NAME: str = "SHIPPED (AA)"
@@ -95,9 +98,16 @@ class SheetLayout:
     divider_header: str | None  # None = no divider filtering for this shape
 
 
-_LAYOUTS: dict[str, SheetLayout] = {
-    "SCHD": SheetLayout(header_row=2, divider_header="DIVIDER"),
-    "SHIPPED (AA)": SheetLayout(header_row=1, divider_header=None),
+class _LayoutEntry(NamedTuple):
+    """Pairs the structural layout rules with the semantic kind for a sheet."""
+
+    layout: SheetLayout
+    kind: SheetKind
+
+
+_LAYOUTS: dict[str, _LayoutEntry] = {
+    "SCHD":         _LayoutEntry(SheetLayout(header_row=2, divider_header="DIVIDER"), SheetKind.live),
+    "SHIPPED (AA)": _LayoutEntry(SheetLayout(header_row=1, divider_header=None),     SheetKind.historical),
 }
 
 
@@ -128,7 +138,21 @@ def resolve_layout(sheet_name: str) -> SheetLayout:
             against silent shape drift when a new sheet is wired through
             resolve_sheet without a matching layout entry.
     """
-    return _LAYOUTS[sheet_name]
+    return _LAYOUTS[sheet_name].layout
+
+
+def classify_sheet(sheet_name: str) -> SheetKind:
+    """Return the SheetKind for *sheet_name*.
+
+    Pre:  sheet_name is a string.
+    Post: Returns SheetKind.live for PRIMARY_SHEET_NAME,
+          SheetKind.historical for FALLBACK_SHEET_NAME.
+    Raises: KeyError on any sheet name absent from _LAYOUTS — this is a drift
+            assertion, not a runtime user-visible failure.  resolve_sheet only
+            emits names present in _LAYOUTS, so under correct configuration
+            the raise is unreachable.
+    """
+    return _LAYOUTS[sheet_name].kind
 
 
 def cell_to_text(value) -> str | None:

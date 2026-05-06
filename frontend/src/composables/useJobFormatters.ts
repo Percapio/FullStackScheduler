@@ -38,6 +38,17 @@ export function useJobFormatters() {
     return marked.parse(raw, { async: false, gfm: true, breaks: true }) as string
   }
 
+  /** Compose the operator-visible label for a job.
+   *
+   * Format: `${partNumber}${identitySuffix(job)}[ ${buildLabel(build_type)}]`
+   * Matches what operators read in the workbook (audit #16).
+   */
+  function jobLabel(partNumber: string, job: JobReadExpanded): string {
+    const suffix = identitySuffix(job)
+    const build  = buildLabel(job.build_type)
+    return `${partNumber}${suffix}${build ? ' ' + build : ''}`
+  }
+
   function carrierBadge(raw: string | null | undefined): CarrierBadge {
     if (!raw) return null
     const key = raw.trim().toLowerCase().replace(/[\s\-_]/g, '')
@@ -48,5 +59,5 @@ export function useJobFormatters() {
     return { text: display, class: CARRIER_CLASSES.other }
   }
 
-  return { formatDate, buildLabel, identitySuffix, renderNotes, carrierBadge }
+  return { formatDate, buildLabel, identitySuffix, jobLabel, renderNotes, carrierBadge }
 }

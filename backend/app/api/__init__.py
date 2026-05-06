@@ -12,6 +12,7 @@ from .assemblies import router as assemblies_router
 from .jobs import router as jobs_router
 from .staging import router as staging_router
 from .ingest import router as ingest_router
+from .supersession import router as supersession_router
 
 _DEV_ORIGINS: tuple[str, ...] = ("http://localhost:5173", "http://127.0.0.1:5173")
 
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
             expose_headers=["X-Total-Count"],
         )
 
+    app.include_router(supersession_router, prefix="/api/staging", tags=["supersession"])
     app.include_router(staging_router, prefix="/api/staging", tags=["staging"])
     app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
     app.include_router(assemblies_router, prefix="/api/assemblies", tags=["assemblies"])

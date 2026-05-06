@@ -16,6 +16,16 @@ def _count(session: Session, base) -> int:
     return session.scalar(select(func.count()).select_from(base.subquery()))
 
 
+def _active_jobs_base() -> select:
+    """Return a base SELECT over Jobs that are not superseded.
+
+    All active-job surfaces (list_jobs, list_shipping, get_job) must compose
+    from this helper so the superseded_at IS NULL filter is applied uniformly.
+    History / lineage queries use select(Job) directly and document the omission.
+    """
+    return select(Job).where(Job.superseded_at.is_(None))
+
+
 def list_jobs(
     session: Session,
     *,
@@ -26,7 +36,7 @@ def list_jobs(
     limit: int,
     offset: int,
 ) -> tuple[list[Job], int]:
-    base = select(Job)
+    base = _active_jobs_base()
     if status_filter is not None:
         base = base.where(Job.status.in_(status_filter))
     if assembly_id is not None:
@@ -49,7 +59,7 @@ def list_jobs(
 def list_shipping(
     session: Session, *, limit: int, offset: int,
 ) -> tuple[list[Job], int]:
-    base = select(Job).where(Job.status != JobStatus.shipped)
+    base = _active_jobs_base().where(Job.status != JobStatus.shipped)
     total = _count(session, base)
     rows = session.scalars(
         base.options(*JOB_EXPAND_OPTIONS)
@@ -61,9 +71,17 @@ def list_shipping(
 
 
 def list_history(
-    session: Session, *, search: str | None, limit: int, offset: int,
+    session: Session,
+    *,
+    search: str | None,
+    limit: int,
+    offset: int,
+    include_superseded: bool = True,
 ) -> tuple[list[Job], int]:
+    # History is the audit trail; superseded rows belong here by default (TDD §1 Epoch 1).
     base = select(Job).where(Job.status == JobStatus.shipped)
+    if not include_superseded:
+        base = base.where(Job.superseded_at.is_(None))
     if search:
         pattern = f"%{search}%"
         base = (
@@ -91,13 +109,14 @@ def list_history(
 
 def get_job(session: Session, job_id: int) -> Job | None:
     return session.execute(
-        select(Job)
+        _active_jobs_base()
         .where(Job.id == job_id)
         .options(*JOB_EXPAND_OPTIONS)
     ).unique().scalar_one_or_none()
 
 
-def get_lineage(session: Session, job_id: int) -> list[Job] | None:
+def get_lineage(session: Session, job_id: int, *, include_superseded: bool = True) -> list[Job] | None:
+    # Lineage is an audit surface; superseded rows are included by default (TDD §1 Epoch 1).
     anchor = session.execute(
         select(Job.repeat_reference, Assembly.part_number)
         .join(Assembly, Assembly.id == Job.assembly_id)
@@ -114,7 +133,7 @@ def get_lineage(session: Session, job_id: int) -> list[Job] | None:
     chronology = func.coalesce(
         Job.shipped_at, Job.resolved_ship_date, func.date(Job.created_at)
     )
-    rows = session.scalars(
+    base = (
         select(Job)
         .join(Assembly, Assembly.id == Job.assembly_id)
         .where(
@@ -123,7 +142,11 @@ def get_lineage(session: Session, job_id: int) -> list[Job] | None:
                 Job.repeat_reference.in_(related_part_numbers),
             )
         )
-        .options(*JOB_EXPAND_OPTIONS)
+    )
+    if not include_superseded:
+        base = base.where(Job.superseded_at.is_(None))
+    rows = session.scalars(
+        base.options(*JOB_EXPAND_OPTIONS)
         .order_by(chronology.asc(), Job.id.asc())
     ).unique().all()
     return list(rows)

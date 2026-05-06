@@ -351,6 +351,7 @@ def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformO
         .where(Job.split_suffix.is_not_distinct_from(decomp.split_suffix))
         .where(Job.repeat_reference.is_not_distinct_from(decomp.repeat_reference))
         .where(Job.build_qualifier.is_not_distinct_from(decomp.build_qualifier))
+        .where(Job.superseded_at.is_(None))
     ).scalar_one_or_none()
 
     if existing is None:

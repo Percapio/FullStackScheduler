@@ -2,18 +2,22 @@
 import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStagingStore } from '@/stores/staging'
+import { useSupersessionStore } from '@/stores/supersession'
 import ReconciliationSidebar from '@/components/ReconciliationSidebar.vue'
 import DiscardedRowsDrawer from '@/components/DiscardedRowsDrawer.vue'
 import ConflictGroupList from '@/components/ConflictGroupList.vue'
+import SupersessionCandidateList from '@/components/SupersessionCandidateList.vue'
 import WarnIcon from '@/components/WarnIcon.vue'
 
 const store = useStagingStore()
 const { rows, total, loading, discardedTotal } = storeToRefs(store)
+const supersessionStore = useSupersessionStore()
 
 onMounted(() => {
   store.loadErrored()
   store.loadDiscarded()
   store.loadConflicts()
+  supersessionStore.loadPending()
 })
 
 function truncate(s: string | null, n = 80) {
@@ -41,6 +45,9 @@ function truncate(s: string | null, n = 80) {
         <span v-if="discardedTotal > 0" class="ml-1 tabular-nums">({{ discardedTotal }})</span>
       </button>
     </header>
+
+    <!-- Supersession candidates — highest-stakes review; above conflict groups -->
+    <SupersessionCandidateList data-testid="supersession-candidate-list" />
 
     <!-- Conflict group cards — rendered above the errored table (§3.5.5) -->
     <ConflictGroupList />

@@ -8,6 +8,7 @@ import pytest
 from fastapi import status
 
 from backend.app.ingest import DuplicateBatchError, IngestResult
+from backend.app.models import SheetKind
 
 
 _FAKE_RESULT = IngestResult(
@@ -18,6 +19,9 @@ _FAKE_RESULT = IngestResult(
     rows_updated=2,
     rows_errored=1,
     duplicate_of_batch_id=None,
+    sheet_kind=SheetKind.live,
+    candidates_opened=0,
+    candidates_auto_returned=0,
 )
 
 
