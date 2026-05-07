@@ -10,13 +10,17 @@ const mockFetchDetail     = vi.fn()
 const mockFetchDiscarded  = vi.fn()
 const mockDeleteStagingRow = vi.fn()
 const mockPostRestoreStagingRow = vi.fn()
+const mockFetchStagingRestorePreview = vi.fn()
+const mockFetchConflicts = vi.fn()
 
 vi.mock('@/api/staging', () => ({
-  fetchErrored:           (...a: unknown[]) => mockFetchErrored(...a),
-  fetchDetail:            (...a: unknown[]) => mockFetchDetail(...a),
-  fetchDiscarded:         (...a: unknown[]) => mockFetchDiscarded(...a),
-  deleteStagingRow:       (...a: unknown[]) => mockDeleteStagingRow(...a),
-  postRestoreStagingRow:  (...a: unknown[]) => mockPostRestoreStagingRow(...a),
+  fetchErrored:                  (...a: unknown[]) => mockFetchErrored(...a),
+  fetchDetail:                   (...a: unknown[]) => mockFetchDetail(...a),
+  fetchDiscarded:                (...a: unknown[]) => mockFetchDiscarded(...a),
+  deleteStagingRow:              (...a: unknown[]) => mockDeleteStagingRow(...a),
+  postRestoreStagingRow:         (...a: unknown[]) => mockPostRestoreStagingRow(...a),
+  fetchStagingRestorePreview:    (...a: unknown[]) => mockFetchStagingRestorePreview(...a),
+  fetchConflicts:                (...a: unknown[]) => mockFetchConflicts(...a),
 }))
 
 const mockShowToast = vi.fn()
@@ -64,9 +68,11 @@ function mountDrawer(state: {
 beforeEach(() => {
   mockFetchErrored.mockReset()
   mockFetchDetail.mockReset()
-  mockFetchDiscarded.mockReset()
+  mockFetchDiscarded.mockReset().mockResolvedValue({ rows: [], total: 0 })
   mockDeleteStagingRow.mockReset()
   mockPostRestoreStagingRow.mockReset()
+  mockFetchStagingRestorePreview.mockReset()
+  mockFetchConflicts.mockReset().mockResolvedValue([])
   mockShowToast.mockReset()
 })
 
@@ -105,7 +111,7 @@ describe('DiscardedRowsDrawer', () => {
     expect(document.body.innerHTML).toContain('No discarded rows.')
   })
 
-  it('calls store.restoreRow exactly once when Restore is clicked', async () => {
+  it('calls store.beginRestore exactly once when Restore is clicked', async () => {
     const { store } = mountDrawer({
       discardedDrawerOpen: true,
       discardedRows: [summaryFixture(5)],
@@ -113,7 +119,7 @@ describe('DiscardedRowsDrawer', () => {
     })
     await flushPromises()
 
-    const restoreSpy = vi.spyOn(store, 'restoreRow').mockResolvedValueOnce({ kind: 'ok', row: summaryFixture(5) })
+    const restoreSpy = vi.spyOn(store, 'beginRestore').mockResolvedValueOnce({ kind: 'ok', row: summaryFixture(5) })
     const btn = document.body.querySelector('[data-testid="restore-btn-5"]') as HTMLButtonElement
     btn.click()
     await flushPromises()
@@ -129,8 +135,9 @@ describe('DiscardedRowsDrawer', () => {
       discardedTotal: 1,
     })
     await flushPromises()
+    mockShowToast.mockReset()
 
-    vi.spyOn(store, 'restoreRow').mockResolvedValueOnce({ kind: 'ok', row: summaryFixture(5) })
+    vi.spyOn(store, 'beginRestore').mockResolvedValueOnce({ kind: 'ok', row: summaryFixture(5) })
     const btn = document.body.querySelector('[data-testid="restore-btn-5"]') as HTMLButtonElement
     btn.click()
     await flushPromises()
@@ -145,10 +152,18 @@ describe('DiscardedRowsDrawer', () => {
       discardedTotal: 1,
     })
     await flushPromises()
+    mockShowToast.mockReset()
 
-    vi.spyOn(store, 'restoreRow').mockResolvedValueOnce({
+    vi.spyOn(store, 'beginRestore').mockResolvedValueOnce({
       kind: 'conflict',
       message: 'Row is not discarded',
+      preview: {
+        incoming: { kind: 'staging', staging: null, job: null },
+        colliding_staging_errored_rows: [],
+        colliding_staging_discarded_rows: [],
+        colliding_live_jobs: [],
+        group_key: '',
+      },
     })
     const btn = document.body.querySelector('[data-testid="restore-btn-5"]') as HTMLButtonElement
     btn.click()
@@ -164,8 +179,9 @@ describe('DiscardedRowsDrawer', () => {
       discardedTotal: 1,
     })
     await flushPromises()
+    mockShowToast.mockReset()
 
-    vi.spyOn(store, 'restoreRow').mockResolvedValueOnce({ kind: 'stale' })
+    vi.spyOn(store, 'beginRestore').mockResolvedValueOnce({ kind: 'stale' })
     const btn = document.body.querySelector('[data-testid="restore-btn-5"]') as HTMLButtonElement
     btn.click()
     await flushPromises()
@@ -188,21 +204,7 @@ describe('DiscardedRowsDrawer', () => {
     expect(store.discardedDrawerOpen).toBe(false)
   })
 
-  it('renders truncation footer when discardedTotal > discardedRows.length', async () => {
-    const rows = Array.from({ length: 3 }, (_, i) => summaryFixture(i + 1))
-    mountDrawer({
-      discardedDrawerOpen: true,
-      discardedRows: rows,
-      discardedTotal: 10,
-    })
-    await flushPromises()
-
-    const footer = document.body.querySelector('[data-testid="discarded-truncation-footer"]')
-    expect(footer).not.toBeNull()
-    expect(footer!.textContent).toContain('Showing 3 of 10')
-  })
-
-  it('does not render truncation footer when total equals row count', async () => {
+  it('renders search/paginator bar when open', async () => {
     const rows = Array.from({ length: 3 }, (_, i) => summaryFixture(i + 1))
     mountDrawer({
       discardedDrawerOpen: true,
@@ -211,7 +213,23 @@ describe('DiscardedRowsDrawer', () => {
     })
     await flushPromises()
 
-    expect(document.body.querySelector('[data-testid="discarded-truncation-footer"]')).toBeNull()
+    // SearchPaginatorBar renders an input with aria-label="Search"
+    const searchInput = document.body.querySelector('[aria-label="Search"]')
+    expect(searchInput).not.toBeNull()
+  })
+
+  it('renders paginator page readout showing 1–N of total', async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => summaryFixture(i + 1))
+    mountDrawer({
+      discardedDrawerOpen: true,
+      discardedRows: rows,
+      discardedTotal: 60,
+    })
+    await flushPromises()
+
+    // The paginator bar renders "1–3 of 60" for offset=0, 3 rows, total=60
+    expect(document.body.textContent).toContain('1')
+    expect(document.body.textContent).toContain('60')
   })
 
   it('header text uses parenthetical format with count when nonzero', async () => {

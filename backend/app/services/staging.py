@@ -9,7 +9,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from ..extractors import decompose_job_string
 from ..models import ImportStagingRow, ImportStatus, Job
-from ..schemas import ConflictGroup, ConflictKind, StagingRowDetailRead
+from ..schemas import ConflictGroup, ConflictKind, StagingRowDetailRead, RestoreConflictPreview, IncomingRestoreCandidate, RestoreSourceKind, StagingRestoreAction
 from ..transform import _mark_error, transform_staging_row
 from .jobs import JOB_EXPAND_OPTIONS
 
@@ -22,6 +22,18 @@ class StagingDiscardError(Exception):
 
 class StagingRestoreError(Exception):
     """Row cannot be restored because it is not currently discarded."""
+
+
+class StagingRestoreValidationError(Exception):
+    """One of the actions in StagingRestoreRequest failed validation.
+
+    Attributes:
+        action_index: index into the actions list of the failing entry.
+    """
+    def __init__(self, detail: str, action_index: int) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.action_index = action_index
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +251,231 @@ def _duplicate_collision_suggestion() -> str:
 # Public service functions
 # ---------------------------------------------------------------------------
 
+def _identity_key_for_row(row: ImportStagingRow) -> str | None:
+    """Compute the canonical identity key for a staging row from its current raw_job.
+
+    Returns None when raw_job does not parse (row has no valid identity).
+    """
+    return _identity_key_after_payload(row, {})
+
+
+def _identity_key_for_job(job) -> str | None:
+    """Delegate to the authoritative implementation in services/jobs.py."""
+    from .jobs import identity_key_for_job
+    return identity_key_for_job(job)
+
+
+# ---------------------------------------------------------------------------
+# Restore-conflict preview (§4.2)
+# ---------------------------------------------------------------------------
+
+def preview_restore_staging(
+    session: Session,
+    row: ImportStagingRow,
+) -> RestoreConflictPreview:
+    """Compute what would collide if `row` (currently discarded) were restored.
+
+    Pre:  row.discarded_at IS NOT NULL.
+    Post: returns a RestoreConflictPreview with three collision sets:
+            colliding_staging_errored_rows:   errored, non-discarded rows that
+                                              share the same identity key.
+            colliding_staging_discarded_rows: discarded rows (other than `row`)
+                                              sharing the same identity key.
+            colliding_live_jobs:              active (non-discarded) jobs sharing
+                                              the same identity key.
+          Never mutates state.
+    """
+    group_key = _identity_key_for_row(row) or ""
+
+    errored_colliders: list[ImportStagingRow] = []
+    discarded_colliders: list[ImportStagingRow] = []
+    live_job_colliders: list[Job] = []
+
+    if group_key:
+        # Errored staging rows — non-discarded, error status, matching identity key.
+        # We compare identity key at the Python level (not stored directly) because
+        # the DB stores raw_job, not the decomposed key.
+        # Exclude the target row itself (relevant when discarded_at was flushed to NULL
+        # before calling this function, e.g. inside restore_staging_row_with_actions).
+        candidate_errored = list(session.scalars(
+            select(ImportStagingRow)
+            .where(
+                ImportStagingRow.processing_status == ImportStatus.error,
+                ImportStagingRow.discarded_at.is_(None),
+                ImportStagingRow.id != row.id,
+            )
+        ).all())
+        for c in candidate_errored:
+            if _identity_key_for_row(c) == group_key:
+                errored_colliders.append(c)
+
+        # Discarded staging rows (excluding self) — same identity key.
+        candidate_discarded = list(session.scalars(
+            select(ImportStagingRow)
+            .where(
+                ImportStagingRow.discarded_at.is_not(None),
+                ImportStagingRow.id != row.id,
+            )
+        ).all())
+        for c in candidate_discarded:
+            if _identity_key_for_row(c) == group_key:
+                discarded_colliders.append(c)
+
+        # Live persisted jobs — active (superseded_at IS NULL, discarded_at IS NULL).
+        from .jobs import JOB_EXPAND_OPTIONS
+        from sqlalchemy.orm import Session as _Session
+        candidate_jobs = list(session.scalars(
+            select(Job)
+            .where(Job.superseded_at.is_(None), Job.discarded_at.is_(None))
+            .options(*JOB_EXPAND_OPTIONS)
+        ).unique().all())
+        for j in candidate_jobs:
+            if _identity_key_for_job(j) == group_key:
+                live_job_colliders.append(j)
+
+    incoming = IncomingRestoreCandidate(
+        kind=RestoreSourceKind.STAGING,
+        staging=StagingRowDetailRead.model_validate(row),
+        job=None,
+    )
+
+    from ..schemas import JobReadExpanded
+    return RestoreConflictPreview(
+        incoming=incoming,
+        colliding_staging_errored_rows=[StagingRowDetailRead.model_validate(c) for c in errored_colliders],
+        colliding_staging_discarded_rows=[StagingRowDetailRead.model_validate(c) for c in discarded_colliders],
+        colliding_live_jobs=[JobReadExpanded.model_validate(j) for j in live_job_colliders],
+        group_key=group_key,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Restore with actions (§4.2 existing route hardening)
+# ---------------------------------------------------------------------------
+
+def apply_restore_actions(
+    session: Session,
+    actions: list[StagingRestoreAction],
+) -> None:
+    """Apply a list of operator-resolution actions inside the caller's transaction.
+
+    Each action references a staging row id. Actions are applied in array order.
+    On the first validation failure, raises StagingRestoreValidationError with
+    the failing action's index.
+
+    Raises:
+        StagingRestoreValidationError: on per-action failure (row not found,
+            wrong type, invalid payload). The caller MUST roll back on this.
+    """
+    from ..schemas import StagingRowCorrectionRequest
+
+    for idx, action in enumerate(actions):
+        staging_row = session.get(ImportStagingRow, action.row_id)
+        if staging_row is None:
+            raise StagingRestoreValidationError(
+                f"Action {idx}: staging row {action.row_id} not found.",
+                idx,
+            )
+
+        if action.kind == "discard":
+            if staging_row.resolved_job_id is not None:
+                raise StagingRestoreValidationError(
+                    f"Action {idx}: row {action.row_id} has resolved to a job; cannot discard.",
+                    idx,
+                )
+            if staging_row.processing_status != ImportStatus.error:
+                raise StagingRestoreValidationError(
+                    f"Action {idx}: row {action.row_id} is not in error state; cannot discard.",
+                    idx,
+                )
+            if staging_row.discarded_at is None:
+                staging_row.discarded_at = datetime.now(UTC)
+
+        elif action.kind == "edit":
+            payload = action.payload or {}
+            # Validate field names via the correction schema (extra='forbid').
+            try:
+                StagingRowCorrectionRequest(**payload)
+            except Exception as exc:
+                raise StagingRestoreValidationError(
+                    f"Action {idx}: invalid edit payload — {exc}.",
+                    idx,
+                ) from exc
+            for attr, value in payload.items():
+                setattr(staging_row, attr, value)
+
+        else:
+            raise StagingRestoreValidationError(
+                f"Action {idx}: unknown kind '{action.kind}'; expected 'edit' or 'discard'.",
+                idx,
+            )
+
+
+def restore_staging_row_with_actions(
+    session: Session,
+    row: ImportStagingRow,
+    actions: list[StagingRestoreAction],
+) -> ImportStagingRow:
+    """Apply `actions` and restore `row` inside a single transaction.
+
+    Post: on success, row.discarded_at is None and the row is committed.
+    Raises:
+        StagingRestoreError: if row.discarded_at IS NULL (not discarded).
+        StagingRestoreValidationError: if any action fails; transaction rolled back.
+        StagingRestoreConflictError: if a residual identity collision remains after
+            actions are applied; carries a fresh RestoreConflictPreview.
+    """
+    if row.discarded_at is None:
+        raise StagingRestoreError(f"Row {row.id} is not discarded.")
+
+    nested = session.begin_nested()
+    try:
+        apply_restore_actions(session, actions)
+        row.discarded_at = None        # Flush so the DB reflects action changes before the preview queries run.
+        # (Sessions are created with autoflush=False, so an explicit flush is required
+        # here to avoid false collision detection against stale DB state.)
+        session.flush()        # Check for residual collision after applying actions.
+        preview = preview_restore_staging(session, row)
+        # Only errored non-discarded rows and live jobs are genuine blockers.
+        # Discarded colliders are informational (shown in preview UI only) and
+        # do not prevent restore — the operator cannot act on them anyway.
+        has_collision = (
+            bool(preview.colliding_staging_errored_rows)
+            or bool(preview.colliding_live_jobs)
+        )
+        if has_collision:
+            nested.rollback()
+            raise StagingRestoreConflictError(preview)
+        nested.commit()
+    except (StagingRestoreValidationError, StagingRestoreConflictError):
+        # Conflict/validation errors rollback the savepoint then propagate.
+        # For StagingRestoreConflictError we already called nested.rollback() above,
+        # so a second rollback is a no-op on SQLite savepoints — safe to call.
+        try:
+            nested.rollback()
+        except Exception:
+            pass
+        raise
+    except Exception:
+        nested.rollback()
+        raise
+
+    session.commit()
+    return row
+
+
+class StagingRestoreConflictError(Exception):
+    """Restore cannot proceed because a residual collision was detected after actions.
+
+    Carries the fresh RestoreConflictPreview for the response body.
+    """
+    def __init__(self, preview: RestoreConflictPreview) -> None:
+        super().__init__("Residual collision after actions.")
+        self.preview = preview
+
+
 def list_errored(
-    session: Session, *, limit: int, offset: int,
+    session: Session, *, limit: int, offset: int, search: str | None = None,
 ) -> tuple[list[ImportStagingRow], int]:
     # §3.6.1 Option B: exclude rows that belong to a duplicate group (they appear
     # in /conflicts only).
@@ -249,6 +484,8 @@ def list_errored(
         ImportStagingRow.discarded_at.is_(None),
         ImportStagingRow.duplicate_group_key.is_(None),
     )
+    if search:
+        base = _apply_errored_search_clause(base, search.strip())
     total = session.scalar(select(func.count()).select_from(base.subquery()))
     rows = session.scalars(
         base.order_by(ImportStagingRow.id)
@@ -258,12 +495,41 @@ def list_errored(
     return list(rows), total
 
 
+def _apply_errored_search_clause(query, search: str):
+    """Apply a single-pattern OR filter across the four searchable errored-row columns.
+
+    Matching rules mirror the History endpoint's convention (single %pattern%,
+    no tokenisation). Integer-only columns (source_row_number, batch_id) match
+    only when the entire search string parses as an integer.
+    """
+    from sqlalchemy import or_
+
+    pattern = f"%{search}%"
+    int_val: int | None = None
+    try:
+        int_val = int(search)
+    except ValueError:
+        pass
+
+    clauses = [
+        ImportStagingRow.processing_error.ilike(pattern),
+        ImportStagingRow.suggested_correction.ilike(pattern),
+    ]
+    if int_val is not None:
+        clauses.append(ImportStagingRow.source_row_number == int_val)
+        clauses.append(ImportStagingRow.batch_id == int_val)
+
+    return query.where(or_(*clauses))
+
+
 def list_discarded(
-    session: Session, *, limit: int, offset: int,
+    session: Session, *, limit: int, offset: int, search: str | None = None,
 ) -> tuple[list[ImportStagingRow], int]:
     base = select(ImportStagingRow).where(
         ImportStagingRow.discarded_at.is_not(None)
     )
+    if search:
+        base = _apply_errored_search_clause(base, search.strip())
     total = session.scalar(select(func.count()).select_from(base.subquery()))
     rows = session.scalars(
         base.order_by(

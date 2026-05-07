@@ -187,6 +187,7 @@ class JobRead(_ORMModel, JobBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    discarded_at: datetime | None = None
 
     @field_serializer("run_cost")
     def _serialize_run_cost(self, v: Decimal | None) -> float | None:
@@ -280,6 +281,60 @@ class ConflictGroup(BaseModel):
     kind: ConflictKind
     rows: list[StagingRowDetailRead]
     # NB: rows is invariant len >= 2 by construction (see list_conflicts builder)
+
+
+# ---- restore-conflict preview (Phase 15 Epoch 2) ----------------------------
+
+
+class RestoreSourceKind(str, Enum):
+    """Discriminates whether a restore candidate is a staging row or a persisted job."""
+    STAGING = "staging"
+    JOB = "job"
+
+
+class IncomingRestoreCandidate(BaseModel):
+    """The row the operator wants to restore, discriminated by source kind."""
+    kind: RestoreSourceKind
+    staging: StagingRowDetailRead | None = None
+    job: JobReadExpanded | None = None
+
+
+class RestoreConflictPreview(BaseModel):
+    """Read-only snapshot describing what would collide if a discarded row were restored.
+
+    Pre:  the target row exists and discarded_at IS NOT NULL.
+    Post: purely descriptive — calling the preview endpoint never mutates state.
+    """
+    incoming: IncomingRestoreCandidate
+    colliding_staging_errored_rows: list[StagingRowDetailRead]
+    colliding_staging_discarded_rows: list[StagingRowDetailRead]
+    colliding_live_jobs: list[JobReadExpanded]
+    group_key: str
+
+
+class StagingRestoreAction(BaseModel):
+    """One operator-resolution action for a staging-side row in the preview modal."""
+    kind: str  # "edit" | "discard"
+    row_id: int
+    payload: dict[str, Any] | None = None
+
+
+class StagingRestoreRequest(BaseModel):
+    """Request body for POST /api/staging/{rowId}/restore.
+
+    `actions: []` is the no-conflict path — restore is attempted directly.
+    """
+    actions: list[StagingRestoreAction] = Field(default_factory=list)
+
+
+class JobRestoreRequest(BaseModel):
+    """Request body for POST /api/jobs/{jobId}/restore.
+
+    Symmetric with StagingRestoreRequest (§6.2). Every action references a
+    staging row id (the operator cannot edit live-job colliders).
+    `actions: []` is the no-conflict path — restore is attempted directly.
+    """
+    actions: list[StagingRestoreAction] = Field(default_factory=list)
 
 
 # ---- supersession ------------------------------------------------------------

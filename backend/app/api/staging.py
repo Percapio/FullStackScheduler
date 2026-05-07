@@ -8,11 +8,13 @@ from ..schemas import (
     ConflictGroup,
     ImportStagingRowRead,
     JobReadExpanded,
+    RestoreConflictPreview,
+    StagingRestoreRequest,
     StagingRowCorrectionRequest,
     StagingRowDetailRead,
 )
 from ..services import staging as staging_service
-from .deps import PageParams, get_pagination, get_session
+from .deps import PageParams, get_pagination, get_session, ErroredPageParams
 
 router = APIRouter()
 
@@ -30,10 +32,12 @@ def list_conflicts(session: Session = Depends(get_session)):
 @router.get("/errored", response_model=list[ImportStagingRowRead])
 def list_errored(
     response: Response,
-    page: PageParams = Depends(get_pagination),
+    page: ErroredPageParams = Depends(ErroredPageParams),
     session: Session = Depends(get_session),
 ):
-    rows, total = staging_service.list_errored(session, limit=page.limit, offset=page.offset)
+    rows, total = staging_service.list_errored(
+        session, limit=page.limit, offset=page.offset, search=page.search,
+    )
     response.headers["X-Total-Count"] = str(total)
     return rows
 
@@ -41,14 +45,24 @@ def list_errored(
 @router.get("/discarded", response_model=list[ImportStagingRowRead])
 def list_discarded(
     response: Response,
-    page: PageParams = Depends(get_pagination),
+    page: ErroredPageParams = Depends(ErroredPageParams),
     session: Session = Depends(get_session),
 ):
     rows, total = staging_service.list_discarded(
-        session, limit=page.limit, offset=page.offset,
+        session, limit=page.limit, offset=page.offset, search=page.search,
     )
     response.headers["X-Total-Count"] = str(total)
     return rows
+
+
+@router.get("/{row_id}/restore-preview", response_model=RestoreConflictPreview)
+def get_restore_preview(row_id: int, session: Session = Depends(get_session)):
+    row = staging_service.get_staging_row(session, row_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Staging row not found")
+    if row.discarded_at is None:
+        raise HTTPException(status_code=409, detail="Row is not discarded; cannot preview restore")
+    return staging_service.preview_restore_staging(session, row)
 
 
 @router.get("/{row_id}", response_model=StagingRowDetailRead)
@@ -72,14 +86,33 @@ def discard_staging_row(row_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{row_id}/restore", response_model=ImportStagingRowRead)
-def restore_staging_row(row_id: int, session: Session = Depends(get_session)):
+def restore_staging_row(
+    row_id: int,
+    body: StagingRestoreRequest = None,
+    session: Session = Depends(get_session),
+):
+    if body is None:
+        body = StagingRestoreRequest()
     row = staging_service.get_staging_row(session, row_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Staging row not found")
     try:
-        staging_service.restore_staging_row(session, row)
+        staging_service.restore_staging_row_with_actions(session, row, body.actions)
     except staging_service.StagingRestoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except staging_service.StagingRestoreValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": exc.detail, "action_index": exc.action_index},
+        ) from exc
+    except staging_service.StagingRestoreConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Residual collision after applying actions.",
+                "preview": exc.preview.model_dump(mode="json"),
+            },
+        ) from exc
     return row
 
 

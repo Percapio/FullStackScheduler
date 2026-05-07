@@ -6,9 +6,12 @@ import { useShippingSort, type FlatSortKey, type SortState } from '@/composables
 import { useFontSize } from '@/composables/useFontSize'
 import { useJobFormatters } from '@/composables/useJobFormatters'
 import SortHeader from '@/components/SortHeader.vue'
+import EyeIcon from '@/components/EyeIcon.vue'
+import InspectDrawer from '@/components/InspectDrawer.vue'
+import DiscardedJobsDrawer from '@/components/DiscardedJobsDrawer.vue'
 
 const store = useShippingStore()
-const { jobs, loading, error } = storeToRefs(store)
+const { jobs, loading, error, inspected, discardedTotal } = storeToRefs(store)
 const { carrierBadge, formatDate, buildLabel, renderNotes } = useJobFormatters()
 
 const sort = ref<SortState>({ key: 'resolved_ship_date', direction: 'asc' })
@@ -23,7 +26,15 @@ function cycleSort(key: FlatSortKey) {
   }
 }
 
-onMounted(() => store.load())
+async function onDiscard(jobId: number): Promise<void> {
+  store.closeInspect()
+  await store.discardJob(jobId)
+}
+
+onMounted(() => {
+  store.load()
+  store.loadDiscardedJobs()
+})
 </script>
 
 <template>
@@ -33,6 +44,14 @@ onMounted(() => store.load())
         <template v-if="loading">Loading…</template>
         <template v-else>{{ sorted.length }} open jobs</template>
       </span>
+      <button
+        data-testid="discarded-jobs-pill-btn"
+        class="text-xs font-medium px-3 py-1 rounded-full border border-slate-300 dark:border-slate-600
+               text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+        @click="store.openDiscardedJobsDrawer()"
+      >
+        Discarded<span v-if="discardedTotal > 0" class="ml-1 tabular-nums">({{ discardedTotal }})</span>
+      </button>
     </header>
 
     <div v-if="error && !loading"
@@ -61,6 +80,7 @@ onMounted(() => store.load())
             <SortHeader label="Mfg Notes"    sort-key="base_mfg_notes"    :current="sort" @sort="cycleSort" />
             <SortHeader label="Ship Method"  sort-key="ship_method"       :current="sort" @sort="cycleSort" />
             <SortHeader label="Customer"     sort-key="customer_name"     :current="sort" @sort="cycleSort" />
+            <th class="px-3 py-2 w-10"></th>
           </tr>
         </thead>
         <tbody :class="fontClass" class="divide-y divide-slate-200 dark:divide-slate-700">
@@ -96,9 +116,26 @@ onMounted(() => store.load())
             <td class="px-3 py-2 text-slate-700 dark:text-slate-300">
               {{ job.customer.name }}
             </td>
+            <td class="px-3 py-2 text-right">
+              <button
+                :aria-label="`Inspect job ${job.id}`"
+                class="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+                @click.stop="store.inspect(job)"
+              >
+                <EyeIcon />
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
+
+    <InspectDrawer
+      :row="inspected"
+      :can-discard="true"
+      @close="store.closeInspect()"
+      @discard="onDiscard"
+    />
+    <DiscardedJobsDrawer />
   </section>
 </template>

@@ -1,10 +1,26 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import SlideOverPanel from './SlideOverPanel.vue'
+import ConfirmDiscardJobModal from './ConfirmDiscardJobModal.vue'
 import type { JobReadExpanded } from '@/api/history'
 
-const props = defineProps<{ row: JobReadExpanded | null }>()
-const emit = defineEmits<{ close: [] }>()
+const props = defineProps<{
+  row: JobReadExpanded | null
+  canDiscard?: boolean
+}>()
+const emit = defineEmits<{
+  close: []
+  discard: [jobId: number]
+}>()
+
+const confirmOpen = ref(false)
+
+function onConfirmDiscard(): void {
+  confirmOpen.value = false
+  if (props.row) {
+    emit('discard', props.row.id)
+  }
+}
 
 function flatten(value: unknown, prefix = ''): Array<[string, string]> {
   if (value === null || value === undefined) return [[prefix, '—']]
@@ -58,5 +74,25 @@ const flatEntries = computed<Array<[string, string]>>(() =>
         </dd>
       </template>
     </dl>
+
+    <div v-if="canDiscard && row !== null"
+         class="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700 flex justify-end">
+      <button
+        data-testid="inspect-discard-btn"
+        type="button"
+        class="rounded px-3 py-1.5 text-sm font-medium bg-red-600 hover:bg-red-700 text-white transition-colors"
+        @click="confirmOpen = true"
+      >
+        Discard job
+      </button>
+    </div>
+
+    <ConfirmDiscardJobModal
+      v-if="canDiscard"
+      :open="confirmOpen"
+      :job="row"
+      @confirm="onConfirmDiscard"
+      @cancel="confirmOpen = false"
+    />
   </SlideOverPanel>
 </template>

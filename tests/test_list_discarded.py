@@ -95,3 +95,40 @@ class TestListDiscarded:
         resp = client.get("/api/staging/discarded")
         assert resp.status_code == status.HTTP_200_OK
         assert isinstance(resp.json(), list)
+
+    def test_search_filters_by_processing_error(self, client, session, open_batch):
+        r1 = _errored_row(session, open_batch, source_row_number=1,
+                          processing_error="unique_needle error")
+        r2 = _errored_row(session, open_batch, source_row_number=2,
+                          processing_error="other error")
+        _discard(r1, session)
+        _discard(r2, session)
+        session.commit()
+
+        resp = client.get("/api/staging/discarded?search=unique_needle")
+        assert resp.status_code == 200
+        ids = {r["id"] for r in resp.json()}
+        assert ids == {r1.id}
+        assert int(resp.headers["x-total-count"]) == 1
+
+    def test_search_filters_by_batch_id(self, client, session, open_batch):
+        r1 = _errored_row(session, open_batch, source_row_number=1)
+        r2 = _errored_row(session, open_batch, source_row_number=2)
+        _discard(r1, session)
+        _discard(r2, session)
+        session.commit()
+
+        resp = client.get(f"/api/staging/discarded?search={open_batch.id}")
+        assert resp.status_code == 200
+        assert int(resp.headers["x-total-count"]) == 2
+
+    def test_search_no_match_returns_empty(self, client, session, open_batch):
+        r = _errored_row(session, open_batch, source_row_number=1,
+                         processing_error="real error")
+        _discard(r, session)
+        session.commit()
+
+        resp = client.get("/api/staging/discarded?search=nonexistent_xyz")
+        assert resp.status_code == 200
+        assert resp.json() == []
+        assert int(resp.headers["x-total-count"]) == 0

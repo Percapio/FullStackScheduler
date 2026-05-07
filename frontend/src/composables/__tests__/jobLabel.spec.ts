@@ -34,7 +34,7 @@ describe('useJobFormatters.jobLabel', () => {
   })
 
   it('appends non-new build label when no suffix', () => {
-    expect(jobLabel('ABC', job({ build_type: 'rework' }))).toBe('ABC REWORK')
+    expect(jobLabel('ABC', job({ build_type: 'rework' as 'ronc' }))).toBe('ABC REWORK')
   })
 
   it('omits build label for build_type=new', () => {

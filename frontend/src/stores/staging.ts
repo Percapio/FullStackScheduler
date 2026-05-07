@@ -3,9 +3,10 @@ import { ref, computed } from 'vue'
 import {
   fetchErrored, fetchDetail, submitCorrection,
   fetchDiscarded, deleteStagingRow, postRestoreStagingRow,
+  fetchStagingRestorePreview,
   fetchConflicts,
   type StagingRowSummary, type StagingRowDetail, type CorrectionPayload,
-  type ConflictGroup,
+  type ConflictGroup, type RestoreConflictPreview, type StagingRestoreAction,
 } from '@/api/staging'
 import { isApiError } from '@/api/client'
 
@@ -23,8 +24,10 @@ export type DiscardOutcome =
 
 type RestoreOutcome =
   | { kind: 'ok'; row: StagingRowSummary }
+  | { kind: 'preview'; preview: RestoreConflictPreview }
   | { kind: 'stale' }
-  | { kind: 'conflict'; message: string }
+  | { kind: 'conflict'; message: string; preview: RestoreConflictPreview }
+  | { kind: 'invalid-edit'; message: string; action_index: number }
   | { kind: 'network'; message: string }
 
 /** Discriminated union for the sidebar's two render modes.
@@ -34,17 +37,40 @@ type ConflictMode =
   | { kind: 'single' }
   | { kind: 'group'; batchId: number; groupKey: string }
 
+const ERRORED_PAGE_SIZE = 50
+
 export const useStagingStore = defineStore('staging', () => {
   const rows             = ref<StagingRowSummary[]>([])
   const total            = ref(0)
   const loading          = ref(false)
+  const error            = ref<string | null>(null)
   const details          = ref<Record<number, StagingRowDetail>>({})
   const activeErrorRowId = ref<number | null>(null)
 
-  const discardedRows       = ref<StagingRowSummary[]>([])
-  const discardedTotal      = ref(0)
-  const discardedLoading    = ref(false)
-  const discardedDrawerOpen = ref(false)
+  // Errored pagination state (Epoch 1)
+  const erroredOffset      = ref(0)
+  const erroredLimit       = ref(ERRORED_PAGE_SIZE)
+  const erroredSearchQuery = ref('')
+
+  const erroredHasPrev  = computed(() => erroredOffset.value > 0)
+  const erroredHasNext  = computed(() => erroredOffset.value + rows.value.length < total.value)
+  const erroredPageStart = computed(() => total.value === 0 ? 0 : erroredOffset.value + 1)
+  const erroredPageEnd   = computed(() => erroredOffset.value + rows.value.length)
+
+  const discardedRows         = ref<StagingRowSummary[]>([])
+  const discardedTotal        = ref(0)
+  const discardedLoading      = ref(false)
+  const discardedDrawerOpen   = ref(false)
+
+  // Discarded-rows pagination state (mirrors errored pagination)
+  const discardedOffset      = ref(0)
+  const discardedLimit       = ref(ERRORED_PAGE_SIZE)
+  const discardedSearchQuery = ref('')
+
+  const discardedHasPrev   = computed(() => discardedOffset.value > 0)
+  const discardedHasNext   = computed(() => discardedOffset.value + discardedRows.value.length < discardedTotal.value)
+  const discardedPageStart = computed(() => discardedTotal.value === 0 ? 0 : discardedOffset.value + 1)
+  const discardedPageEnd   = computed(() => discardedOffset.value + discardedRows.value.length)
 
   // Conflict-group state (§3.5.1)
   const conflictGroups        = ref<ConflictGroup[]>([])
@@ -59,13 +85,41 @@ export const useStagingStore = defineStore('staging', () => {
 
   async function loadErrored() {
     loading.value = true
+    error.value = null
     try {
-      const { rows: r, total: t } = await fetchErrored(100, 0)
+      const { rows: r, total: t } = await fetchErrored(
+        erroredLimit.value,
+        erroredOffset.value,
+        erroredSearchQuery.value.trim() || null,
+      )
       rows.value = r
       total.value = t
+    } catch {
+      error.value = 'Could not load errored rows. Check that the backend is running and retry.'
     } finally {
       loading.value = false
     }
+  }
+
+  async function nextErroredPage(): Promise<void> {
+    if (erroredHasNext.value) {
+      erroredOffset.value += erroredLimit.value
+      await loadErrored()
+    }
+  }
+
+  async function prevErroredPage(): Promise<void> {
+    if (erroredHasPrev.value) {
+      erroredOffset.value = Math.max(0, erroredOffset.value - erroredLimit.value)
+      await loadErrored()
+    }
+  }
+
+  async function setErroredSearch(nextQuery: string): Promise<void> {
+    erroredSearchQuery.value = nextQuery
+    erroredOffset.value = 0
+    error.value = null
+    await loadErrored()
   }
 
   async function loadDetail(rowId: number) {
@@ -103,7 +157,11 @@ export const useStagingStore = defineStore('staging', () => {
   async function loadDiscarded() {
     discardedLoading.value = true
     try {
-      const { rows: r, total: t } = await fetchDiscarded(100, 0)
+      const { rows: r, total: t } = await fetchDiscarded(
+        discardedLimit.value,
+        discardedOffset.value,
+        discardedSearchQuery.value.trim() || null,
+      )
       discardedRows.value = r
       discardedTotal.value = t
     } finally {
@@ -111,7 +169,29 @@ export const useStagingStore = defineStore('staging', () => {
     }
   }
 
+  async function nextDiscardedPage(): Promise<void> {
+    if (discardedHasNext.value) {
+      discardedOffset.value += discardedLimit.value
+      await loadDiscarded()
+    }
+  }
+
+  async function prevDiscardedPage(): Promise<void> {
+    if (discardedHasPrev.value) {
+      discardedOffset.value = Math.max(0, discardedOffset.value - discardedLimit.value)
+      await loadDiscarded()
+    }
+  }
+
+  async function setDiscardedSearch(nextQuery: string): Promise<void> {
+    discardedSearchQuery.value = nextQuery
+    discardedOffset.value = 0
+    await loadDiscarded()
+  }
+
   async function openDiscardedDrawer() {
+    discardedOffset.value = 0
+    discardedSearchQuery.value = ''
     await loadDiscarded()
     discardedDrawerOpen.value = true
   }
@@ -241,27 +321,93 @@ export const useStagingStore = defineStore('staging', () => {
     }
   }
 
-  async function restoreRow(rowId: number): Promise<RestoreOutcome> {
+  /**
+   * Phase 1 of the two-phase restore flow.
+   *
+   * Fetches the restore-preview for `rowId` and evaluates whether any genuine
+   * blockers exist. If none exist, attempts the restore immediately (empty
+   * actions fast-path) and returns `{ kind: 'ok' }`. If blockers exist,
+   * returns `{ kind: 'preview', preview }` so the caller can open the
+   * `RestoreConflictPreview` modal.
+   */
+  async function beginRestore(rowId: number): Promise<RestoreOutcome> {
     const idx = discardedRows.value.findIndex(r => r.id === rowId)
     if (idx < 0) return { kind: 'stale' }
-    const removed = discardedRows.value.splice(idx, 1)[0]
 
+    let preview: RestoreConflictPreview
     try {
-      const restored = await postRestoreStagingRow(rowId)
+      preview = await fetchStagingRestorePreview(rowId)
+    } catch {
+      return { kind: 'network', message: 'Could not fetch restore preview' }
+    }
+
+    const hasBlocker =
+      preview.colliding_staging_errored_rows.length > 0 ||
+      preview.colliding_live_jobs.length > 0
+
+    if (hasBlocker) {
+      return { kind: 'preview', preview }
+    }
+
+    // No blockers — restore immediately with empty actions.
+    return _commitRestoreRequest(rowId, idx, [])
+  }
+
+  /**
+   * Phase 2 of the two-phase restore flow.
+   *
+   * Called after the operator has resolved conflicts in the modal and pressed
+   * "Restore". Sends the actions list to the backend. On 409, returns a fresh
+   * `{ kind: 'conflict', preview }` so the modal can re-render with updated
+   * collision state.
+   */
+  async function commitRestore(
+    rowId: number,
+    actions: StagingRestoreAction[],
+  ): Promise<RestoreOutcome> {
+    const idx = discardedRows.value.findIndex(r => r.id === rowId)
+    if (idx < 0) return { kind: 'stale' }
+    return _commitRestoreRequest(rowId, idx, actions)
+  }
+
+  async function _commitRestoreRequest(
+    rowId: number,
+    idx: number,
+    actions: StagingRestoreAction[],
+  ): Promise<RestoreOutcome> {
+    const removed = discardedRows.value.splice(idx, 1)[0]
+    try {
+      const restored = await postRestoreStagingRow(rowId, actions)
       discardedTotal.value = Math.max(0, discardedTotal.value - 1)
-      // Re-injection into rows[] requires a list refresh — the restored row's
-      // place in pagination order is not derivable from the response alone.
       await loadErrored()
       return { kind: 'ok', row: restored }
     } catch (err) {
       discardedRows.value.splice(idx, 0, removed)
-      if (isApiError(err) && err.response?.status === 409) {
-        // Server view disagrees with local cache; resync before returning so
-        // the next user action operates on truth, not on the stale rollback.
-        await loadDiscarded()
-        return {
-          kind: 'conflict',
-          message: String(err.response.data?.detail ?? 'Row is not discarded'),
+      if (isApiError(err) && err.response) {
+        const status = err.response.status
+        const detail = err.response.data?.detail
+        if (status === 422 && detail && typeof detail === 'object') {
+          const d = detail as Record<string, unknown>
+          return {
+            kind: 'invalid-edit',
+            message: String(d.message ?? 'Action validation failed'),
+            action_index: Number(d.action_index ?? 0),
+          }
+        }
+        if (status === 409 && detail && typeof detail === 'object') {
+          const d = detail as Record<string, unknown>
+          if (d.preview) {
+            await loadDiscarded()
+            return {
+              kind: 'conflict',
+              message: String(d.message ?? 'Residual collision after actions'),
+              preview: d.preview as RestoreConflictPreview,
+            }
+          }
+        }
+        if (status === 409) {
+          await loadDiscarded()
+          return { kind: 'network', message: String(detail ?? 'Row is not discarded') }
         }
       }
       return { kind: 'network', message: 'Could not reach the API' }
@@ -269,14 +415,20 @@ export const useStagingStore = defineStore('staging', () => {
   }
 
   return {
-    rows, visibleRows, total, loading, details,
+    rows, visibleRows, total, loading, error, details,
     activeErrorRowId,
+    erroredOffset, erroredLimit, erroredSearchQuery,
+    erroredHasPrev, erroredHasNext, erroredPageStart, erroredPageEnd,
     discardedRows, discardedTotal, discardedLoading, discardedDrawerOpen,
+    discardedOffset, discardedLimit, discardedSearchQuery,
+    discardedHasPrev, discardedHasNext, discardedPageStart, discardedPageEnd,
     conflictGroups, reconciledConflictGroups, conflictsLoading, sidebarMode, groupBusy,
     loadErrored, openError, closeError, loadDetail, correct,
     loadConflicts, openConflictGroup,
-    loadDiscarded, openDiscardedDrawer, closeDiscardedDrawer,
-    discardRow, restoreRow,
+    loadDiscarded, nextDiscardedPage, prevDiscardedPage, setDiscardedSearch,
+    openDiscardedDrawer, closeDiscardedDrawer,
+    discardRow, beginRestore, commitRestore,
     correctConflictRow, discardConflictRow,
+    nextErroredPage, prevErroredPage, setErroredSearch,
   }
 })

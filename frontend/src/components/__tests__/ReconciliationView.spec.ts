@@ -118,21 +118,8 @@ describe('ReconciliationView', () => {
     expect(openSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('single-page invariant: loadErrored passes (100, 0) to fetchErrored', async () => {
-    // Arrange: mount, drain mount-time async work, then isolate the assertion
-    // from the mount-time fetch by resetting the API mock.
-    const { store } = mountView()
-    await flushPromises()
-    mockFetchErrored.mockReset()
-    mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
-
-    // Act: real store.loadErrored runs end-to-end — no spy interposed.
-    await store.loadErrored()
-
-    // Assert: exactly one call with positional args (100, 0).
-    expect(mockFetchErrored).toHaveBeenCalledTimes(1)
-    expect(mockFetchErrored).toHaveBeenCalledWith(100, 0)
-  })
+  // NOTE: "single-page invariant: loadErrored passes (100, 0) to fetchErrored" retired in
+  // Phase 15 Epoch 1. The errored table is now paginated (50-per-page) with server-side search.
 
   it('calls supersessionStore.loadPending on mount', async () => {
     setActivePinia(createPinia())
@@ -168,5 +155,64 @@ describe('ReconciliationView', () => {
       // DOCUMENT_POSITION_FOLLOWING = 4 — conflictEl comes after supersessionEl.
       expect(pos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
+  })
+
+  it('renders SearchPaginatorBar with errored-search placeholder', async () => {
+    mountView()
+    await flushPromises()
+    const bar = document.body.querySelector('[data-testid="errored-search-bar"]')
+    expect(bar).not.toBeNull()
+    const input = bar?.querySelector('input[aria-label="Search"]') as HTMLInputElement | null
+    expect(input).not.toBeNull()
+    expect(input?.placeholder).toContain('row')
+  })
+
+  it('typing in the search bar calls store.setErroredSearch after 300ms debounce', async () => {
+    vi.useFakeTimers()
+    const { store } = mountView()
+    await flushPromises()
+
+    const spy = vi.spyOn(store, 'setErroredSearch').mockResolvedValue()
+    const input = document.body.querySelector('[data-testid="errored-search-bar"] input') as HTMLInputElement
+    input.value = 'myquery'
+    input.dispatchEvent(new Event('input'))
+
+    expect(spy).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(300)
+    await flushPromises()
+    expect(spy).toHaveBeenCalledWith('myquery')
+    vi.useRealTimers()
+  })
+
+  it('Prev button fires store.prevErroredPage', async () => {
+    const { store } = mountView()
+    await flushPromises()
+    // Give the store some state so hasPrev=true
+    store.erroredOffset = 50
+    store.rows = []
+    store.total = 60
+    await flushPromises()
+
+    const spy = vi.spyOn(store, 'prevErroredPage').mockResolvedValue()
+    const prevBtn = document.body.querySelector('button[aria-label="Previous page"]') as HTMLButtonElement
+    prevBtn.click()
+    await flushPromises()
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('Next button fires store.nextErroredPage', async () => {
+    const { store } = mountView()
+    await flushPromises()
+    // Give the store some state so hasNext=true
+    store.erroredOffset = 0
+    store.rows = Array.from({ length: 50 }, () => ({ id: 1 } as never))
+    store.total = 60
+    await flushPromises()
+
+    const spy = vi.spyOn(store, 'nextErroredPage').mockResolvedValue()
+    const nextBtn = document.body.querySelector('button[aria-label="Next page"]') as HTMLButtonElement
+    nextBtn.click()
+    await flushPromises()
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 })

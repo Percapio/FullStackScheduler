@@ -4,6 +4,91 @@
  */
 
 export interface paths {
+    "/api/staging/supersession-candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Supersession Candidates */
+        get: operations["list_supersession_candidates_api_staging_supersession_candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/staging/supersession-candidates/bulk-approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk Approve */
+        post: operations["bulk_approve_api_staging_supersession_candidates_bulk_approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/staging/supersession-candidates/{candidate_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve */
+        post: operations["approve_api_staging_supersession_candidates__candidate_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/staging/supersession-candidates/{candidate_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject */
+        post: operations["reject_api_staging_supersession_candidates__candidate_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/staging/conflicts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Conflicts */
+        get: operations["list_conflicts_api_staging_conflicts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/staging/errored": {
         parameters: {
             query?: never;
@@ -13,6 +98,40 @@ export interface paths {
         };
         /** List Errored */
         get: operations["list_errored_api_staging_errored_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/staging/discarded": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Discarded */
+        get: operations["list_discarded_api_staging_discarded_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/staging/{row_id}/restore-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Restore Preview */
+        get: operations["get_restore_preview_api_staging__row_id__restore_preview_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -32,6 +151,24 @@ export interface paths {
         get: operations["get_staging_row_api_staging__row_id__get"];
         put?: never;
         post?: never;
+        /** Discard Staging Row */
+        delete: operations["discard_staging_row_api_staging__row_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/staging/{row_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Staging Row */
+        post: operations["restore_staging_row_api_staging__row_id__restore_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -106,6 +243,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/discarded": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Discarded Jobs */
+        get: operations["list_discarded_jobs_api_jobs_discarded_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -134,6 +288,79 @@ export interface paths {
         get: operations["get_job_lineage_api_jobs__job_id__lineage_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/discard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Discard Job
+         * @description Soft-delete a job by setting discarded_at.
+         *
+         *     Returns the soft-deleted job on success.
+         *     404 if the job does not exist.
+         *     409 if the job is already discarded (body contains the existing row).
+         *     409 if the job's status is 'shipped' (shipped jobs cannot be discarded).
+         */
+        post: operations["discard_job_api_jobs__job_id__discard_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/restore-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job Restore Preview
+         * @description Return a conflict-preview snapshot for a discarded job.
+         *
+         *     404 if the job does not exist.
+         *     409 if the job is not currently discarded.
+         */
+        get: operations["get_job_restore_preview_api_jobs__job_id__restore_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Job
+         * @description Restore a discarded job, applying staging-side resolution actions atomically.
+         *
+         *     404 if the job does not exist.
+         *     409 if the job is not currently discarded.
+         *     409 with body { detail, preview } on residual collision after actions.
+         *     422 with body { detail, action_index } on per-action validation failure.
+         */
+        post: operations["restore_job_api_jobs__job_id__restore_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -289,15 +516,41 @@ export interface components {
             file: string;
         };
         /**
+         * BuildQualifier
+         * @description Suffix-grade work-class qualifier (TDD §3.1.1).
+         *
+         *     Pre:  raw cell line matches /^(RWK|REWORK|RMA)/i.
+         *     Post: cardinality is 3, bounded by business intent.
+         *     Note: independent dimension from split_suffix; co-exists with BuildType.
+         * @enum {string}
+         */
+        BuildQualifier: "rwk" | "rework" | "rma";
+        /**
          * BuildType
          * @enum {string}
          */
         BuildType: "new" | "ronc" | "rowc";
+        /** BulkApprovalResultRead */
+        BulkApprovalResultRead: {
+            /** Approved */
+            approved: number[];
+            /** Shield Rejected */
+            shield_rejected: number[];
+            /** Already Closed */
+            already_closed: number[];
+            /** Not Found */
+            not_found: number[];
+        };
         /**
-         * BuildQualifier
+         * CandidateReason
          * @enum {string}
          */
-        BuildQualifier: "rwk" | "rework" | "rma";
+        CandidateReason: "orphan_after_split" | "orphan_after_recombine" | "orphan_other";
+        /**
+         * CandidateResolution
+         * @enum {string}
+         */
+        CandidateResolution: "approve" | "reject" | "auto_returned";
         /** ClassificationRead */
         ClassificationRead: {
             /** Code */
@@ -317,6 +570,21 @@ export interface components {
              */
             updated_at: string;
         };
+        /** ConflictGroup */
+        ConflictGroup: {
+            /** Batch Id */
+            batch_id: number;
+            /** Group Key */
+            group_key: string;
+            kind: components["schemas"]["ConflictKind"];
+            /** Rows */
+            rows: components["schemas"]["StagingRowDetailRead"][];
+        };
+        /**
+         * ConflictKind
+         * @enum {string}
+         */
+        ConflictKind: "intra_file_duplicate";
         /** CustomerRead */
         CustomerRead: {
             /** Name */
@@ -372,25 +640,19 @@ export interface components {
             updated_at: string;
         };
         /**
-         * ConflictKind
-         * @enum {string}
-         */
-        ConflictKind: "intra_file_duplicate";
-        /** ConflictGroup */
-        ConflictGroup: {
-            /** Batch Id */
-            batch_id: number;
-            /** Group Key */
-            group_key: string;
-            kind: components["schemas"]["ConflictKind"];
-            /** Rows (StagingRowDetailRead, len >= 2) */
-            rows: components["schemas"]["StagingRowDetailRead"][];
-        };
-        /**
          * ImportStatus
          * @enum {string}
          */
         ImportStatus: "pending" | "processed" | "error";
+        /**
+         * IncomingRestoreCandidate
+         * @description The row the operator wants to restore, discriminated by source kind.
+         */
+        IncomingRestoreCandidate: {
+            kind: components["schemas"]["RestoreSourceKind"];
+            staging?: components["schemas"]["StagingRowDetailRead"] | null;
+            job?: components["schemas"]["JobReadExpanded"] | null;
+        };
         /** JobRead */
         JobRead: {
             /** Assembly Id */
@@ -481,6 +743,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Discarded At */
+            discarded_at?: string | null;
         };
         /** JobReadExpanded */
         JobReadExpanded: {
@@ -572,16 +836,91 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Discarded At */
+            discarded_at?: string | null;
             assembly: components["schemas"]["AssemblyRead"];
             customer: components["schemas"]["CustomerRead"];
             salesperson?: components["schemas"]["SalespersonRead"] | null;
             build_qualifier?: components["schemas"]["BuildQualifier"] | null;
         };
         /**
+         * JobRestoreRequest
+         * @description Request body for POST /api/jobs/{jobId}/restore.
+         *
+         *     Symmetric with StagingRestoreRequest (§6.2). Every action references a
+         *     staging row id (the operator cannot edit live-job colliders).
+         *     `actions: []` is the no-conflict path — restore is attempted directly.
+         */
+        JobRestoreRequest: {
+            /** Actions */
+            actions?: components["schemas"]["StagingRestoreAction"][];
+        };
+        /**
          * JobStatus
          * @enum {string}
          */
         JobStatus: "planned" | "wip" | "shipped";
+        /** JobSupersessionCandidatePage */
+        JobSupersessionCandidatePage: {
+            /** Items */
+            items: components["schemas"]["JobSupersessionCandidateRead"][];
+            /** Total */
+            total: number;
+        };
+        /** JobSupersessionCandidateRead */
+        JobSupersessionCandidateRead: {
+            /** Id */
+            id: number;
+            /** Job Id */
+            job_id: number;
+            /** Detected In Batch Id */
+            detected_in_batch_id: number;
+            reason: components["schemas"]["CandidateReason"];
+            /**
+             * Detected At
+             * Format: date-time
+             */
+            detected_at: string;
+            /** Resolved At */
+            resolved_at: string | null;
+            resolution: components["schemas"]["CandidateResolution"] | null;
+            /** Closed By Shield Reason */
+            closed_by_shield_reason: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * RestoreConflictPreview
+         * @description Read-only snapshot describing what would collide if a discarded row were restored.
+         *
+         *     Pre:  the target row exists and discarded_at IS NOT NULL.
+         *     Post: purely descriptive — calling the preview endpoint never mutates state.
+         */
+        RestoreConflictPreview: {
+            incoming: components["schemas"]["IncomingRestoreCandidate"];
+            /** Colliding Staging Errored Rows */
+            colliding_staging_errored_rows: components["schemas"]["StagingRowDetailRead"][];
+            /** Colliding Staging Discarded Rows */
+            colliding_staging_discarded_rows: components["schemas"]["StagingRowDetailRead"][];
+            /** Colliding Live Jobs */
+            colliding_live_jobs: components["schemas"]["JobReadExpanded"][];
+            /** Group Key */
+            group_key: string;
+        };
+        /**
+         * RestoreSourceKind
+         * @description Discriminates whether a restore candidate is a staging row or a persisted job.
+         * @enum {string}
+         */
+        RestoreSourceKind: "staging" | "job";
         /** SalespersonRead */
         SalespersonRead: {
             /** Code */
@@ -600,6 +939,30 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * StagingRestoreAction
+         * @description One operator-resolution action for a staging-side row in the preview modal.
+         */
+        StagingRestoreAction: {
+            /** Kind */
+            kind: string;
+            /** Row Id */
+            row_id: number;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * StagingRestoreRequest
+         * @description Request body for POST /api/staging/{rowId}/restore.
+         *
+         *     `actions: []` is the no-conflict path — restore is attempted directly.
+         */
+        StagingRestoreRequest: {
+            /** Actions */
+            actions?: components["schemas"]["StagingRestoreAction"][];
         };
         /** StagingRowCorrectionRequest */
         StagingRowCorrectionRequest: {
@@ -707,6 +1070,8 @@ export interface components {
             processed_at: string | null;
             /** Discarded At */
             discarded_at?: string | null;
+            /** Duplicate Group Key */
+            duplicate_group_key?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -717,72 +1082,14 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            build_qualifier?: components["schemas"]["BuildQualifier"] | null;
             /** Highlight Fields */
             readonly highlight_fields: string[];
-            build_qualifier?: components["schemas"]["BuildQualifier"] | null;
-        };
-        /**
-         * CandidateReason
-         * @enum {string}
-         */
-        CandidateReason: "orphan_after_split" | "orphan_after_recombine" | "orphan_other";
-        /**
-         * CandidateResolution
-         * @enum {string}
-         */
-        CandidateResolution: "approve" | "reject" | "auto_returned";
-        /** JobSupersessionCandidateRead */
-        JobSupersessionCandidateRead: {
-            /** Id */
-            id: number;
-            /** Job Id */
-            job_id: number;
-            /** Detected In Batch Id */
-            detected_in_batch_id: number;
-            reason: components["schemas"]["CandidateReason"];
-            /**
-             * Detected At
-             * Format: date-time
-             */
-            detected_at: string;
-            /** Resolved At */
-            resolved_at: string | null;
-            resolution: components["schemas"]["CandidateResolution"] | null;
-            /** Closed By Shield Reason */
-            closed_by_shield_reason: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /**
-             * Updated At
-             * Format: date-time
-             */
-            updated_at: string;
-        };
-        /** JobSupersessionCandidatePage */
-        JobSupersessionCandidatePage: {
-            /** Items */
-            items: components["schemas"]["JobSupersessionCandidateRead"][];
-            /** Total */
-            total: number;
         };
         /** SupersessionBulkApprovalRequest */
         SupersessionBulkApprovalRequest: {
             /** Ids */
             ids: number[];
-        };
-        /** BulkApprovalResultRead */
-        BulkApprovalResultRead: {
-            /** Approved */
-            approved: number[];
-            /** Shield Rejected */
-            shield_rejected: number[];
-            /** Already Closed */
-            already_closed: number[];
-            /** Not Found */
-            not_found: number[];
         };
         /** ValidationError */
         ValidationError: {
@@ -806,9 +1113,11 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    list_errored_api_staging_errored_get: {
+    list_supersession_candidates_api_staging_supersession_candidates_get: {
         parameters: {
             query?: {
+                status?: string;
+                resolution?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -824,7 +1133,219 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+                    "application/json": components["schemas"]["JobSupersessionCandidatePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_approve_api_staging_supersession_candidates_bulk_approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SupersessionBulkApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkApprovalResultRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_api_staging_supersession_candidates__candidate_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidate_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSupersessionCandidateRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_api_staging_supersession_candidates__candidate_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidate_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSupersessionCandidateRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_conflicts_api_staging_conflicts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConflictGroup"][];
+                };
+            };
+        };
+    };
+    list_errored_api_staging_errored_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
                     "application/json": components["schemas"]["ImportStagingRowRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_discarded_api_staging_discarded_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportStagingRowRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_restore_preview_api_staging__row_id__restore_preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreConflictPreview"];
                 };
             };
             /** @description Validation Error */
@@ -856,6 +1377,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StagingRowDetailRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    discard_staging_row_api_staging__row_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_staging_row_api_staging__row_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["StagingRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportStagingRowRead"];
                 };
             };
             /** @description Validation Error */
@@ -1005,6 +1590,39 @@ export interface operations {
             };
         };
     };
+    list_discarded_jobs_api_jobs_discarded_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReadExpanded"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_job_api_jobs__job_id__get: {
         parameters: {
             query?: never;
@@ -1054,6 +1672,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobReadExpanded"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    discard_job_api_jobs__job_id__discard_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReadExpanded"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_restore_preview_api_jobs__job_id__restore_preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreConflictPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_job_api_jobs__job_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["JobRestoreRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReadExpanded"];
                 };
             };
             /** @description Validation Error */

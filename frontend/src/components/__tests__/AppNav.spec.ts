@@ -54,14 +54,14 @@ afterEach(() => {
 describe('AppNav', () => {
   it('renders the history-only control row when route.name === "history"', async () => {
     const w = await mountNav('/history')
-    expect(w.find('input[aria-label="Search history"]').exists()).toBe(true)
+    expect(w.find('input[aria-label="Search"]').exists()).toBe(true)
     expect(w.find('button[aria-label="Scroll to top"]').exists()).toBe(true)
     expect(w.find('button[aria-label="Scroll to bottom"]').exists()).toBe(true)
   })
 
   it('hides the control row on non-history routes (search input is not in the DOM)', async () => {
     const w = await mountNav('/reconciliation')
-    expect(w.find('input[aria-label="Search history"]').exists()).toBe(false)
+    expect(w.find('input[aria-label="Search"]').exists()).toBe(false)
     expect(w.find('button[aria-label="Scroll to top"]').exists()).toBe(false)
   })
 
@@ -70,7 +70,7 @@ describe('AppNav', () => {
     const store = useHistoryStore()
     const spy = vi.spyOn(store, 'setSearch')
 
-    const input = w.find('input[aria-label="Search history"]')
+    const input = w.find('input[aria-label="Search"]')
     await input.setValue('acme')
     expect(spy).not.toHaveBeenCalled()
 

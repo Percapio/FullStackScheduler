@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..models import Assembly, BuildType, Customer, Job, JobStatus
+from ..models import Assembly, BuildType, Customer, ImportStagingRow, ImportStatus, Job, JobStatus
 
 JOB_EXPAND_OPTIONS = (
     selectinload(Job.assembly).selectinload(Assembly.classifications),
@@ -17,13 +19,14 @@ def _count(session: Session, base) -> int:
 
 
 def _active_jobs_base() -> select:
-    """Return a base SELECT over Jobs that are not superseded.
+    """Return a base SELECT over Jobs that are active: not superseded and not discarded.
 
     All active-job surfaces (list_jobs, list_shipping, get_job) must compose
-    from this helper so the superseded_at IS NULL filter is applied uniformly.
+    from this helper so both the superseded_at IS NULL and discarded_at IS NULL
+    filters are applied uniformly.
     History / lineage queries use select(Job) directly and document the omission.
     """
-    return select(Job).where(Job.superseded_at.is_(None))
+    return select(Job).where(Job.superseded_at.is_(None), Job.discarded_at.is_(None))
 
 
 def list_jobs(
@@ -79,7 +82,8 @@ def list_history(
     include_superseded: bool = True,
 ) -> tuple[list[Job], int]:
     # History is the audit trail; superseded rows belong here by default (TDD §1 Epoch 1).
-    base = select(Job).where(Job.status == JobStatus.shipped)
+    # Discarded jobs are excluded from History — a discarded planned job was never shipped.
+    base = select(Job).where(Job.status == JobStatus.shipped, Job.discarded_at.is_(None))
     if not include_superseded:
         base = base.where(Job.superseded_at.is_(None))
     if search:
@@ -150,3 +154,281 @@ def get_lineage(session: Session, job_id: int, *, include_superseded: bool = Tru
         .order_by(chronology.asc(), Job.id.asc())
     ).unique().all()
     return list(rows)
+
+
+class JobDiscardError(Exception):
+    """Raised when a discard operation cannot proceed."""
+
+
+def get_job_including_discarded(session: Session, job_id: int) -> Job | None:
+    """Fetch a job by id regardless of discarded_at status.
+
+    Used by the inspect-drawer pre-fetch and restore-preview to load rows
+    that `get_job` (which filters discarded_at IS NULL) would miss.
+
+    Pre:  job_id is a valid primary key.
+    Post: returns the Job row or None if not found.
+    """
+    return session.execute(
+        select(Job)
+        .where(Job.id == job_id)
+        .options(*JOB_EXPAND_OPTIONS)
+    ).unique().scalar_one_or_none()
+
+
+def discard_job(session: Session, job_id: int) -> Job:
+    """Soft-delete a Job by setting discarded_at to now().
+
+    Pre:  job exists, discarded_at IS NULL, status ∈ {planned, wip}.
+    Post: discarded_at := now() UTC; row returned with the timestamp set.
+
+    Raises:
+        JobDiscardError: if job not found (message starts with "not found"),
+                         if already discarded (message starts with "already discarded"),
+                         if status is shipped (message starts with "cannot discard shipped").
+    """
+    job = get_job_including_discarded(session, job_id)
+    if job is None:
+        raise JobDiscardError(f"not found: job {job_id} does not exist")
+    if job.discarded_at is not None:
+        raise JobDiscardError(f"already discarded: job {job_id}")
+    if job.status == JobStatus.shipped:
+        raise JobDiscardError(f"cannot discard shipped job {job_id}")
+
+    job.discarded_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    session.flush()
+    return job
+
+
+# ---------------------------------------------------------------------------
+# Identity key helper (§7.2 — single source of truth for job-side identity)
+# ---------------------------------------------------------------------------
+
+def identity_key_for_job(job: Job) -> str | None:
+    """Compute the canonical identity key for a persisted Job.
+
+    Mirrors the staging row's _identity_key_after_payload but reads directly
+    from Job fields. Returns None when build_type is None (should not occur
+    for valid ingested rows).
+
+    This is the authoritative implementation; services/staging.py imports it.
+    """
+    if job.build_type is None:
+        return None
+    qualifier_segment = job.build_qualifier.value if job.build_qualifier else ""
+    assembly_part = job.assembly.part_number if job.assembly else ""
+    return (
+        f"{assembly_part}|{job.build_type.value}"
+        f"|{job.split_suffix or ''}|{job.repeat_reference or ''}"
+        f"|{qualifier_segment}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Discarded jobs list (§6.2)
+# ---------------------------------------------------------------------------
+
+def list_discarded_jobs(
+    session: Session,
+    *,
+    limit: int,
+    offset: int,
+    search: str | None = None,
+) -> tuple[list[Job], int]:
+    """List discarded jobs (discarded_at IS NOT NULL), with optional search.
+
+    Search rules (single-pattern column-OR, mirroring History):
+        - assembly.part_number   ILIKE %search%
+        - customer.name          ILIKE %search%
+        - job.split_suffix       ILIKE %search%
+        - job.repeat_reference   ILIKE %search%
+        - job.id                 = int(search) iff parses as int
+    """
+    base = select(Job).where(Job.discarded_at.is_not(None))
+    if search:
+        pattern = f"%{search}%"
+        int_val: int | None = None
+        try:
+            int_val = int(search)
+        except ValueError:
+            pass
+        base = base.join(Job.assembly).join(Job.customer)
+        clauses = [
+            Assembly.part_number.ilike(pattern),
+            Customer.name.ilike(pattern),
+            Job.split_suffix.ilike(pattern),
+            Job.repeat_reference.ilike(pattern),
+        ]
+        if int_val is not None:
+            clauses.append(Job.id == int_val)
+        base = base.where(or_(*clauses))
+    total = _count(session, base)
+    rows = session.scalars(
+        base.options(*JOB_EXPAND_OPTIONS)
+        .order_by(Job.discarded_at.desc().nullslast(), Job.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).unique().all()
+    return list(rows), total
+
+
+# ---------------------------------------------------------------------------
+# Restore-conflict preview (§6.2)
+# ---------------------------------------------------------------------------
+
+class JobRestoreError(Exception):
+    """Raised when a restore operation cannot proceed."""
+
+
+class JobRestoreConflictError(Exception):
+    """Residual collision after applying actions; carries a fresh preview."""
+
+    def __init__(self, preview) -> None:
+        super().__init__("Residual collision after actions.")
+        self.preview = preview
+
+
+def _build_restore_preview_for_job(session: Session, job: "Job") -> "RestoreConflictPreview":
+    """Build a RestoreConflictPreview for *job* without checking discarded_at.
+
+    This is the inner collision-detection step.  preview_restore_job adds the
+    guard checks on top; restore_job_with_actions calls this directly after
+    clearing discarded_at so the guard would spuriously fail.
+    """
+    from ..schemas import (
+        IncomingRestoreCandidate,
+        JobReadExpanded as JobReadExpandedSchema,
+        RestoreConflictPreview,
+        RestoreSourceKind,
+        StagingRowDetailRead,
+    )
+    from .staging import _identity_key_for_row
+
+    job_id = job.id
+    group_key = identity_key_for_job(job) or ""
+
+    errored_colliders: list[ImportStagingRow] = []
+    discarded_colliders: list[ImportStagingRow] = []
+    live_job_colliders: list[Job] = []
+
+    if group_key:
+        candidate_errored = list(session.scalars(
+            select(ImportStagingRow).where(
+                ImportStagingRow.processing_status == ImportStatus.error,
+                ImportStagingRow.discarded_at.is_(None),
+            )
+        ).all())
+        for c in candidate_errored:
+            if _identity_key_for_row(c) == group_key:
+                errored_colliders.append(c)
+
+        candidate_discarded = list(session.scalars(
+            select(ImportStagingRow).where(
+                ImportStagingRow.discarded_at.is_not(None)
+            )
+        ).all())
+        for c in candidate_discarded:
+            if _identity_key_for_row(c) == group_key:
+                discarded_colliders.append(c)
+
+        candidate_jobs = list(session.scalars(
+            select(Job)
+            .where(
+                Job.superseded_at.is_(None),
+                Job.discarded_at.is_(None),
+                Job.id != job_id,
+            )
+            .options(*JOB_EXPAND_OPTIONS)
+        ).unique().all())
+        for j in candidate_jobs:
+            if identity_key_for_job(j) == group_key:
+                live_job_colliders.append(j)
+
+    incoming = IncomingRestoreCandidate(
+        kind=RestoreSourceKind.JOB,
+        staging=None,
+        job=JobReadExpandedSchema.model_validate(job),
+    )
+
+    return RestoreConflictPreview(
+        incoming=incoming,
+        colliding_staging_errored_rows=[StagingRowDetailRead.model_validate(c) for c in errored_colliders],
+        colliding_staging_discarded_rows=[StagingRowDetailRead.model_validate(c) for c in discarded_colliders],
+        colliding_live_jobs=[JobReadExpandedSchema.model_validate(j) for j in live_job_colliders],
+        group_key=group_key,
+    )
+
+
+def preview_restore_job(session: Session, job_id: int):
+    """Compute what would collide if the discarded job were restored.
+
+    Pre:  job exists and discarded_at IS NOT NULL.
+    Post: returns a RestoreConflictPreview; never mutates state.
+
+    Raises:
+        JobRestoreError: if job not found (starts "not found") or
+                         if job is not discarded (starts "not discarded").
+    """
+    job = get_job_including_discarded(session, job_id)
+    if job is None:
+        raise JobRestoreError(f"not found: job {job_id} does not exist")
+    if job.discarded_at is None:
+        raise JobRestoreError(f"not discarded: job {job_id} is not currently discarded")
+
+    return _build_restore_preview_for_job(session, job)
+
+
+# ---------------------------------------------------------------------------
+# Restore with actions (§6.2)
+# ---------------------------------------------------------------------------
+
+def restore_job_with_actions(session: Session, job_id: int, actions: list) -> Job:
+    """Apply staging `actions` and restore the discarded job inside a single transaction.
+
+    Pre:  job exists and discarded_at IS NOT NULL.
+    Post: on success, job.discarded_at is None and the session is committed.
+
+    Raises:
+        JobRestoreError: if job not found or not discarded.
+        StagingRestoreValidationError (from staging): if any action fails;
+            transaction rolled back.
+        JobRestoreConflictError: if a residual identity collision remains after
+            actions are applied; carries a fresh RestoreConflictPreview.
+    """
+    from .staging import StagingRestoreValidationError, apply_restore_actions
+
+    job = get_job_including_discarded(session, job_id)
+    if job is None:
+        raise JobRestoreError(f"not found: job {job_id} does not exist")
+    if job.discarded_at is None:
+        raise JobRestoreError(f"not discarded: job {job_id} is not currently discarded")
+
+    nested = session.begin_nested()
+    try:
+        apply_restore_actions(session, actions)
+        job.discarded_at = None
+        # Flush so the DB reflects the restored state before the preview query runs.
+        session.flush()
+        # Use internal helper — preview_restore_job would fail because discarded_at is now None.
+        preview = _build_restore_preview_for_job(session, job)
+        has_collision = (
+            bool(preview.colliding_staging_errored_rows)
+            or bool(preview.colliding_live_jobs)
+        )
+        if has_collision:
+            nested.rollback()
+            raise JobRestoreConflictError(preview)
+        nested.commit()
+    except (StagingRestoreValidationError, JobRestoreConflictError):
+        try:
+            nested.rollback()
+        except Exception:
+            pass
+        raise
+    except Exception:
+        nested.rollback()
+        raise
+
+    session.commit()
+    return job
+

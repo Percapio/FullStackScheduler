@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStagingStore } from '@/stores/staging'
 import { useSupersessionStore } from '@/stores/supersession'
+import { useDebouncedRef } from '@/composables/useDebouncedRef'
 import ReconciliationSidebar from '@/components/ReconciliationSidebar.vue'
 import DiscardedRowsDrawer from '@/components/DiscardedRowsDrawer.vue'
 import ConflictGroupList from '@/components/ConflictGroupList.vue'
 import SupersessionCandidateList from '@/components/SupersessionCandidateList.vue'
+import SearchPaginatorBar from '@/components/SearchPaginatorBar.vue'
 import WarnIcon from '@/components/WarnIcon.vue'
 
 const store = useStagingStore()
-const { rows, total, loading, discardedTotal } = storeToRefs(store)
+const {
+  rows, total, loading, discardedTotal,
+  erroredSearchQuery,
+  erroredHasPrev, erroredHasNext, erroredPageStart, erroredPageEnd,
+} = storeToRefs(store)
 const supersessionStore = useSupersessionStore()
 
 onMounted(() => {
@@ -19,6 +25,10 @@ onMounted(() => {
   store.loadConflicts()
   supersessionStore.loadPending()
 })
+
+// Debounce wiring: the bar emits raw input; we debounce before calling setErroredSearch.
+const debouncedSearchQuery = useDebouncedRef(erroredSearchQuery.value, 300)
+watch(debouncedSearchQuery, (q) => store.setErroredSearch(q))
 
 function truncate(s: string | null, n = 80) {
   if (!s) return ''
@@ -29,10 +39,6 @@ function truncate(s: string | null, n = 80) {
 <template>
   <section>
     <header class="flex items-baseline justify-between mb-6">
-      <span class="text-sm text-slate-500 dark:text-slate-400">
-        <template v-if="loading">Loading…</template>
-        <template v-else>{{ rows.length }} of {{ total }} errored rows</template>
-      </span>
       <button
         type="button"
         data-testid="discarded-pill-btn"
@@ -51,6 +57,22 @@ function truncate(s: string | null, n = 80) {
 
     <!-- Conflict group cards — rendered above the errored table (§3.5.5) -->
     <ConflictGroupList />
+
+    <!-- Search + paginator bar (Epoch 1) -->
+    <SearchPaginatorBar
+      data-testid="errored-search-bar"
+      :search-query="debouncedSearchQuery"
+      :page-start="erroredPageStart"
+      :page-end="erroredPageEnd"
+      :total="total"
+      :has-prev="erroredHasPrev"
+      :has-next="erroredHasNext"
+      :loading="loading"
+      placeholder="Search row #, error, batch…"
+      @update:search-query="debouncedSearchQuery = $event"
+      @prev="store.prevErroredPage()"
+      @next="store.nextErroredPage()"
+    />
 
     <div v-if="!loading && rows.length === 0"
          class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center text-slate-500 dark:text-slate-400">

@@ -150,14 +150,16 @@ class Assembly(Base, TimestampMixin):
 class Job(Base, TimestampMixin):
     __tablename__ = "jobs"
     __table_args__ = (
-        # Partial unique index: superseded jobs free their identity slot
-        # so a future ingest of the same identity can land as a new active Job.
+        # Partial unique index: superseded OR discarded jobs free their identity
+        # slot so a future ingest of the same identity can land as a new active Job.
+        # The predicate must include discarded_at IS NULL (Phase 15 §5.2); without
+        # it a discarded job retains its slot and the next ingest UNIQUE-violates.
         Index(
             "ix_job_identity_active",
             "assembly_id", "build_type", "split_suffix",
             "repeat_reference", "build_qualifier",
             unique=True,
-            sqlite_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL AND discarded_at IS NULL"),
         ),
     )
 
@@ -218,6 +220,7 @@ class Job(Base, TimestampMixin):
     superseded_by_batch_id: Mapped[int | None] = mapped_column(
         ForeignKey("import_batches.id", ondelete="RESTRICT"), nullable=True
     )
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     assembly: Mapped[Assembly] = relationship(back_populates="jobs")
     customer: Mapped[Customer] = relationship(back_populates="jobs")

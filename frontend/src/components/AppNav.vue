@@ -8,6 +8,7 @@ import { useDebouncedRef } from '@/composables/useDebouncedRef'
 import { useHistoryStore } from '@/stores/history'
 import { ref } from 'vue'
 import UploadModal from '@/components/UploadModal.vue'
+import SearchPaginatorBar from '@/components/SearchPaginatorBar.vue'
 import { useToast } from '@/composables/useToast'
 
 const uploadOpen = ref(false)
@@ -78,41 +79,22 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
     </div>
 
     <div v-if="isHistory"
-         class="max-w-7xl mx-auto px-6 h-12 flex items-center gap-4 border-t border-slate-200 dark:border-slate-700">
-      <div class="relative flex-1 max-w-md">
-        <input v-model="debouncedQuery"
-               type="search"
-               placeholder="Search B#, customer, notes…"
-               aria-label="Search history"
-               class="w-full px-3 py-1.5 pr-8 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-100 focus-ring" />
-        <span v-if="loading"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">…</span>
-      </div>
-
-      <div class="flex gap-1">
-        <button @click="scrollTop" aria-label="Scroll to top"
-                class="px-3 py-1 rounded text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring">
-          ↑ Top
-        </button>
-        <button @click="scrollBottom" aria-label="Scroll to bottom"
-                class="px-3 py-1 rounded text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring">
-          ↓ Bottom
-        </button>
-      </div>
-
-      <span class="ml-auto text-sm text-slate-500 dark:text-slate-400 tabular-nums">
-        Showing {{ pageStart }}–{{ pageEnd }} of {{ total }}
-      </span>
-      <div class="flex gap-2">
-        <button @click="historyStore.prev()" :disabled="!hasPrev || loading"
-                class="px-3 py-1 rounded border border-slate-300 dark:border-slate-600 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring">
-          ← Prev
-        </button>
-        <button @click="historyStore.next()" :disabled="!hasNext || loading"
-                class="px-3 py-1 rounded border border-slate-300 dark:border-slate-600 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring">
-          Next →
-        </button>
-      </div>
+         class="max-w-7xl mx-auto px-6 border-t border-slate-200 dark:border-slate-700">
+      <SearchPaginatorBar
+        v-model:searchQuery="debouncedQuery"
+        :page-start="pageStart"
+        :page-end="pageEnd"
+        :total="total"
+        :has-prev="hasPrev"
+        :has-next="hasNext"
+        :loading="loading"
+        :show-scroll-controls="true"
+        placeholder="Search B#, customer, notes…"
+        @prev="historyStore.prev()"
+        @next="historyStore.next()"
+        @scroll-top="scrollTop"
+        @scroll-bottom="scrollBottom"
+      />
     </div>
      <UploadModal :open="uploadOpen" @close="uploadOpen = false" @success="onUploadSuccess" />
    </nav>

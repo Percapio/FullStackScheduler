@@ -10,12 +10,36 @@ export type CorrectionPayload  = components['schemas']['StagingRowCorrectionRequ
 export type JobReadExpanded    = components['schemas']['JobReadExpanded']
 export type ConflictGroup      = components['schemas']['ConflictGroup']
 
+// ---------- Epoch 2: restore-preview types -----------------------------------
+
+export type RestoreSourceKind = 'staging' | 'job'
+
+export interface IncomingRestoreCandidate {
+  kind: RestoreSourceKind
+  staging: StagingRowDetail | null
+  job: JobReadExpanded | null
+}
+
+export interface RestoreConflictPreview {
+  incoming: IncomingRestoreCandidate
+  colliding_staging_errored_rows: StagingRowDetail[]
+  colliding_staging_discarded_rows: StagingRowDetail[]
+  colliding_live_jobs: JobReadExpanded[]
+  group_key: string
+}
+
+export interface StagingRestoreAction {
+  kind: 'edit' | 'discard'
+  row_id: number
+  payload?: Record<string, unknown> | null
+}
+
 export async function fetchErrored(
-  limit = 100, offset = 0,
+  limit = 50, offset = 0, search: string | null = null,
 ): Promise<{ rows: StagingRowSummary[]; total: number }> {
-  const resp = await apiClient.get<StagingRowSummary[]>('/api/staging/errored', {
-    params: { limit, offset },
-  })
+  const params: Record<string, unknown> = { limit, offset }
+  if (search) params.search = search
+  const resp = await apiClient.get<StagingRowSummary[]>('/api/staging/errored', { params })
   const total = Number(resp.headers['x-total-count'] ?? resp.data.length)
   return { rows: resp.data, total }
 }
@@ -39,10 +63,10 @@ export async function submitCorrection(
 }
 
 export async function fetchDiscarded(
-  limit = 100, offset = 0,
+  limit = 50, offset = 0, search: string | null = null,
 ): Promise<{ rows: StagingRowSummary[]; total: number }> {
   const resp = await apiClient.get<StagingRowSummary[]>('/api/staging/discarded', {
-    params: { limit, offset },
+    params: { limit, offset, ...(search ? { search } : {}) },
   })
   const total = Number(resp.headers['x-total-count'] ?? resp.data.length)
   return { rows: resp.data, total }
@@ -54,9 +78,20 @@ export async function deleteStagingRow(rowId: number): Promise<void> {
 
 export async function postRestoreStagingRow(
   rowId: number,
+  actions: StagingRestoreAction[] = [],
 ): Promise<StagingRowSummary> {
   const resp = await apiClient.post<StagingRowSummary>(
     `/api/staging/${rowId}/restore`,
+    { actions },
+  )
+  return resp.data
+}
+
+export async function fetchStagingRestorePreview(
+  rowId: number,
+): Promise<RestoreConflictPreview> {
+  const resp = await apiClient.get<RestoreConflictPreview>(
+    `/api/staging/${rowId}/restore-preview`,
   )
   return resp.data
 }
