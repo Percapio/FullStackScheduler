@@ -12,8 +12,8 @@ export async function fetchShippingJobs(
   return { rows: resp.data, total }
 }
 
-export async function discardShippingJob(jobId: number): Promise<JobReadExpanded> {
-  const resp = await apiClient.post<JobReadExpanded>(`/api/jobs/${jobId}/discard`)
+export async function discardShippingJob(jobId: number, reason: string): Promise<JobReadExpanded> {
+  const resp = await apiClient.post<JobReadExpanded>(`/api/jobs/${jobId}/discard`, { reason })
   return resp.data
 }
 

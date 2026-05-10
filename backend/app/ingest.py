@@ -217,7 +217,7 @@ def ingest_workbook(
                     continue
                 nested = session.begin_nested()
                 try:
-                    outcome = transform_staging_row(session, row)
+                    outcome = transform_staging_row(session, row, sheet_kind=sheet_kind)
                     if outcome.action == "errored":
                         _rollback_with_error_capture(session, row, nested)
                         counters["errored"] += 1

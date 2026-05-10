@@ -90,21 +90,22 @@ class TestDiscardJobService:
         job = _make_job(session, status=JobStatus.planned)
         assert job.discarded_at is None
 
-        returned = discard_job(session, job.id)
+        returned = discard_job(session, job.id, "test reason")
 
         assert returned.id == job.id
         assert returned.discarded_at is not None
 
     def test_discard_wip_job_sets_discarded_at(self, session):
         job = _make_job(session, status=JobStatus.wip)
-        returned = discard_job(session, job.id)
+        returned = discard_job(session, job.id, "test reason")
         assert returned.discarded_at is not None
 
-    def test_discard_shipped_job_raises_conflict(self, session):
+    def test_discard_shipped_job_sets_discarded_at(self, session):
+        """Phase 17: shipped jobs are now discardable (guard removed)."""
         job = _make_job(session, status=JobStatus.shipped,
                         shipped_at=date(2026, 1, 1))
-        with pytest.raises(JobDiscardError, match="cannot discard shipped"):
-            discard_job(session, job.id)
+        returned = discard_job(session, job.id, "test reason")
+        assert returned.discarded_at is not None
 
     def test_discard_already_discarded_raises_conflict(self, session):
         job = _make_job(session)
@@ -112,11 +113,11 @@ class TestDiscardJobService:
         session.flush()
 
         with pytest.raises(JobDiscardError, match="already discarded"):
-            discard_job(session, job.id)
+            discard_job(session, job.id, "test reason")
 
     def test_discard_unknown_id_raises_not_found(self, session):
         with pytest.raises(JobDiscardError, match="not found"):
-            discard_job(session, 999_999)
+            discard_job(session, 999_999, "test reason")
 
     def test_discarded_job_not_returned_by_active_query(self, session):
         from sqlalchemy import select
@@ -141,12 +142,20 @@ class TestDiscardJobEndpoint:
         job = _make_job(session)
         session.commit()
 
-        resp = client.post(f"/api/jobs/{job.id}/discard")
+        resp = client.post(f"/api/jobs/{job.id}/discard", json={"reason": "test discard"})
         assert resp.status_code == status.HTTP_200_OK
 
         body = resp.json()
         assert body["id"] == job.id
         assert body["discarded_at"] is not None
+
+    def test_discard_no_body_returns_422(self, client, session):
+        """Phase 17: reason is now mandatory; missing body must 422."""
+        job = _make_job(session)
+        session.commit()
+
+        resp = client.post(f"/api/jobs/{job.id}/discard")
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
     def test_discard_job_vanishes_from_shipping(self, client, session):
         job = _make_job(session, part_number="SHIP-DISC-001", status=JobStatus.planned)
@@ -157,7 +166,7 @@ class TestDiscardJobEndpoint:
         ids_before = [j["id"] for j in shipping_before]
         assert job.id in ids_before
 
-        client.post(f"/api/jobs/{job.id}/discard")
+        client.post(f"/api/jobs/{job.id}/discard", json={"reason": "test"})
 
         shipping_after = client.get("/api/jobs/shipping").json()
         ids_after = [j["id"] for j in shipping_after]
@@ -170,7 +179,7 @@ class TestDiscardJobEndpoint:
         job.discarded_at = datetime(2026, 1, 1)
         session.commit()
 
-        resp = client.post(f"/api/jobs/{job.id}/discard")
+        resp = client.post(f"/api/jobs/{job.id}/discard", json={"reason": "test"})
         assert resp.status_code == status.HTTP_409_CONFLICT
 
         body = resp.json()["detail"]
@@ -179,16 +188,17 @@ class TestDiscardJobEndpoint:
         assert body["job"]["id"] == job.id
         assert body["job"]["discarded_at"] is not None
 
-    def test_discard_shipped_job_returns_409(self, client, session):
+    def test_discard_shipped_job_returns_200(self, client, session):
+        """Phase 17: shipped jobs are now discardable; endpoint must return 200."""
         job = _make_job(session, status=JobStatus.shipped, shipped_at=date(2026, 1, 1))
         session.commit()
 
-        resp = client.post(f"/api/jobs/{job.id}/discard")
-        assert resp.status_code == status.HTTP_409_CONFLICT
-        assert "shipped" in resp.json()["detail"].lower()
+        resp = client.post(f"/api/jobs/{job.id}/discard", json={"reason": "wrong ship date"})
+        assert resp.status_code == status.HTTP_200_OK
+        assert resp.json()["discarded_at"] is not None
 
     def test_discard_unknown_job_returns_404(self, client):
-        resp = client.post("/api/jobs/999999/discard")
+        resp = client.post("/api/jobs/999999/discard", json={"reason": "test"})
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
     def test_lineage_surfaces_discarded_job(self, client, session):
@@ -197,7 +207,7 @@ class TestDiscardJobEndpoint:
         session.commit()
 
         job_id = job.id
-        client.post(f"/api/jobs/{job_id}/discard")
+        client.post(f"/api/jobs/{job_id}/discard", json={"reason": "test"})
 
         lineage = client.get(f"/api/jobs/{job_id}/lineage").json()
         lineage_ids = [j["id"] for j in lineage]

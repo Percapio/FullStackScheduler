@@ -26,15 +26,14 @@ function cycleSort(key: FlatSortKey) {
   }
 }
 
-async function onDiscard(jobId: number): Promise<void> {
-  store.closeInspect()
-  await store.discardJob(jobId)
-}
-
 onMounted(() => {
   store.load()
   store.loadDiscardedJobs()
 })
+
+async function discardJob(jobId: number, reason: string): Promise<void> {
+  await store.discardJob(jobId, reason)
+}
 </script>
 
 <template>
@@ -133,8 +132,8 @@ onMounted(() => {
     <InspectDrawer
       :row="inspected"
       :can-discard="true"
+      :discard-impl="discardJob"
       @close="store.closeInspect()"
-      @discard="onDiscard"
     />
     <DiscardedJobsDrawer />
   </section>

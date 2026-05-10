@@ -28,6 +28,8 @@ function makeJob(overrides: Partial<JobReadExpanded> & { _pn?: string; _cid?: nu
 const mockFetch = vi.fn()
 vi.mock('@/api/shipping', () => ({
   fetchShippingJobs: (...args: unknown[]) => mockFetch(...args),
+  fetchDiscardedJobs: vi.fn().mockResolvedValue({ rows: [], total: 0 }),
+  discardShippingJob: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/composables/useToast', () => ({
@@ -110,13 +112,14 @@ describe('ShippingView', () => {
     const w = mountView()
     await flushPromises()
     expect(w.text()).toContain('Could not load open jobs')
-    expect(w.find('button').text()).toContain('Retry')
+    const retryBtn = w.findAll('button').find(b => b.text().includes('Retry'))!
+    expect(retryBtn).toBeTruthy()
 
     mockFetch.mockResolvedValue({
       rows: [makeJob({ id: 1, _pn: 'A', _cid: 1, resolved_ship_date: '2026-05-01' })],
       total: 1,
     })
-    await w.find('button').trigger('click')
+    await retryBtn.trigger('click')
     await flushPromises()
     expect(w.text()).not.toContain('Could not load open jobs')
     expect(w.text()).toContain('A')

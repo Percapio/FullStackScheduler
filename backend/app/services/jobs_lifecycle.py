@@ -41,16 +41,17 @@ def _has_any_shipped_history(session: Session, job: Job) -> bool:  # noqa: ARG00
     """Return True iff *job* has ever been shipped.
 
     Pre:  job is attached to session.
-    Post: Returns True iff job.shipped_at IS NOT NULL.
+    Post: Returns True iff job.ever_shipped_at IS NOT NULL.
           Returns False otherwise.
     Raises: never.
 
-    Invariant (upheld by transform._apply_shipped): shipped_at is set
-    atomically with status = JobStatus.shipped and is never cleared.
-    Therefore shipped_at IS NOT NULL is a complete proxy for
-    "has shipped at least once."
+    Invariant (INV-S1, INV-S3 — Phase 16): ever_shipped_at is set atomically
+    with the first transition to JobStatus.shipped (in transform._apply_shipped)
+    and is never cleared thereafter.  Therefore ever_shipped_at IS NOT NULL is
+    a complete proxy for "has shipped at least once in its persisted lifetime."
+    shipped_at may now be NULL for un-shipped jobs (Phase 16 §3.4).
     """
-    return job.shipped_at is not None
+    return job.ever_shipped_at is not None
 
 
 # ---------------------------------------------------------------------------
@@ -347,17 +348,17 @@ def _apply_approval(
     if _has_any_shipped_history(session, job):
         candidate.resolved_at = _now_utc()
         candidate.resolution = CandidateResolution.reject
-        candidate.closed_by_shield_reason = "shipped_at_set"
+        candidate.closed_by_shield_reason = "ever_shipped"
         log.warning(
             "supersession.shield_tripped",
             extra={
                 "candidate_id": candidate.id,
                 "job_id": candidate.job_id,
                 "detected_in_batch_id": candidate.detected_in_batch_id,
-                "shield_reason": "shipped_at_set",
+                "shield_reason": "ever_shipped",
             },
         )
-        return ApplyOutcome(kind="shield_closed_as_reject", shield_reason="shipped_at_set")
+        return ApplyOutcome(kind="shield_closed_as_reject", shield_reason="ever_shipped")
 
     candidate.resolved_at = _now_utc()
     candidate.resolution = CandidateResolution.approve

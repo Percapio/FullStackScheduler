@@ -140,14 +140,14 @@ describe('SupersessionCandidateList — approve', () => {
     vi.spyOn(store, 'approve').mockResolvedValueOnce({
       ...candidateFixture(1),
       resolution: 'reject',
-      closed_by_shield_reason: 'shipped_at_set',
+      closed_by_shield_reason: 'ever_shipped',
     })
     const btn = wrapper.find('[data-testid="approve-btn"]')
     await btn.trigger('click')
     await flushPromises()
 
     expect(mockShowToast).toHaveBeenCalledTimes(1)
-    expect(mockShowToast.mock.calls[0][0]).toContain('shipped_at_set')
+    expect(mockShowToast.mock.calls[0][0]).toContain('ever_shipped')
     wrapper.unmount()
   })
 

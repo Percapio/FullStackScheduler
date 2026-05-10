@@ -78,13 +78,13 @@ export const useShippingStore = defineStore('shipping', () => {
    * Optimistic soft-delete: splices jobId from jobs[] immediately, rolls back
    * on rejection. Mirrors useStagingStore.discardRow.
    *
-   * Pre:  jobId is rendered in jobs[].
+   * Pre:  jobId is rendered in jobs[]; reason is non-empty.
    * Post: kind='ok'       — job spliced from jobs[]; success toast shown.
    *       kind='stale'    — jobId was not in jobs[] on entry; no-op.
-   *       kind='conflict' — status was shipped; toast shown; list reloaded.
+   *       kind='conflict' — already discarded; toast shown; list reloaded.
    *       kind='network'  — non-409 transport error; error toast shown.
    */
-  async function discardJob(jobId: number): Promise<ShippingDiscardOutcome> {
+  async function discardJob(jobId: number, reason: string): Promise<ShippingDiscardOutcome> {
     const idx = jobs.value.findIndex(j => j.id === jobId)
     if (idx === -1) return { kind: 'stale' }
 
@@ -92,7 +92,7 @@ export const useShippingStore = defineStore('shipping', () => {
     jobs.value = jobs.value.filter(j => j.id !== jobId)
 
     try {
-      await discardShippingJob(jobId)
+      await discardShippingJob(jobId, reason)
       useToast().show('Job discarded.', 'success', 4000)
       // Update discarded count for the pill without reloading the full list.
       discardedTotal.value += 1
@@ -107,9 +107,9 @@ export const useShippingStore = defineStore('shipping', () => {
         const detail =
           (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
           'Cannot discard this job.'
-        useToast().show(detail, 'error', 6000)
+        useToast().show(typeof detail === 'string' ? detail : 'Cannot discard this job.', 'error', 6000)
         await load()
-        return { kind: 'conflict', message: detail }
+        return { kind: 'conflict', message: typeof detail === 'string' ? detail : 'Cannot discard this job.' }
       }
       const msg = 'Could not discard job. Check that the backend is running and retry.'
       useToast().show(msg, 'error', 6000)

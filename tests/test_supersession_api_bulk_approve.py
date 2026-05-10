@@ -48,6 +48,7 @@ def _make_candidate(session, batch, part_suffix: str, *, shipped: bool = False) 
         customer_id=cust.id,
         quantity=1,
         shipped_at=date(2026, 1, 1) if shipped else None,
+        ever_shipped_at=date(2026, 1, 1) if shipped else None,
     )
     session.add(job)
     session.flush()

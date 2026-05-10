@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -27,8 +28,12 @@ from .models import (
     Job,
     JobStatus,
     Salesperson,
+    SheetKind,
 )
+from .services.upserts import upsert_customer as _upsert_customer
 from .sorting import resolve_ship_date
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -117,17 +122,6 @@ def _mark_decompose_error(row: ImportStagingRow, err: DecomposeError | None) -> 
                 "reference in the JOB cell (e.g. 'RONC 332-0034 revB')."
             ),
         )
-
-
-def _upsert_customer(session: Session, name: str) -> Customer:
-    customer = session.execute(
-        select(Customer).where(Customer.name == name)
-    ).scalar_one_or_none()
-    if customer is None:
-        customer = Customer(name=name)
-        session.add(customer)
-        session.flush()
-    return customer
 
 
 def _upsert_assembly(
@@ -231,7 +225,17 @@ def _apply_row_to_job(
     job: Job,
     *,
     decomp: JobDecomposition,
+    sheet_kind: SheetKind,
 ) -> bool:
+    """Write all field values from a staging row onto a Job.
+
+    Pre:  row and job are attached to session.  sheet_kind matches the row's batch.
+    Post: All non-identity fields updated.  resolved_ship_date recomputed.
+          Returns False (and marks row errored) if _apply_shipped fails.
+          When job.status == shipped AND sheet_kind == live AND raw_shipped
+          is blank, routes to _apply_unship instead of _apply_shipped.
+    Raises: never.
+    """
     ship_date_text, lead_time = (
         extract_ship_fields(row.raw_ship_date) if row.raw_ship_date else (None, None)
     )
@@ -254,8 +258,17 @@ def _apply_row_to_job(
     if row.raw_sales_p and row.raw_sales_p.strip():
         job.salesperson_id = _upsert_salesperson(session, row.raw_sales_p.strip()).id
 
-    if not _apply_shipped(row, job):
-        return False
+    incoming_blank = not row.raw_shipped or not row.raw_shipped.strip()
+
+    if (
+        job.status is JobStatus.shipped
+        and sheet_kind is SheetKind.live
+        and incoming_blank
+    ):
+        _apply_unship(row, job)
+    else:
+        if not _apply_shipped(row, job):
+            return False
 
     job.resolved_ship_date = resolve_ship_date(
         ship_date_text=job.ship_date_text,
@@ -276,6 +289,9 @@ def _apply_shipped(row: ImportStagingRow, job: Job) -> bool:
 
     Parse is attempted before any mutation so that an unparseable value never
     leaves ``job.status`` set to shipped with ``job.shipped_at`` still None.
+    On the first successful ship transition, ``job.ever_shipped_at`` is set
+    to the parsed date and never overwritten on subsequent ship events
+    (INV-S3).
     """
     raw = row.raw_shipped
     if not raw or not raw.strip():
@@ -290,10 +306,58 @@ def _apply_shipped(row: ImportStagingRow, job: Job) -> bool:
         return False
     job.status = JobStatus.shipped
     job.shipped_at = parsed
+    if job.ever_shipped_at is None:
+        job.ever_shipped_at = parsed
     return True
 
 
-def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformOutcome:
+def _apply_unship(row: ImportStagingRow, job: Job) -> None:
+    """Transition a shipped job back to planned when SCHD blanks its SHIPPED cell.
+
+    Pre:   row.raw_shipped is None or whitespace-only.
+           job.status == JobStatus.shipped.
+           job.ever_shipped_at IS NOT NULL (INV-S1).
+           Caller has verified the batch is SheetKind.live.
+    Post:  job.status = JobStatus.planned.
+           job.shipped_at = None.
+           job.ever_shipped_at unchanged (INV-S3).
+           No row error is marked.
+    Raises: AssertionError when INV-S1 is violated (shipped job without
+            ever_shipped_at).  The Stage 5 SAVEPOINT handler converts this
+            to a row-level error and names the job_id in the message so the
+            operator can reconcile the corrupted row manually.
+    """
+    assert job.ever_shipped_at is not None, (
+        f"INV-S1 violated: job id={job.id} has status=shipped but "
+        f"ever_shipped_at IS NULL.  Migration backfill may have missed this row."
+    )
+    previous_shipped_at = job.shipped_at
+    job.status = JobStatus.planned
+    job.shipped_at = None
+    log.info(
+        "transform.unship",
+        extra={
+            "job_id": job.id,
+            "batch_id": row.batch_id,
+            "previous_shipped_at": previous_shipped_at,
+            "ever_shipped_at": job.ever_shipped_at,
+        },
+    )
+
+
+def transform_staging_row(
+    session: Session,
+    row: ImportStagingRow,
+    *,
+    sheet_kind: SheetKind = SheetKind.live,
+) -> TransformOutcome:
+    """Transform a single pending staging row into a Job upsert.
+
+    Pre:  row.batch_id is set.  sheet_kind matches the row's batch sheet_kind.
+    Post: Either inserts or updates a Job and marks the row processed, or marks
+          the row errored.  Returns TransformOutcome describing the action taken.
+    Raises: never (all exceptions result in a row-level error).
+    """
     decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
     if decomp_result is None or isinstance(decomp_result, DecomposeError):
         _mark_decompose_error(row, decomp_result)
@@ -368,23 +432,33 @@ def transform_staging_row(session: Session, row: ImportStagingRow) -> TransformO
         session.add(job)
         action: Literal["inserted", "updated"] = "inserted"
     else:
+        incoming_blank = not row.raw_shipped or not row.raw_shipped.strip()
+
         if existing.status is JobStatus.shipped:
-            _mark_error(
-                row,
-                f"Conflict: Attempting to update a shipped job (job_id={existing.id})",
-                suggestion=(
-                    "Shipped jobs cannot be modified. If this is a new run of the same part, "
-                    "add a split suffix to the JOB ID (e.g., add '-1par', '-2par', '-3par' as needed)."
-                ),
-            )
-            return TransformOutcome(None, "errored")
+            if sheet_kind is SheetKind.live:
+                # Both the un-ship (blank) and re-ship (new date) paths fall
+                # through to the standard update branch; _apply_row_to_job
+                # routes between _apply_unship and _apply_shipped via §3.6.
+                pass
+            else:
+                # Historical (AA) ingest of a shipped job: preserve the
+                # existing conflict error verbatim.
+                _mark_error(
+                    row,
+                    f"Conflict: Attempting to update a shipped job (job_id={existing.id})",
+                    suggestion=(
+                        "Shipped jobs cannot be modified. If this is a new run of the same part, "
+                        "add a split suffix to the JOB ID (e.g., add '-1par', '-2par', '-3par' as needed)."
+                    ),
+                )
+                return TransformOutcome(None, "errored")
 
         existing.customer_id = customer.id
         existing.quantity = quantity
         job = existing
         action = "updated"
 
-    if not _apply_row_to_job(session, row, job, decomp=decomp):
+    if not _apply_row_to_job(session, row, job, decomp=decomp, sheet_kind=sheet_kind):
         return TransformOutcome(None, "errored")
 
     if action == "inserted":

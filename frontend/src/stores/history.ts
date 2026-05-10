@@ -1,7 +1,16 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
-import { fetchJobHistory, fetchJobLineage, type JobReadExpanded } from '@/api/history'
+import {
+  discardHistoryJob,
+  editHistoryJob,
+  fetchJobHistory,
+  fetchJobLineage,
+  type JobReadExpanded,
+  type HistoryEditDraft,
+} from '@/api/history'
 import { useToast } from '@/composables/useToast'
+
+export type { HistoryEditError, HistoryEditDraft } from '@/api/history'
 
 const PAGE_SIZE = 50
 
@@ -99,10 +108,47 @@ export const useHistoryStore = defineStore('history', () => {
   function inspect(row: JobReadExpanded) { inspected.value = row }
   function closeInspect() { inspected.value = null }
 
+  /**
+   * Edit reconciliation-style fields of a shipped job.
+   *
+   * Pre:  jobId is open in the inspector; reason non-empty; edit has ≥1 non-null raw_* field.
+   * Post: on success, rows[i] and inspected are both replaced with the refreshed row.
+   *       On failure, state is untouched and the HistoryEditError is re-thrown.
+   */
+  async function editJob(jobId: number, edit: HistoryEditDraft, reason: string): Promise<void> {
+    const refreshed = await editHistoryJob(jobId, edit, reason)
+    const idx = rows.value.findIndex(r => r.id === jobId)
+    if (idx >= 0) {
+      const updated = [...rows.value]
+      updated[idx] = refreshed
+      rows.value = updated
+    }
+    if (inspected.value !== null && inspected.value.id === jobId) {
+      inspected.value = refreshed
+    }
+  }
+
+  /**
+   * Soft-delete a shipped job from History.
+   *
+   * Pre:  jobId is open in the inspector; reason non-empty.
+   * Post: on success, the row is removed from rows[], total decremented, inspected
+   *       cleared, and a success toast shown.
+   *       On failure, state is untouched and the error is re-thrown.
+   */
+  async function discardJob(jobId: number, reason: string): Promise<void> {
+    await discardHistoryJob(jobId, reason)
+    rows.value = rows.value.filter(r => r.id !== jobId)
+    total.value = Math.max(0, total.value - 1)
+    inspected.value = null
+    useToast().show(`Job #${jobId} discarded.`, 'success', 4000)
+  }
+
   return {
     rows, total, offset, limit, loading, error, searchQuery,
     lineage, expanded, inspected,
     hasPrev, hasNext, pageStart, pageEnd,
     load, next, prev, setSearch, toggleExpand, inspect, closeInspect,
+    editJob, discardJob,
   }
 })

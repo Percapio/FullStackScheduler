@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..models import Assembly, BuildType, Customer, ImportStagingRow, ImportStatus, Job, JobStatus
+from ..models import Assembly, BuildQualifier, BuildType, Customer, ImportStagingRow, ImportStatus, Job, JobStatus
+
+if TYPE_CHECKING:
+    from ..schemas import HistoryJobEditRequest
+
+logger = logging.getLogger(__name__)
 
 JOB_EXPAND_OPTIONS = (
     selectinload(Job.assembly).selectinload(Assembly.classifications),
@@ -176,27 +183,26 @@ def get_job_including_discarded(session: Session, job_id: int) -> Job | None:
     ).unique().scalar_one_or_none()
 
 
-def discard_job(session: Session, job_id: int) -> Job:
+def discard_job(session: Session, job_id: int, reason: str) -> Job:
     """Soft-delete a Job by setting discarded_at to now().
 
-    Pre:  job exists, discarded_at IS NULL, status ∈ {planned, wip}.
+    Pre:  job exists, discarded_at IS NULL. Shipped jobs are permitted.
     Post: discarded_at := now() UTC; row returned with the timestamp set.
+          reason is written to logger.info and not persisted.
 
     Raises:
         JobDiscardError: if job not found (message starts with "not found"),
-                         if already discarded (message starts with "already discarded"),
-                         if status is shipped (message starts with "cannot discard shipped").
+                         if already discarded (message starts with "already discarded").
     """
     job = get_job_including_discarded(session, job_id)
     if job is None:
         raise JobDiscardError(f"not found: job {job_id} does not exist")
     if job.discarded_at is not None:
         raise JobDiscardError(f"already discarded: job {job_id}")
-    if job.status == JobStatus.shipped:
-        raise JobDiscardError(f"cannot discard shipped job {job_id}")
 
     job.discarded_at = datetime.now(timezone.utc).replace(tzinfo=None)
     session.flush()
+    logger.info("job %d discarded: %s", job_id, reason)
     return job
 
 
@@ -430,5 +436,244 @@ def restore_job_with_actions(session: Session, job_id: int, actions: list) -> Jo
         raise
 
     session.commit()
+    return job
+
+
+# ---------------------------------------------------------------------------
+# History job edit (Phase 17)
+# ---------------------------------------------------------------------------
+
+class JobEditError(Exception):
+    """Raised when a History edit cannot proceed."""
+
+
+class JobEditNotFoundError(JobEditError):
+    """job_id does not exist."""
+
+    def __init__(self, job_id: int) -> None:
+        super().__init__(f"job {job_id} not found")
+        self.job_id = job_id
+
+
+class JobEditNotEditableError(JobEditError):
+    """Job exists but cannot be edited in the History context.
+
+    ``kind`` is one of:
+        "not_shipped"  — status != shipped
+        "discarded"    — discarded_at IS NOT NULL
+    """
+
+    def __init__(self, job_id: int, kind: Literal["not_shipped", "discarded"]) -> None:
+        super().__init__(f"job {job_id} not editable: {kind}")
+        self.job_id = job_id
+        self.kind = kind
+
+
+class JobEditValidationError(JobEditError):
+    """Carries a per-field message for 422 surfaces."""
+
+    def __init__(
+        self,
+        field: Literal["raw_job", "raw_customer", "raw_qty", "raw_shipped"],
+        message: str,
+    ) -> None:
+        super().__init__(f"{field}: {message}")
+        self.field = field
+        self.message = message
+
+
+class JobEditIdentityCollisionError(JobEditError):
+    """Raised when re-decomposing raw_job would collide with another active job."""
+
+    def __init__(self, colliding_job_id: int) -> None:
+        super().__init__(f"identity collision with job {colliding_job_id}")
+        self.colliding_job_id = colliding_job_id
+
+
+def _was_sent(edit: "HistoryJobEditRequest", field_name: str) -> bool:
+    """True iff the field was explicitly included in the request body."""
+    return field_name in edit.model_fields_set
+
+
+def _normalise_identity(edit: "HistoryJobEditRequest", field_name: str) -> str | None:
+    """Return None (absent), '' (client sent intent-to-clear), or trimmed value."""
+    if not _was_sent(edit, field_name):
+        return None
+    raw_value = getattr(edit, field_name)
+    if raw_value is None:
+        return ""
+    return raw_value.strip()
+
+
+def parse_positive_int(raw: str) -> int | None:
+    """Parse a positive integer from a raw string; returns None on failure or if <= 0."""
+    token = raw.strip()
+    if not token:
+        return None
+    try:
+        v = int(token)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def find_active_job_with_identity(
+    session: Session, *, key: str, exclude_job_id: int,
+) -> int | None:
+    """Return the id of an active job (not superseded, not discarded) whose identity key
+    matches ``key``, excluding ``exclude_job_id``.  Returns None if none found.
+    """
+    candidates = session.scalars(
+        select(Job)
+        .where(
+            Job.superseded_at.is_(None),
+            Job.discarded_at.is_(None),
+            Job.id != exclude_job_id,
+        )
+        .options(*JOB_EXPAND_OPTIONS)
+    ).unique().all()
+    for candidate in candidates:
+        if identity_key_for_job(candidate) == key:
+            return candidate.id
+    return None
+
+
+def edit_history_job(
+    session: Session,
+    job_id: int,
+    edit: "HistoryJobEditRequest",
+) -> Job:
+    """Edit reconciliation-style fields of a shipped job.
+
+    Pre:  job exists, discarded_at IS NULL, status == shipped.
+          At least one identity or ship-time field is set in the request body
+          (enforced by HistoryJobEditRequest model_validator at the API layer).
+    Post: derived Job fields updated atomically; staging row untouched;
+          caller commits. Returns the refreshed Job with eager-loaded relations.
+
+    Raises:
+        JobEditNotFoundError              -> 404
+        JobEditNotEditableError           -> 409
+        JobEditValidationError            -> 422
+        JobEditIdentityCollisionError     -> 409
+    """
+    from ..extractors import extract_shipped_date
+    from ..services.upserts import upsert_assembly_by_part_number, upsert_customer
+
+    job = session.execute(
+        select(Job).where(Job.id == job_id).options(*JOB_EXPAND_OPTIONS)
+    ).unique().scalar_one_or_none()
+
+    if job is None:
+        raise JobEditNotFoundError(job_id)
+    if job.discarded_at is not None:
+        raise JobEditNotEditableError(job_id, "discarded")
+    if job.status != JobStatus.shipped:
+        raise JobEditNotEditableError(job_id, "not_shipped")
+
+    # ── Identity fields (PATCH semantics — absent vs null/empty distinguished) ──
+
+    pn = _normalise_identity(edit, "part_number")
+    if pn is not None:
+        if pn == "":
+            raise JobEditValidationError(
+                field="part_number", message="part_number cannot be empty"
+            )
+        job.assembly_id = upsert_assembly_by_part_number(session, pn).id
+
+    bt = _normalise_identity(edit, "build_type")
+    if bt is not None:
+        if bt == "":
+            raise JobEditValidationError(
+                field="build_type", message="build_type cannot be cleared"
+            )
+        bt_lower = bt.lower()
+        valid_build_types = {e.value for e in BuildType}
+        if bt_lower not in valid_build_types:
+            raise JobEditValidationError(
+                field="build_type",
+                message=f"build_type must be one of {sorted(valid_build_types)}",
+            )
+        job.build_type = BuildType(bt_lower)
+
+    ss = _normalise_identity(edit, "split_suffix")
+    if ss is not None:
+        if len(ss) > 32:
+            raise JobEditValidationError(
+                field="split_suffix", message="split_suffix exceeds 32 characters"
+            )
+        job.split_suffix = ss or None  # "" -> NULL
+
+    rr = _normalise_identity(edit, "repeat_reference")
+    if rr is not None:
+        if len(rr) > 32:
+            raise JobEditValidationError(
+                field="repeat_reference", message="repeat_reference exceeds 32 characters"
+            )
+        job.repeat_reference = rr or None
+
+    bq = _normalise_identity(edit, "build_qualifier")
+    if bq is not None:
+        if bq == "":
+            job.build_qualifier = None
+        else:
+            bq_lower = bq.lower()
+            valid_qualifiers = {e.value for e in BuildQualifier}
+            if bq_lower not in valid_qualifiers:
+                raise JobEditValidationError(
+                    field="build_qualifier",
+                    message=f"build_qualifier must be one of {sorted(valid_qualifiers)}",
+                )
+            job.build_qualifier = BuildQualifier(bq_lower)
+
+    # ── Ship-time fields (Phase 17 semantics — is-not-None check) ──
+
+    if edit.raw_qty is not None:
+        parsed_quantity = parse_positive_int(edit.raw_qty)
+        if parsed_quantity is None:
+            raise JobEditValidationError(
+                field="raw_qty", message=f"Invalid QTY: {edit.raw_qty!r}"
+            )
+        job.quantity = parsed_quantity
+
+    if edit.raw_customer is not None:
+        customer_name = edit.raw_customer.strip()
+        if not customer_name:
+            raise JobEditValidationError(
+                field="raw_customer", message="raw_customer is empty"
+            )
+        job.customer_id = upsert_customer(session, customer_name).id
+
+    if edit.raw_shipped is not None:
+        parsed_shipped = extract_shipped_date(edit.raw_shipped)
+        if parsed_shipped is None:
+            raise JobEditValidationError(
+                field="raw_shipped",
+                message=f"Unparseable SHIPPED date: {edit.raw_shipped!r}",
+            )
+        job.shipped_at = parsed_shipped
+        # job.ever_shipped_at intentionally NOT touched — INV-S3 (Phase 16 §3.4).
+
+    # ── Identity-collision check after all identity-touching mutations ──
+    # Flush first so that assembly_id FK is visible to identity_key_for_job.
+    session.flush()
+    session.refresh(job, ["assembly", "customer"])
+
+    new_key = identity_key_for_job(job)
+    if new_key is None:
+        # build_type is NULL on this row (corrupted historical state); skip check.
+        logger.warning(
+            "job %d edited without identity-collision check: "
+            "build_type is NULL (corrupted historical state)",
+            job.id,
+        )
+    else:
+        collider_id = find_active_job_with_identity(
+            session, key=new_key, exclude_job_id=job.id
+        )
+        if collider_id is not None:
+            raise JobEditIdentityCollisionError(colliding_job_id=collider_id)
+
+    logger.info("job %d edited: %s", job.id, edit.reason)
     return job
 

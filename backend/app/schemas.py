@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer, model_validator
 
 from .errors import resolve_highlight_fields
 from .models import BuildType, BuildQualifier, CandidateReason, CandidateResolution, ImportStatus, JobStatus, SheetKind
@@ -375,3 +375,61 @@ class BulkApprovalResultRead(BaseModel):
     shield_rejected: list[int]
     already_closed: list[int]
     not_found: list[int]
+
+
+# ---- history edit / discard --------------------------------------------------
+
+
+class HistoryJobEditRequest(BaseModel):
+    """Edit reconciliation-style fields of a shipped job.
+
+    Five discrete identity fields replace the old raw_job free-text field (Patch 01).
+    Three ship-time fields retain Phase 17 semantics (is-not-None check; empty rejected).
+    At least one editable field must be present in the request body; a body containing
+    only `reason` is rejected (422) by the model validator.
+
+    extra="forbid": stale clients that still send the removed `raw_job` key receive an
+    explicit "extra fields not permitted" 422 rather than a silent drop.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Identity fields — PATCH semantics; absent key vs null/empty are distinguished
+    # by consulting model_fields_set in the service layer.
+    part_number:      str | None = None
+    build_type:       str | None = None
+    split_suffix:     str | None = None
+    repeat_reference: str | None = None
+    build_qualifier:  str | None = None
+
+    # Ship-time fields — Phase 17 semantics (is-not-None check); empty rejected downstream.
+    raw_qty:      str | None = None
+    raw_customer: str | None = None
+    raw_shipped:  str | None = None
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _require_at_least_one_editable_field(self) -> "HistoryJobEditRequest":
+        identity_present = any(
+            f in self.model_fields_set
+            for f in ("part_number", "build_type", "split_suffix",
+                      "repeat_reference", "build_qualifier")
+        )
+        ship_present = any(
+            f in self.model_fields_set
+            for f in ("raw_qty", "raw_customer", "raw_shipped")
+        )
+        if not (identity_present or ship_present):
+            raise ValueError("At least one editable field must be provided.")
+        return self
+
+
+class JobDiscardRequest(BaseModel):
+    """Request body for POST /api/jobs/{jobId}/discard.
+
+    `reason` is required (min 1, max 500 chars), written to logger.info,
+    and not persisted.
+    """
+
+    reason: str = Field(min_length=1, max_length=500)

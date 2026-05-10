@@ -109,7 +109,7 @@ describe('approve', () => {
     store.candidates = [cand]
     store.total = 1
     mockApprove.mockResolvedValueOnce({
-      ...cand, resolved_at: TS, resolution: 'reject', closed_by_shield_reason: 'shipped_at_set',
+      ...cand, resolved_at: TS, resolution: 'reject', closed_by_shield_reason: 'ever_shipped',
     })
 
     await store.approve(2)

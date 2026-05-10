@@ -22,6 +22,8 @@ def _make_job(session, *, shipped_at=None):
         quantity=1,
         build_type=BuildType.new,
         shipped_at=shipped_at,
+        # ever_shipped_at mirrors shipped_at as the migration backfill would set it.
+        ever_shipped_at=shipped_at,
         status=JobStatus.shipped if shipped_at is not None else JobStatus.planned,
     )
     session.add(job)

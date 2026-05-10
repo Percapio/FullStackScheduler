@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..models import BuildType, JobStatus
-from ..schemas import JobReadExpanded, JobRestoreRequest, RestoreConflictPreview
+from ..schemas import HistoryJobEditRequest, JobDiscardRequest, JobReadExpanded, JobRestoreRequest, RestoreConflictPreview
 from ..services import jobs as jobs_service
 from .deps import HistoryPageParams, PageParams, get_pagination, get_session, ErroredPageParams
 
@@ -93,16 +93,15 @@ def get_job_lineage(job_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{job_id}/discard", response_model=JobReadExpanded)
-def discard_job(job_id: int, session: Session = Depends(get_session)):
+def discard_job(job_id: int, body: JobDiscardRequest, session: Session = Depends(get_session)):
     """Soft-delete a job by setting discarded_at.
 
     Returns the soft-deleted job on success.
     404 if the job does not exist.
     409 if the job is already discarded (body contains the existing row).
-    409 if the job's status is 'shipped' (shipped jobs cannot be discarded).
     """
     try:
-        job = jobs_service.discard_job(session, job_id)
+        job = jobs_service.discard_job(session, job_id, body.reason)
     except jobs_service.JobDiscardError as exc:
         msg = str(exc)
         if msg.startswith("not found"):
@@ -113,7 +112,6 @@ def discard_job(job_id: int, session: Session = Depends(get_session)):
                 status_code=409,
                 detail={"detail": "Job is already discarded", "job": JobReadExpanded.model_validate(existing).model_dump(mode="json")},
             ) from exc
-        # shipped job
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
     return job
@@ -175,4 +173,42 @@ def restore_job(
                 },
             ) from exc
         raise
+    return job
+
+
+@router.patch("/{job_id}/history-edit", response_model=JobReadExpanded)
+def edit_history_job(
+    job_id: int,
+    body: HistoryJobEditRequest,
+    session: Session = Depends(get_session),
+):
+    """Edit reconciliation-style fields of a shipped job.
+
+    404 if job not found.
+    409 if not shipped or already discarded (body: { kind }).
+    409 if the edit would create an identity collision
+        (body: { message, colliding_job_id }).
+    422 with body { field, message } on per-field parse failure.
+    422 (Pydantic) if no raw_* field was provided.
+    """
+    try:
+        job = jobs_service.edit_history_job(session, job_id, body)
+    except jobs_service.JobEditNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except jobs_service.JobEditNotEditableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Job is not editable in History", "kind": exc.kind},
+        ) from exc
+    except jobs_service.JobEditValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"field": exc.field, "message": exc.message},
+        ) from exc
+    except jobs_service.JobEditIdentityCollisionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Identity collision", "colliding_job_id": exc.colliding_job_id},
+        ) from exc
+    session.commit()
     return job

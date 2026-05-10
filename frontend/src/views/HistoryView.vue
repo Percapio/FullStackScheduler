@@ -118,6 +118,13 @@ onMounted(() => store.load())
       </table>
     </div>
 
-    <InspectDrawer :row="inspected" @close="store.closeInspect()" />
+    <InspectDrawer
+      :row="inspected"
+      :can-edit="true"
+      :can-discard="true"
+      :edit-impl="store.editJob"
+      :discard-impl="store.discardJob"
+      @close="store.closeInspect()"
+    />
   </section>
 </template>

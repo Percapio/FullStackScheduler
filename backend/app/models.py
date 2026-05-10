@@ -191,6 +191,7 @@ class Job(Base, TimestampMixin):
     ship_lead_time_raw: Mapped[str | None] = mapped_column(String(16))
     resolved_ship_date: Mapped[date | None] = mapped_column(Date)
     shipped_at: Mapped[date | None] = mapped_column(Date)
+    ever_shipped_at: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     ship_method: Mapped[str | None] = mapped_column(String(64))
     smt_feeder_count: Mapped[int | None] = mapped_column(Integer)

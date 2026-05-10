@@ -132,6 +132,7 @@ class TestApproveShieldTrip:
             customer_id=cust.id,
             quantity=1,
             shipped_at=date(2026, 1, 1),
+            ever_shipped_at=date(2026, 1, 1),
         )
         session.add(job)
         session.flush()
@@ -149,7 +150,7 @@ class TestApproveShieldTrip:
         assert resp.status_code == 200
         body = resp.json()
         assert body["resolution"] == CandidateResolution.reject.value
-        assert body["closed_by_shield_reason"] == "shipped_at_set"
+        assert body["closed_by_shield_reason"] == "ever_shipped"
 
     def test_shield_trip_does_not_mutate_job(self, client, session):
         asm = _make_assembly(session, "SHIELD-002")
@@ -160,6 +161,7 @@ class TestApproveShieldTrip:
             customer_id=cust.id,
             quantity=1,
             shipped_at=date(2026, 2, 1),
+            ever_shipped_at=date(2026, 2, 1),
         )
         session.add(job)
         session.flush()
