@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ShippingView from '../ShippingView.vue'
 import type { JobReadExpanded } from '@/api/shipping'
+import { useShippingStore } from '@/stores/shipping'
 
 const ts = '2026-04-19T00:00:00'
 
@@ -198,5 +199,24 @@ describe('ShippingView', () => {
     expect(rows[0].classes()).toContain('dark:odd:bg-slate-800')
     expect(rows[1].classes()).toContain('even:bg-slate-100')
     expect(rows[1].classes()).toContain('dark:even:bg-slate-820')
+  })
+
+  it('un-shipped job (status=planned) appears in the view after re-fetch', async () => {
+    // Regression for Phase 16 un-ship: when a previously-shipped job transitions
+    // back to planned, it must appear in ShippingView on the next poll.
+    mockFetch.mockResolvedValueOnce({ rows: [], total: 0 })
+    const w = mountView()
+    await flushPromises()
+    expect(w.findAll('tbody tr').length).toBe(0)
+
+    // Job was un-shipped server-side; next fetch returns it with status=planned
+    mockFetch.mockResolvedValueOnce({
+      rows: [makeJob({ id: 42, _pn: 'RESHIP', status: 'planned', shipped_at: null, resolved_ship_date: '2026-05-15' })],
+      total: 1,
+    })
+    await useShippingStore().load()
+    await flushPromises()
+
+    expect(w.findAll('tbody tr').length).toBe(1)
   })
 })

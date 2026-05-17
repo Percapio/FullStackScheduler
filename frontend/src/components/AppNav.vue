@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, watch, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { usePstClock } from '@/composables/usePstClock'
@@ -10,16 +10,35 @@ import { ref } from 'vue'
 import UploadModal from '@/components/UploadModal.vue'
 import SearchPaginatorBar from '@/components/SearchPaginatorBar.vue'
 import { useToast } from '@/composables/useToast'
+import { fetchAwaitingReview } from '@/api/review'
 
 const uploadOpen = ref(false)
 const { show: pushToast } = useToast()
+const inFlightCount = ref(0)
 
-function onUploadSuccess(payload: { batch_id: number; rows_total: number; rows_inserted: number; rows_updated: number; rows_errored: number }) {
+async function refreshInFlightCount() {
+  try {
+    const batches = await fetchAwaitingReview()
+    inFlightCount.value = batches.length
+  } catch {
+    // non-blocking; badge stays at last known value
+  }
+}
+
+onMounted(refreshInFlightCount)
+
+function onUploadSuccess(payload: { batch_id: number; rows_total?: number; rows_inserted?: number; rows_updated?: number; rows_errored?: number }) {
   uploadOpen.value = false
+  refreshInFlightCount()
   pushToast(
-    `Batch #${payload.batch_id}: ${payload.rows_inserted} inserted, ${payload.rows_updated} updated, ${payload.rows_errored} errored.`,
-    payload.rows_errored > 0 ? 'error' : 'success'
+    `Batch #${payload.batch_id}: ${payload.rows_inserted ?? '?'} inserted, ${payload.rows_updated ?? '?'} updated, ${payload.rows_errored ?? '?'} errored.`,
+    (payload.rows_errored ?? 0) > 0 ? 'error' : 'success'
   )
+}
+
+function onUploadClose() {
+  uploadOpen.value = false
+  refreshInFlightCount()
 }
 
 const router = useRouter()
@@ -55,7 +74,10 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
             class="px-4 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring"
             active-class="!bg-slate-900 !text-white dark:!bg-slate-100 dark:!text-slate-900"
           >
-            {{ tab.label }}
+            <template v-if="tab.name === 'uploads-in-flight' && inFlightCount > 0">
+              {{ tab.label }} <span class="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-semibold rounded-full bg-amber-400 text-amber-900">{{ inFlightCount }}</span>
+            </template>
+            <template v-else>{{ tab.label }}</template>
           </RouterLink>
         </li>
       </ul>
@@ -96,7 +118,7 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
         @scroll-bottom="scrollBottom"
       />
     </div>
-     <UploadModal :open="uploadOpen" @close="uploadOpen = false" @success="onUploadSuccess" />
+     <UploadModal :open="uploadOpen" @close="onUploadClose" @success="onUploadSuccess" />
    </nav>
 
 </template>

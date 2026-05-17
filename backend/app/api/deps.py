@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from fastapi import Depends, Query
 from sqlalchemy.orm import Session
@@ -14,6 +14,15 @@ def get_session() -> Iterator[Session]:
         yield s
     finally:
         s.close()
+
+
+def get_session_factory() -> Callable[[], Session]:
+    """Return the session factory used by endpoints that open their own sessions.
+
+    This is a FastAPI dependency so tests can override it via
+    app.dependency_overrides[get_session_factory] = lambda: test_session_factory.
+    """
+    return SessionLocal
 
 
 class PageParams:

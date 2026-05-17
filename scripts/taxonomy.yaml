@@ -1,0 +1,48 @@
+schema_version: "1"
+
+global_negators: ["no", "not", missing, without, "w/o", "n/a"]
+strip_strikethrough: true
+
+categories:
+  - name: Adhesives
+    keywords:
+      - RTV
+      - glue
+      - epoxy
+      - Loctite
+      - staking
+      - thermal compound
+    disqualifiers: []
+
+  - name: Hardware
+    keywords:
+      - Hardware
+      - Mechanical
+      - mech
+      - screw
+      - screws
+      - nut
+      - nuts
+      - nylon standoff
+      - standoff
+      - standoffs
+    disqualifiers: []
+
+  - name: Conductive
+    keywords:
+      - Shunt
+      - Shunts
+      - jumper
+      - jumpers
+      - Shield
+      - fuse
+      - fuses
+    disqualifiers:
+      - keyword: Shield
+        not_followed_by: Frame
+        max_gap_chars: 20
+
+  - name: Torque
+    keywords:
+      - Torque
+    disqualifiers: []

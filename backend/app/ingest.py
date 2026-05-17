@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from openpyxl import load_workbook
 from sqlalchemy import select
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 from . import reader
 from .db import SessionLocal
 from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
-from .models import ImportBatch, ImportStagingRow, ImportStatus, SheetKind
+from .models import Assembly, ImportBatch, ImportStagingRow, ImportStatus, SheetKind
 from .services.jobs_lifecycle import CandidateDelta, detect_supersession_candidates
 from .services.staging import _rollback_with_error_capture
 from .transform import transform_staging_row, _mark_decompose_error
@@ -37,18 +38,181 @@ class ReaderError(Exception):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Review workflow types (Phase 18a §6.2)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ReviewGroup:
+    """One parsed_part_number and the staging rows that share it.
+
+    Pre:  parsed_part_number is the part_number produced by the decomposition
+          of row.raw_job for every row in rows.
+    Post: rows is non-empty.
+    """
+    parsed_part_number: str
+    rows: list[ImportStagingRow]
+
+
+@dataclass
+class ReviewClassification:
+    """Output of classify_new_parts_for_review.
+
+    b:                     new B#-shaped part numbers (^[0-9]{6}$).
+    non_b:                 new non-B# part numbers (always [] in Phase 1).
+    intra_file_duplicates: intra-file duplicate groups (always [] in Phase 1).
+    """
+    b: list[ReviewGroup] = field(default_factory=list)
+    non_b: list[ReviewGroup] = field(default_factory=list)
+    intra_file_duplicates: list[ReviewGroup] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        """True iff every list field is empty (no rows require review)."""
+        return not self.b and not self.non_b and not self.intra_file_duplicates
+
+
+_B_NUMBER_RE = re.compile(r"^\d{6}$")
+
+
+def matches_b_number_shape(pn: str) -> bool:
+    """True iff pn is exactly six decimal digits (the company's B# format).
+
+    Pre:  pn is a stripped part_number string.
+    Post: deterministic; raises never.
+    """
+    return _B_NUMBER_RE.fullmatch(pn) is not None
+
+
+def load_assembly_part_numbers(session: Session) -> set[str]:
+    """Load every Assembly.part_number into a set for O(1) membership tests.
+
+    Pre:  session is the ingest's outer transaction.
+    Post: returns every Assembly.part_number string currently in the DB.
+    Raises: propagates DB errors.
+    """
+    return set(session.scalars(select(Assembly.part_number)).all())
+
+
+def classify_new_parts_for_review(
+    session: Session,
+    staging: list[ImportStagingRow],
+) -> ReviewClassification:
+    """Identify staging rows whose parsed part_number is absent from the registry.
+
+    Phase 1 form: only B#-shaped part numbers (^[0-9]{6}$) are surfaced for
+    review.  Non-B# parts pass through unflagged in Phase 1 — they go
+    directly into Stage 4..6 with whatever part_number the parser produced.
+
+    Pre:  staging contains every row from this batch with raw_job populated.
+          session is the same outer transaction as Stage 3.
+    Post: sets row.review_status = 'pending' on each row that triggers review.
+          Returns the ReviewClassification grouping for the API to emit.
+    Raises: never.
+    """
+    registry: set[str] = load_assembly_part_numbers(session)
+    new_b_groups: dict[str, list[ImportStagingRow]] = {}
+
+    for row in staging:
+        if not row.raw_job:
+            continue
+        decomp = decompose_job_string_with_diagnostic(row.raw_job)
+        if decomp is None or isinstance(decomp, DecomposeError):
+            continue
+        # P-5: persist parsed_part_number for all rows with a successful decomp
+        # so the API read path can use the indexed column instead of re-parsing.
+        row.parsed_part_number = decomp.part_number
+        if decomp.part_number in registry:
+            continue
+        if not matches_b_number_shape(decomp.part_number):
+            continue  # Phase 1: non-B# parts pass through silently
+        new_b_groups.setdefault(decomp.part_number, []).append(row)
+        row.review_status = "pending"
+
+    return ReviewClassification(
+        b=[ReviewGroup(pn, rows) for pn, rows in new_b_groups.items()],
+        non_b=[],
+        intra_file_duplicates=[],
+    )
+
+
 @dataclass(frozen=True)
 class IngestResult:
+    """Sum-type representing the outcome of ingest_workbook.
+
+    kind == "processed_or_error": batch ran through Stage 4..6 immediately.
+    kind == "held_for_review":    batch is paused in awaiting_review status.
+    """
+    kind: Literal["processed_or_error", "held_for_review"]
     batch_id: int
     source_sha256: str
-    rows_total: int
-    rows_inserted: int
-    rows_updated: int
-    rows_errored: int
-    duplicate_of_batch_id: int | None
-    sheet_kind: SheetKind
-    candidates_opened: int
-    candidates_auto_returned: int
+    filename: str | None
+
+    # Populated only when kind == "processed_or_error"
+    rows_total: int | None = None
+    rows_inserted: int | None = None
+    rows_updated: int | None = None
+    rows_errored: int | None = None
+    duplicate_of_batch_id: int | None = None
+    sheet_kind: SheetKind | None = None
+    candidates_opened: int | None = None
+    candidates_auto_returned: int | None = None
+
+    # Populated only when kind == "held_for_review"
+    new_b_numbers: list[ReviewGroup] | None = None
+    new_non_b_numbers: list[ReviewGroup] | None = None
+    intra_file_duplicates: list[ReviewGroup] | None = None
+
+    @classmethod
+    def processed_or_error(
+        cls,
+        *,
+        batch_id: int,
+        source_sha256: str,
+        filename: str | None,
+        rows_total: int,
+        rows_inserted: int,
+        rows_updated: int,
+        rows_errored: int,
+        duplicate_of_batch_id: int | None,
+        sheet_kind: SheetKind,
+        candidates_opened: int,
+        candidates_auto_returned: int,
+    ) -> "IngestResult":
+        return cls(
+            kind="processed_or_error",
+            batch_id=batch_id,
+            source_sha256=source_sha256,
+            filename=filename,
+            rows_total=rows_total,
+            rows_inserted=rows_inserted,
+            rows_updated=rows_updated,
+            rows_errored=rows_errored,
+            duplicate_of_batch_id=duplicate_of_batch_id,
+            sheet_kind=sheet_kind,
+            candidates_opened=candidates_opened,
+            candidates_auto_returned=candidates_auto_returned,
+        )
+
+    @classmethod
+    def held_for_review(
+        cls,
+        *,
+        batch_id: int,
+        source_sha256: str,
+        filename: str | None,
+        new_b_numbers: list[ReviewGroup],
+        new_non_b_numbers: list[ReviewGroup],
+        intra_file_duplicates: list[ReviewGroup],
+    ) -> "IngestResult":
+        return cls(
+            kind="held_for_review",
+            batch_id=batch_id,
+            source_sha256=source_sha256,
+            filename=filename,
+            new_b_numbers=new_b_numbers,
+            new_non_b_numbers=new_non_b_numbers,
+            intra_file_duplicates=intra_file_duplicates,
+        )
 
 
 _COLUMN_MAP: dict[str, str] = {
@@ -94,12 +258,18 @@ def ingest_workbook(
     path = Path(path)
     sha = _sha256(path)
 
-    # Stage 1 — duplicate guard
+    # Stage 1 — duplicate guard.
+    # Abandoned batches are excluded so an operator can re-upload after abandoning
+    # a held batch (§6.6).  Processed/error batches are still guarded; force=True
+    # overrides them as before.
     duplicate_of: int | None = None
     session = session_factory()
     try:
         existing_batch_id = session.execute(
-            select(ImportBatch.id).where(ImportBatch.source_sha256 == sha).limit(1)
+            select(ImportBatch.id)
+            .where(ImportBatch.source_sha256 == sha)
+            .where(ImportBatch.status != ImportStatus.abandoned)
+            .limit(1)
         ).scalar_one_or_none()
 
         if existing_batch_id is not None:
@@ -134,6 +304,7 @@ def ingest_workbook(
         session.add(batch)
         session.flush()
 
+        staging_rows: list[ImportStagingRow] = []
         for row_number, cells in raw_rows:
             kwargs: dict[str, object] = {
                 "batch_id": batch.id,
@@ -143,9 +314,9 @@ def ingest_workbook(
                 kwargs[attr] = cells.get(header)
             staging_row = ImportStagingRow(**kwargs)
             session.add(staging_row)
+            staging_rows.append(staging_row)
 
-        session.flush()
-        session.commit()
+        session.flush()  # assigns IDs to staging rows before Stage 3.5 runs
         batch_id = batch.id
 
         log.info(
@@ -157,20 +328,72 @@ def ingest_workbook(
                 "kind": sheet_kind.value,
             },
         )
+
+        # Stage 3.5 — classify new parts for review.
+        # Phase 1: only B#-shaped (^\d{6}$) parts are held; non-B# pass through.
+        classification = classify_new_parts_for_review(session, staging_rows)
+
+        if not classification.is_empty():
+            # Hold the batch; Stage 4..6 runs at POST /confirm.
+            batch.status = ImportStatus.awaiting_review
+            session.commit()
+            return IngestResult.held_for_review(
+                batch_id=batch_id,
+                source_sha256=sha,
+                filename=path.name,
+                new_b_numbers=classification.b,
+                new_non_b_numbers=classification.non_b,
+                intra_file_duplicates=classification.intra_file_duplicates,
+            )
+
+        session.commit()
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
 
-    # Stages 4–6 — collision scan, per-row transform, batch finalization (single session)
+    # Stages 4–6 — collision scan, per-row transform, batch finalization.
+    return run_stages_4_to_6(
+        batch_id=batch_id,
+        rows_total=rows_total,
+        sheet_kind=sheet_kind,
+        source_sha256=sha,
+        filename=path.name,
+        duplicate_of=duplicate_of,
+        session_factory=session_factory,
+    )
+
+
+def run_stages_4_to_6(
+    batch_id: int,
+    rows_total: int,
+    sheet_kind: SheetKind,
+    source_sha256: str,
+    filename: str | None,
+    duplicate_of: int | None,
+    session_factory: Callable[[], Session],
+) -> IngestResult:
+    """Run Stage 4 (collision scan), Stage 5 (transform), Stage 5b (supersession),
+    and Stage 6 (finalize) for a batch that is already staged.
+
+    Used by both ingest_workbook (immediate path) and POST /confirm (deferred path).
+
+    Pre:  The batch and all its ImportStagingRows already exist in the DB.
+          Rows with discarded_at IS NOT NULL are excluded from processing.
+    Post: batch.status is set to processed or error; returns IngestResult.
+    Raises: propagates exceptions from Stage 5b or Stage 6; callers should
+            not catch silently.
+    """
     counters = {"inserted": 0, "updated": 0, "errored": 0}
     session = session_factory()
     try:
+        # Rows with discarded_at set were hard-deleted during review (D3).
         pending = session.scalars(
             select(ImportStagingRow)
             .where(ImportStagingRow.batch_id == batch_id)
             .where(ImportStagingRow.processing_status == ImportStatus.pending)
+            .where(ImportStagingRow.discarded_at.is_(None))
             .order_by(ImportStagingRow.source_row_number)
         ).all()
 
@@ -247,9 +470,9 @@ def ingest_workbook(
 
         # Stage 6 — finalize batch (runs in both success and failure paths,
         # before session.commit(), so the batch never lingers as `pending`).
-        batch = session.get(ImportBatch, batch_id)
-        batch.row_count = rows_total
-        batch.status = (
+        batch_obj = session.get(ImportBatch, batch_id)
+        batch_obj.row_count = rows_total
+        batch_obj.status = (
             ImportStatus.error
             if loop_exc is not None or counters["errored"] > 0
             else ImportStatus.processed
@@ -265,9 +488,10 @@ def ingest_workbook(
     finally:
         session.close()
 
-    return IngestResult(
+    return IngestResult.processed_or_error(
         batch_id=batch_id,
-        source_sha256=sha,
+        source_sha256=source_sha256,
+        filename=filename,
         rows_total=rows_total,
         rows_inserted=counters["inserted"],
         rows_updated=counters["updated"],
@@ -277,6 +501,7 @@ def ingest_workbook(
         candidates_opened=len(delta.new_pending_candidate_ids),
         candidates_auto_returned=len(delta.auto_returned_candidate_ids),
     )
+
 
 
 def main() -> None:
@@ -308,6 +533,13 @@ def main() -> None:
         print(f"ingest: reader error: {exc}", file=sys.stderr)
         sys.exit(2)
 
+    if result.kind == "held_for_review":
+        _cli_exit_held(result)
+    else:
+        _cli_exit_processed(result)
+
+
+def _cli_exit_processed(result: "IngestResult") -> None:  # noqa: F821
     dup = f" (duplicate_of={result.duplicate_of_batch_id})" if result.duplicate_of_batch_id else ""
     print(
         f"ingest: batch={result.batch_id} sha={result.source_sha256[:8]}…"
@@ -316,8 +548,20 @@ def main() -> None:
         f" updated={result.rows_updated}"
         f" errored={result.rows_errored}{dup}"
     )
-
     sys.exit(1 if result.rows_errored > 0 else 0)
+
+
+def _cli_exit_held(result: "IngestResult") -> None:  # noqa: F821
+    # Exit code 3 signals held-for-review to callers / CI pipelines.
+    print(
+        f"ingest: batch={result.batch_id} sha={result.source_sha256[:8]}…"
+        f" held_for_review"
+        f" new_b={len(result.new_b_numbers or [])}"
+        f" new_non_b={len(result.new_non_b_numbers or [])}"
+    )
+    for group in result.new_b_numbers or []:
+        print(f"  new B#: {group.parsed_part_number}  ({len(group.rows)} row(s))")
+    sys.exit(3)
 
 
 if __name__ == "__main__":

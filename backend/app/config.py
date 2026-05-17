@@ -25,6 +25,11 @@ def _default_database_url() -> str:
 class Settings(BaseSettings):
     database_url: str = ""             # filled by validator below
     sqlite_pragmas: bool = True
+    # Pool sizing — see P-1 rationale: 16/8 comfortably outlasts operator-paced
+    # clicking (max ~24 concurrent) while staying below the 40-thread Starlette cap.
+    sqlite_pool_size: int = 16
+    sqlite_max_overflow: int = 8
+    sqlite_pool_timeout_seconds: int = 30
     model_config = SettingsConfigDict(env_prefix="SCHEDULER_", env_file=".env", extra="ignore")
 
     def model_post_init(self, __ctx) -> None:

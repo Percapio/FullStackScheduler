@@ -39,8 +39,9 @@ def get_engine() -> Engine:
     if is_sqlite:
         _ensure_sqlite_dir(url)
         kwargs["connect_args"] = {"check_same_thread": False}
-        kwargs["pool_size"] = 4
-        kwargs["max_overflow"] = 0
+        kwargs["pool_size"] = settings.sqlite_pool_size
+        kwargs["max_overflow"] = settings.sqlite_max_overflow
+        kwargs["pool_timeout"] = settings.sqlite_pool_timeout_seconds
 
     engine = create_engine(url, **kwargs)
 

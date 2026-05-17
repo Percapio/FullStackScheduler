@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -69,14 +70,17 @@ def open_batch(session: Session) -> ImportBatch:
 
 
 @pytest.fixture()
-def workbook_factory(tmp_path):
+def workbook_factory(tmp_path, session_factory):
     from backend.app.reader import KNOWN_HEADERS
 
     _headers = sorted(KNOWN_HEADERS)
+    _b_re = re.compile(r"^\d{6}$")
 
     def _create(
         rows: list[dict[str, str | None]],
         filename: str = "test.xlsx",
+        *,
+        seed_assemblies: bool = True,
     ) -> Path:
         from openpyxl import Workbook
         wb = Workbook()
@@ -87,13 +91,37 @@ def workbook_factory(tmp_path):
             ws.append([row_data.get(h) for h in _headers])
         path = tmp_path / filename
         wb.save(path)
+
+        if seed_assemblies:
+            # Auto-seed any 6-digit part numbers from JOB cells into Assembly so
+            # existing tests are not intercepted by the Phase 18a review workflow.
+            from backend.app.extractors import DecomposeError, decompose_job_string_with_diagnostic
+            seen: set[str] = set()
+            for row_data in rows:
+                job_cell = row_data.get("JOB") or ""
+                if not job_cell:
+                    continue
+                decomp = decompose_job_string_with_diagnostic(job_cell)
+                if decomp is None or isinstance(decomp, DecomposeError):
+                    continue
+                pn = decomp.part_number
+                if _b_re.fullmatch(pn) and pn not in seen:
+                    seen.add(pn)
+                    with session_factory() as s:
+                        from backend.app.models import Assembly
+                        if not s.scalars(
+                            __import__("sqlalchemy", fromlist=["select"]).select(Assembly).where(Assembly.part_number == pn)
+                        ).first():
+                            s.add(Assembly(part_number=pn))
+                            s.commit()
+
         return path
 
     return _create
 
 
 @pytest.fixture()
-def schd_workbook_factory(tmp_path):
+def schd_workbook_factory(tmp_path, session_factory):
     """Factory that produces a SCHD-shape workbook for testing.
 
     The returned callable accepts:
@@ -109,6 +137,7 @@ def schd_workbook_factory(tmp_path):
 
     from backend.app.reader import KNOWN_HEADERS
 
+    _b_re = re.compile(r"^\d{6}$")
     headers = sorted(KNOWN_HEADERS) + ["DIVIDER"]
 
     def _create(rows, *, title="Production Schedule", filename="schd.xlsx"):
@@ -130,6 +159,28 @@ def schd_workbook_factory(tmp_path):
             ws.append(row_values)
         path = tmp_path / filename
         wb.save(path)
+
+        # Auto-seed any 6-digit part numbers so existing tests bypass review workflow.
+        from backend.app.extractors import DecomposeError, decompose_job_string_with_diagnostic
+        seen: set[str] = set()
+        for entry in rows:
+            job_cell = (entry.get("data") or {}).get("JOB") or ""
+            if not job_cell:
+                continue
+            decomp = decompose_job_string_with_diagnostic(job_cell)
+            if decomp is None or isinstance(decomp, DecomposeError):
+                continue
+            pn = decomp.part_number
+            if _b_re.fullmatch(pn) and pn not in seen:
+                seen.add(pn)
+                with session_factory() as s:
+                    from backend.app.models import Assembly
+                    if not s.scalars(
+                        __import__("sqlalchemy", fromlist=["select"]).select(Assembly).where(Assembly.part_number == pn)
+                    ).first():
+                        s.add(Assembly(part_number=pn))
+                        s.commit()
+
         return path
 
     return _create
@@ -141,7 +192,7 @@ def schd_workbook_factory(tmp_path):
 @pytest.fixture()
 def client(session_factory):
     from backend.app.api import create_app
-    from backend.app.api.deps import get_session
+    from backend.app.api.deps import get_session, get_session_factory
 
     app = create_app()
 
@@ -153,6 +204,7 @@ def client(session_factory):
             s.close()
 
     app.dependency_overrides[get_session] = _override_get_session
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

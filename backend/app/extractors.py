@@ -45,6 +45,28 @@ class JobDecomposition:
     classification_codes: tuple[str, ...]
     build_qualifier: BuildQualifier | None = None
 
+    def with_overrides(
+        self,
+        *,
+        part_number: str,
+        split_suffix: str | None,
+    ) -> "JobDecomposition":
+        """Return a copy with part_number and split_suffix replaced.
+
+        Pre:  part_number is non-empty.
+        Post: all other fields (build_type, repeat_reference,
+              classification_codes, build_qualifier) are unchanged.
+        Raises: never.
+        """
+        return JobDecomposition(
+            part_number=part_number,
+            split_suffix=split_suffix,
+            build_type=self.build_type,
+            repeat_reference=self.repeat_reference,
+            classification_codes=self.classification_codes,
+            build_qualifier=self.build_qualifier,
+        )
+
 
 @dataclass(frozen=True)
 class DecomposeError:

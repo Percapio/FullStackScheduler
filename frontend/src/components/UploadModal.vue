@@ -1,22 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { apiClient } from '@/api/client'
-
-interface IngestResponse {
-  batch_id: number
-  source_sha256: string
-  rows_total: number
-  rows_inserted: number
-  rows_updated: number
-  rows_errored: number
-  duplicate_of_batch_id: number | null
-  filename: string
-}
+import BatchReviewPanel from '@/components/BatchReviewPanel.vue'
+import type { IngestResponse, IngestProcessedResponse, ConfirmResult } from '@/api/review'
 
 const props = defineProps<{ open: boolean }>()
 const emit  = defineEmits<{
   (e: 'close'): void
-  (e: 'success', payload: IngestResponse): void
+  (e: 'success', payload: IngestProcessedResponse): void
 }>()
 
 const fileInput      = ref<HTMLInputElement | null>(null)
@@ -25,7 +16,10 @@ const isDragging     = ref(false)
 const uploading      = ref(false)
 const force          = ref(false)
 const errorMessage   = ref<string | null>(null)
-const result         = ref<IngestResponse | null>(null)
+const result         = ref<IngestProcessedResponse | null>(null)
+
+/** When non-null, the upload returned requires_review: true — show review panel. */
+const reviewBatchId  = ref<number | null>(null)
 
 const hasFile = computed(() => selectedFile.value !== null)
 
@@ -63,6 +57,7 @@ function reset() {
   selectedFile.value = null
   errorMessage.value = null
   result.value = null
+  reviewBatchId.value = null
   if (fileInput.value) fileInput.value.value = ''
 }
 
@@ -71,6 +66,7 @@ async function submit() {
   uploading.value = true
   errorMessage.value = null
   result.value = null
+  reviewBatchId.value = null
 
   const fd = new FormData()
   fd.append('file', selectedFile.value, selectedFile.value.name)
@@ -84,10 +80,14 @@ const resp = await apiClient.post<IngestResponse>('/api/ingest', fd, {
   // the boundary and the server returns
   // [{"loc":["body","file"],"msg":"Field required"}].
   headers: { 'Content-Type': undefined },
-  timeout: 120_000,
 })
-    result.value = resp.data
-    emit('success', resp.data)
+    if (resp.data.requires_review) {
+      // Batch held for operator review — transition to review panel.
+      reviewBatchId.value = resp.data.batch_id
+    } else {
+      result.value = resp.data
+      emit('success', resp.data)
+    }
   } catch (err: any) {
     const detail = err?.response?.data?.detail
     errorMessage.value =
@@ -104,6 +104,19 @@ function close() {
   emit('close')
   reset()
 }
+
+function onReviewConfirmed(confirmResult: ConfirmResult) {
+  // Treat as a normal processed result so the parent (AppNav) shows the toast.
+  result.value = confirmResult as IngestProcessedResponse
+  reviewBatchId.value = null
+  emit('success', confirmResult as IngestProcessedResponse)
+}
+
+function onReviewAbandoned() {
+  reviewBatchId.value = null
+  emit('close')
+  reset()
+}
 </script>
 
 <template>
@@ -113,12 +126,15 @@ function close() {
          role="dialog"
          aria-modal="true"
          aria-labelledby="upload-modal-title"
-         @click.self="close">
-      <div class="w-full max-w-xl mx-4 rounded-lg bg-white dark:bg-slate-800 shadow-[var(--shadow-elevated)] flex flex-col">
+         @click.self="reviewBatchId ? undefined : close()">
+      <div :class="[
+             'w-full mx-4 rounded-lg bg-white dark:bg-slate-800 shadow-[var(--shadow-elevated)] flex flex-col',
+             reviewBatchId ? 'max-w-2xl' : 'max-w-xl',
+           ]">
         <header class="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-700">
           <h2 id="upload-modal-title"
               class="text-lg font-semibold text-slate-800 dark:text-slate-100">
-            Upload Schedule
+            {{ reviewBatchId ? `Review batch #${reviewBatchId}` : 'Upload Schedule' }}
           </h2>
           <button type="button"
                   class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 focus-ring rounded px-2"
@@ -129,7 +145,17 @@ function close() {
           </button>
         </header>
 
-        <div class="p-6 space-y-4">
+        <!-- Review panel (shown after held_for_review response) -->
+        <div v-if="reviewBatchId" class="p-6 overflow-y-auto max-h-[70vh]">
+          <BatchReviewPanel
+            :batch-id="reviewBatchId"
+            @confirmed="onReviewConfirmed"
+            @abandoned="onReviewAbandoned"
+          />
+        </div>
+
+        <!-- Upload form (shown initially) -->
+        <div v-else class="p-6 space-y-4">
           <div :class="[
                 'flex flex-col items-center justify-center gap-3 px-6 py-12 rounded-lg border-2 border-dashed transition-colors duration-150',
                 isDragging
@@ -207,8 +233,9 @@ function close() {
             </ul>
           </div>
         </div>
+        <!-- /v-else (upload form) -->
 
-        <footer class="flex justify-end gap-2 px-6 py-4 border-t border-slate-200 dark:border-slate-700">
+        <footer v-if="!reviewBatchId" class="flex justify-end gap-2 px-6 py-4 border-t border-slate-200 dark:border-slate-700">
           <button type="button"
                   class="px-4 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 focus-ring transition-colors duration-100"
                   :disabled="uploading"

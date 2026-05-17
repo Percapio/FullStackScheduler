@@ -310,7 +310,6 @@ export interface paths {
          *     Returns the soft-deleted job on success.
          *     404 if the job does not exist.
          *     409 if the job is already discarded (body contains the existing row).
-         *     409 if the job's status is 'shipped' (shipped jobs cannot be discarded).
          */
         post: operations["discard_job_api_jobs__job_id__discard_post"];
         delete?: never;
@@ -365,6 +364,33 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/history-edit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit History Job
+         * @description Edit reconciliation-style fields of a shipped job.
+         *
+         *     404 if job not found.
+         *     409 if not shipped or already discarded (body: { kind }).
+         *     409 if the edit would create an identity collision
+         *         (body: { message, colliding_job_id }).
+         *     422 with body { field, message } on per-field parse failure.
+         *     422 (Pydantic) if no raw_* field was provided.
+         */
+        patch: operations["edit_history_job_api_jobs__job_id__history_edit_patch"];
         trace?: never;
     };
     "/api/assemblies": {
@@ -429,6 +455,169 @@ export interface paths {
         put?: never;
         /** Ingest Upload */
         post: operations["ingest_upload_api_ingest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/awaiting-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Awaiting Review
+         * @description Return up to 50 batches currently in awaiting_review status, newest first.
+         */
+        get: operations["list_awaiting_review_api_ingest_awaiting_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/{batch_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Review Payload
+         * @description Return the full review payload for a held batch.
+         */
+        get: operations["get_review_payload_api_ingest__batch_id__review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/{batch_id}/canonical/{parsed_part_number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Canonical
+         * @description Apply a canonical part_number override to all non-deleted rows in a group.
+         */
+        put: operations["set_canonical_api_ingest__batch_id__canonical__parsed_part_number__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/{batch_id}/staging-row/{row_id}/split-suffix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Split Suffix
+         * @description Override the split_suffix on a specific staging row.
+         */
+        patch: operations["patch_split_suffix_api_ingest__batch_id__staging_row__row_id__split_suffix_patch"];
+        trace?: never;
+    };
+    "/api/ingest/{batch_id}/staging-row/{row_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify Staging Row
+         * @description Mark a pending review row as verified (operator confirms parsed value is correct).
+         */
+        post: operations["verify_staging_row_api_ingest__batch_id__staging_row__row_id__verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/{batch_id}/staging-row/{row_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Staging Row From Review
+         * @description Hard-discard a staging row during review (D3).  Excluded from Stage 4..6.
+         */
+        delete: operations["delete_staging_row_from_review_api_ingest__batch_id__staging_row__row_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/{batch_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Review
+         * @description Run Stage 4..6 against the surviving staging rows and finalize the batch.
+         */
+        post: operations["confirm_review_api_ingest__batch_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/{batch_id}/abandon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abandon Review
+         * @description Abandon a held batch.  Staging rows are retained for forensics.
+         *
+         *     After abandonment, the same sha256 file can be re-uploaded because Stage 1
+         *     excludes abandoned batches from the duplicate guard (§6.6).
+         */
+        post: operations["abandon_review_api_ingest__batch_id__abandon_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -607,6 +796,38 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * HistoryJobEditRequest
+         * @description Edit reconciliation-style fields of a shipped job.
+         *
+         *     Five discrete identity fields replace the old raw_job free-text field (Patch 01).
+         *     Three ship-time fields retain Phase 17 semantics (is-not-None check; empty rejected).
+         *     At least one editable field must be present in the request body; a body containing
+         *     only `reason` is rejected (422) by the model validator.
+         *
+         *     extra="forbid": stale clients that still send the removed `raw_job` key receive an
+         *     explicit "extra fields not permitted" 422 rather than a silent drop.
+         */
+        HistoryJobEditRequest: {
+            /** Part Number */
+            part_number?: string | null;
+            /** Build Type */
+            build_type?: string | null;
+            /** Split Suffix */
+            split_suffix?: string | null;
+            /** Repeat Reference */
+            repeat_reference?: string | null;
+            /** Build Qualifier */
+            build_qualifier?: string | null;
+            /** Raw Qty */
+            raw_qty?: string | null;
+            /** Raw Customer */
+            raw_customer?: string | null;
+            /** Raw Shipped */
+            raw_shipped?: string | null;
+            /** Reason */
+            reason: string;
+        };
         /** ImportStagingRowRead */
         ImportStagingRowRead: {
             /** Id */
@@ -643,7 +864,7 @@ export interface components {
          * ImportStatus
          * @enum {string}
          */
-        ImportStatus: "pending" | "processed" | "error";
+        ImportStatus: "pending" | "processed" | "error" | "awaiting_review" | "abandoned";
         /**
          * IncomingRestoreCandidate
          * @description The row the operator wants to restore, discriminated by source kind.
@@ -652,6 +873,17 @@ export interface components {
             kind: components["schemas"]["RestoreSourceKind"];
             staging?: components["schemas"]["StagingRowDetailRead"] | null;
             job?: components["schemas"]["JobReadExpanded"] | null;
+        };
+        /**
+         * JobDiscardRequest
+         * @description Request body for POST /api/jobs/{jobId}/discard.
+         *
+         *     `reason` is required (min 1, max 500 chars), written to logger.info,
+         *     and not persisted.
+         */
+        JobDiscardRequest: {
+            /** Reason */
+            reason: string;
         };
         /** JobRead */
         JobRead: {
@@ -1694,7 +1926,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobDiscardRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -1759,6 +1995,41 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": components["schemas"]["JobRestoreRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReadExpanded"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_history_job_api_jobs__job_id__history_edit_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HistoryJobEditRequest"];
             };
         };
         responses: {
@@ -1893,6 +2164,259 @@ export interface operations {
                 "multipart/form-data": components["schemas"]["Body_ingest_upload_api_ingest_post"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_awaiting_review_api_ingest_awaiting_review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_review_payload_api_ingest__batch_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_canonical_api_ingest__batch_id__canonical__parsed_part_number__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+                parsed_part_number: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_split_suffix_api_ingest__batch_id__staging_row__row_id__split_suffix_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_staging_row_api_ingest__batch_id__staging_row__row_id__verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_staging_row_from_review_api_ingest__batch_id__staging_row__row_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_review_api_ingest__batch_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    abandon_review_api_ingest__batch_id__abandon_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

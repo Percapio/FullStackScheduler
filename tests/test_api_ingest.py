@@ -11,9 +11,10 @@ from backend.app.ingest import DuplicateBatchError, IngestResult
 from backend.app.models import SheetKind
 
 
-_FAKE_RESULT = IngestResult(
+_FAKE_RESULT = IngestResult.processed_or_error(
     batch_id=42,
     source_sha256="a" * 64,
+    filename="schedule.xlsx",
     rows_total=10,
     rows_inserted=7,
     rows_updated=2,

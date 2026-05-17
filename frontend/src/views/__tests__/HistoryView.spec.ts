@@ -173,4 +173,24 @@ describe('HistoryView', () => {
     const store = useHistoryStore()
     expect(store.inspected?.id).toBe(201)
   })
+
+  it('un-shipped job is no longer rendered after a re-fetch', async () => {
+    // Regression for Phase 16 un-ship: HistoryView must reflect the re-fetched
+    // snapshot; a job whose status flips to planned is omitted by the API and
+    // must disappear from the view without a page reload.
+    mockFetchHistory.mockResolvedValueOnce({
+      rows: [makeJob({ id: 42, _pn: 'RESHIP', status: 'shipped', shipped_at: '2026-04-01' })],
+      total: 1,
+    })
+    const w = mountView()
+    await flushPromises()
+    expect(w.findAll('tbody tr').length).toBe(1)
+
+    // Job was un-shipped server-side; the history endpoint omits it next poll
+    mockFetchHistory.mockResolvedValueOnce({ rows: [], total: 0 })
+    await useHistoryStore().load()
+    await flushPromises()
+
+    expect(w.findAll('tbody tr').length).toBe(0)
+  })
 })

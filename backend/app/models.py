@@ -20,7 +20,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, deferred, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -67,6 +67,8 @@ class ImportStatus(str, enum.Enum):
     pending = "pending"
     processed = "processed"
     error = "error"
+    awaiting_review = "awaiting_review"
+    abandoned = "abandoned"
 
 
 class SheetKind(str, enum.Enum):
@@ -258,6 +260,8 @@ class ImportStagingRow(Base, TimestampMixin):
         Index("ix_import_staging_batch_id", "batch_id"),
         Index("ix_import_staging_discarded_at", "discarded_at"),
         Index("ix_import_staging_dup_group", "batch_id", "duplicate_group_key"),
+        Index("ix_staging_batch_review_status", "batch_id", "review_status"),
+        Index("ix_staging_batch_parsed_pn", "batch_id", "parsed_part_number"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -304,6 +308,22 @@ class ImportStagingRow(Base, TimestampMixin):
     )
     discarded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duplicate_group_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Review-tracking columns (Phase 18a).  All nullable; populated only when
+    # the staging row passes through the review surface.
+    # Deferred so that historical migrations using sa.select(ImportStagingRow)
+    # do not fail with "no such column" before migration 0009 has been applied.
+    original_raw_job: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
+    # review_status values: 'pending' | 'verified' | 'edited' | 'deleted'
+    review_status: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
+    # reviewed_by is a placeholder ('frontend') until operator auth lands in Phase 18b.
+    reviewed_by: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
+    reviewed_at: Mapped[datetime | None] = deferred(mapped_column(DateTime, nullable=True))
+    review_part_number_override: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
+    review_split_suffix_override: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
+    # Populated at Stage 3.5 (classify_new_parts_for_review) post-migration 0010.
+    # Enables indexed read path in _rows_for_pn instead of Python-side decomposition.
+    parsed_part_number: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
 
     batch: Mapped[ImportBatch] = relationship(back_populates="rows")
 

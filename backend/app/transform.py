@@ -345,6 +345,36 @@ def _apply_unship(row: ImportStagingRow, job: Job) -> None:
     )
 
 
+def effective_decomposition(row: ImportStagingRow) -> JobDecomposition | DecomposeError:
+    """Return the decomposition that Stage 5 should use for this staging row.
+
+    When the row carries operator review overrides (review_part_number_override
+    and/or review_split_suffix_override), those values replace the parsed
+    part_number and split_suffix.  All other identity components (build_type,
+    repeat_reference, classification_codes, build_qualifier) always come from
+    the raw_job decomposition.
+
+    Tight coupling note: this function reads the review-override columns added
+    in Phase 18a migration 0009.  Its existence is the single point where the
+    transform layer couples to the review-workflow state.
+
+    Pre:  row.raw_job is the original uploaded cell text.
+    Post: returns a JobDecomposition reflecting review overrides when set,
+          or the raw_job decomposition otherwise.
+          Returns DecomposeError as a VALUE when raw_job parsing fails.
+    Raises: never.
+    """
+    parsed = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
+    if parsed is None or isinstance(parsed, DecomposeError):
+        return parsed  # type: ignore[return-value]
+    if row.review_part_number_override is None:
+        return parsed
+    return parsed.with_overrides(
+        part_number=row.review_part_number_override,
+        split_suffix=row.review_split_suffix_override,
+    )
+
+
 def transform_staging_row(
     session: Session,
     row: ImportStagingRow,
@@ -358,7 +388,7 @@ def transform_staging_row(
           the row errored.  Returns TransformOutcome describing the action taken.
     Raises: never (all exceptions result in a row-level error).
     """
-    decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
+    decomp_result = effective_decomposition(row)
     if decomp_result is None or isinstance(decomp_result, DecomposeError):
         _mark_decompose_error(row, decomp_result)
         return TransformOutcome(None, "errored")
