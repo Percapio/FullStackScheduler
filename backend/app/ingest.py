@@ -16,8 +16,9 @@ from sqlalchemy.orm import Session
 
 from . import reader
 from .db import SessionLocal
+from .config import get_settings
 from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
-from .models import Assembly, ImportBatch, ImportStagingRow, ImportStatus, SheetKind
+from .models import Assembly, BuildQualifier, BuildType, ImportBatch, ImportStagingRow, ImportStatus, SheetKind
 from .services.jobs_lifecycle import CandidateDelta, detect_supersession_candidates
 from .services.staging import _rollback_with_error_capture
 from .transform import transform_staging_row, _mark_decompose_error
@@ -39,8 +40,31 @@ class ReaderError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Review workflow types (Phase 18a §6.2)
+# Review workflow types (Phase 18a §6.2 / Phase 18c §6.2)
 # ---------------------------------------------------------------------------
+
+@dataclass
+class IdentityTuple:
+    """Full job identity tuple used by Stage 3.6 intra-file duplicate detection.
+
+    Mirrors the five-column uniqueness key on the Job table.
+    """
+    part_number: str
+    build_type: BuildType
+    split_suffix: str | None
+    repeat_reference: str | None
+    build_qualifier: BuildQualifier | None
+
+    def as_key(self) -> tuple:
+        """Return a hashable tuple for dict-keying."""
+        return (
+            self.part_number,
+            self.build_type,
+            self.split_suffix,
+            self.repeat_reference,
+            self.build_qualifier,
+        )
+
 
 @dataclass
 class ReviewGroup:
@@ -49,18 +73,26 @@ class ReviewGroup:
     Pre:  parsed_part_number is the part_number produced by the decomposition
           of row.raw_job for every row in rows.
     Post: rows is non-empty.
+    identity: populated only for intra_file_duplicates groups (Phase 18c §6.2);
+              None for new_b_numbers and new_non_b_numbers groups.
     """
     parsed_part_number: str
     rows: list[ImportStagingRow]
+    identity: IdentityTuple | None = None
 
 
 @dataclass
 class ReviewClassification:
-    """Output of classify_new_parts_for_review.
+    """Output of classify_new_parts_for_review (Phase 18b form).
 
-    b:                     new B#-shaped part numbers (^[0-9]{6}$).
-    non_b:                 new non-B# part numbers (always [] in Phase 1).
-    intra_file_duplicates: intra-file duplicate groups (always [] in Phase 1).
+    b:                     new pure-digit canonicals (matches_b_number_shape returns
+                           True; predicate is ``^\\d+$`` per E4).  Length is not
+                           constrained — five-digit legacy and seven-plus-digit future
+                           values are both valid.
+    non_b:                 new canonicals that are not pure-digit.  Populated under
+                           Phase 18b; empty only when no non-B# new parts are present.
+    intra_file_duplicates: groups of staging rows sharing identity within the same
+                           workbook.  Currently always empty; populated by Phase 2 §7.5.
     """
     b: list[ReviewGroup] = field(default_factory=list)
     non_b: list[ReviewGroup] = field(default_factory=list)
@@ -71,13 +103,16 @@ class ReviewClassification:
         return not self.b and not self.non_b and not self.intra_file_duplicates
 
 
-_B_NUMBER_RE = re.compile(r"^\d{6}$")
+_B_NUMBER_RE = re.compile(r"^\d+$")
 
 
 def matches_b_number_shape(pn: str) -> bool:
-    """True iff pn is exactly six decimal digits (the company's B# format).
+    """True iff pn is one or more decimal digits only (the company's B# format).
 
-    Pre:  pn is a stripped part_number string.
+    Phase 18b revision per E4: length is not constrained.  Five-digit legacy
+    values (e.g. 99000) and future seven-plus-digit values are both valid.
+
+    Pre:  pn is the canonical produced by decompose_job_string_with_diagnostic.
     Post: deterministic; raises never.
     """
     return _B_NUMBER_RE.fullmatch(pn) is not None
@@ -96,26 +131,30 @@ def load_assembly_part_numbers(session: Session) -> set[str]:
 def classify_new_parts_for_review(
     session: Session,
     staging: list[ImportStagingRow],
+    registry: set[str],
 ) -> ReviewClassification:
     """Identify staging rows whose parsed part_number is absent from the registry.
 
-    Phase 1 form: only B#-shaped part numbers (^[0-9]{6}$) are surfaced for
-    review.  Non-B# parts pass through unflagged in Phase 1 — they go
-    directly into Stage 4..6 with whatever part_number the parser produced.
+    Phase 18b form: every new-part row (B# and non-B# alike) is pre-approved
+    as 'verified'.  The operator still reviews the panel but no action is
+    required before POST /confirm is callable.
 
     Pre:  staging contains every row from this batch with raw_job populated.
           session is the same outer transaction as Stage 3.
-    Post: sets row.review_status = 'pending' on each row that triggers review.
-          Returns the ReviewClassification grouping for the API to emit.
+          registry is the Stage 2.5 snapshot from load_assembly_part_numbers.
+    Post: sets row.review_status = 'verified' and row.parsed_part_number on
+          every new-part row with a successful decomposition.
+          rows where decomposition fails keep review_status = NULL (excluded
+          from the review panel; resolve as Stage 5 errors post-confirm).
     Raises: never.
     """
-    registry: set[str] = load_assembly_part_numbers(session)
     new_b_groups: dict[str, list[ImportStagingRow]] = {}
+    new_non_b_groups: dict[str, list[ImportStagingRow]] = {}
 
     for row in staging:
         if not row.raw_job:
             continue
-        decomp = decompose_job_string_with_diagnostic(row.raw_job)
+        decomp = decompose_job_string_with_diagnostic(row.raw_job, registry)
         if decomp is None or isinstance(decomp, DecomposeError):
             continue
         # P-5: persist parsed_part_number for all rows with a successful decomp
@@ -123,15 +162,71 @@ def classify_new_parts_for_review(
         row.parsed_part_number = decomp.part_number
         if decomp.part_number in registry:
             continue
-        if not matches_b_number_shape(decomp.part_number):
-            continue  # Phase 1: non-B# parts pass through silently
-        new_b_groups.setdefault(decomp.part_number, []).append(row)
-        row.review_status = "pending"
+        target_group = new_b_groups if matches_b_number_shape(decomp.part_number) else new_non_b_groups
+        target_group.setdefault(decomp.part_number, []).append(row)
+        row.review_status = "verified"
 
     return ReviewClassification(
         b=[ReviewGroup(pn, rows) for pn, rows in new_b_groups.items()],
-        non_b=[],
+        non_b=[ReviewGroup(pn, rows) for pn, rows in new_non_b_groups.items()],
         intra_file_duplicates=[],
+    )
+
+
+def augment_with_intra_file_duplicates(
+    classification: ReviewClassification,
+    staging: list[ImportStagingRow],
+    registry: set[str],
+) -> ReviewClassification:
+    """Detect rows in the same batch that share a full identity tuple and group them.
+
+    Stage 3.6 — runs after classify_new_parts_for_review (Stage 3.5).
+
+    Pre:  classification is the output of classify_new_parts_for_review.
+          staging contains every row from this batch.
+          registry is the Stage 2.5 snapshot.
+    Post: returns a new ReviewClassification whose intra_file_duplicates list
+          contains one ReviewGroup per colliding identity tuple.  Rows that are
+          members of a duplicate group and have no existing review_status are
+          set to 'verified' (pre-approval default, F7).
+          classification.b and classification.non_b are carried through unchanged.
+    Raises: never.
+    """
+    by_identity: dict[tuple, list[ImportStagingRow]] = {}
+    for row in staging:
+        if not row.raw_job:
+            continue
+        decomp = decompose_job_string_with_diagnostic(row.raw_job, registry)
+        if decomp is None or isinstance(decomp, DecomposeError):
+            continue
+        identity = IdentityTuple(
+            part_number=decomp.part_number,
+            build_type=decomp.build_type,
+            split_suffix=decomp.split_suffix,
+            repeat_reference=decomp.repeat_reference,
+            build_qualifier=decomp.build_qualifier,
+        )
+        by_identity.setdefault(identity.as_key(), []).append((identity, row))
+
+    duplicates: list[ReviewGroup] = []
+    for key, pairs in by_identity.items():
+        if len(pairs) < 2:
+            continue
+        identity_obj, _ = pairs[0]
+        rows = [r for _, r in pairs]
+        for row in rows:
+            if row.review_status is None:
+                row.review_status = "verified"
+        duplicates.append(ReviewGroup(
+            parsed_part_number=identity_obj.part_number,
+            rows=rows,
+            identity=identity_obj,
+        ))
+
+    return ReviewClassification(
+        b=classification.b,
+        non_b=classification.non_b,
+        intra_file_duplicates=duplicates,
     )
 
 
@@ -329,9 +424,21 @@ def ingest_workbook(
             },
         )
 
+        # Stage 2.5 — pre-load registry for decomposition and classification.
+        # The snapshot is passed through Stage 3.5 and Stage 3.6.  Stage 5
+        # reloads a fresh snapshot at confirm time (see run_stages_4_to_6).
+        registry = load_assembly_part_numbers(session)
+
         # Stage 3.5 — classify new parts for review.
-        # Phase 1: only B#-shaped (^\d{6}$) parts are held; non-B# pass through.
-        classification = classify_new_parts_for_review(session, staging_rows)
+        # Phase 18b: B# and non-B# new parts alike are held; rows are
+        # pre-approved (review_status='verified') so the operator can confirm
+        # immediately without any per-row action.
+        classification = classify_new_parts_for_review(session, staging_rows, registry)
+
+        # Stage 3.6 — detect intra-file duplicates on full identity tuple.
+        # Groups colliding rows into intra_file_duplicates for operator review
+        # instead of letting Stage 4 mark them as hard errors.
+        classification = augment_with_intra_file_duplicates(classification, staging_rows, registry)
 
         if not classification.is_empty():
             # Hold the batch; Stage 4..6 runs at POST /confirm.
@@ -397,12 +504,22 @@ def run_stages_4_to_6(
             .order_by(ImportStagingRow.source_row_number)
         ).all()
 
+        # Stage 5 reload: fresh registry snapshot at confirm time so that
+        # assemblies created by sibling batches between Stage 2.5 and confirm
+        # are visible to the registry-driven parser (§5.4 split-snapshot contract).
+        stage5_registry = load_assembly_part_numbers(session)
+
         loop_exc: Exception | None = None
         try:
-            # Stage 4 — intra-file collision scan
+            # Stage 4 — intra-file collision scan.
+            # When intra_file_collision_legacy_error_path is False (default),
+            # Stage 3.6 has already surfaced duplicates for review; Stage 4
+            # short-circuits the collision block.  Setting it True restores
+            # the pre-Phase-18c behaviour as a rollback affordance (§6.3).
+            settings = get_settings()
             by_identity: dict[tuple, list[ImportStagingRow]] = {}
             for row in pending:
-                decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
+                decomp_result = decompose_job_string_with_diagnostic(row.raw_job, stage5_registry) if row.raw_job else None
                 if decomp_result is None or isinstance(decomp_result, DecomposeError):
                     _mark_decompose_error(row, decomp_result)
                     continue
@@ -410,25 +527,26 @@ def run_stages_4_to_6(
                 key = (decomp.part_number, decomp.build_type, decomp.split_suffix, decomp.repeat_reference, decomp.build_qualifier)
                 by_identity.setdefault(key, []).append(row)
 
-            for identity, rows in by_identity.items():
-                if len(rows) < 2:
-                    continue
-                other_ids = sorted(r.id for r in rows)
-                qualifier_segment: str = identity[4].value if identity[4] else ""
-                canonical_key: str = f"{identity[0]}|{identity[1].value}|{identity[2] or ''}|{identity[3] or ''}|{qualifier_segment}"
-                for row in rows:
-                    row.duplicate_group_key = canonical_key
-                    row.processing_status = ImportStatus.error
-                    row.processing_error = (
-                        f"Intra-file duplicate JOB identity "
-                        f"{canonical_key} "
-                        f"(staging rows {other_ids})"
-                    )
-                    row.suggested_correction = (
-                        "This JOB identity appears more than once in the workbook. "
-                        "Add a split suffix to distinguish the builds \u2014 e.g., change the JOB to "
-                        f"'{identity[0]}-1par', '{identity[0]}-2par', etc."
-                    )
+            if settings.intra_file_collision_legacy_error_path:
+                for identity, rows in by_identity.items():
+                    if len(rows) < 2:
+                        continue
+                    other_ids = sorted(r.id for r in rows)
+                    qualifier_segment: str = identity[4].value if identity[4] else ""
+                    canonical_key: str = f"{identity[0]}|{identity[1].value}|{identity[2] or ''}|{identity[3] or ''}|{qualifier_segment}"
+                    for row in rows:
+                        row.duplicate_group_key = canonical_key
+                        row.processing_status = ImportStatus.error
+                        row.processing_error = (
+                            f"Intra-file duplicate JOB identity "
+                            f"{canonical_key} "
+                            f"(staging rows {other_ids})"
+                        )
+                        row.suggested_correction = (
+                            "This JOB identity appears more than once in the workbook. "
+                            "Add a split suffix to distinguish the builds \u2014 e.g., change the JOB to "
+                            f"'{identity[0]}-1par', '{identity[0]}-2par', etc."
+                        )
 
             counters["errored"] += sum(
                 1 for r in pending if r.processing_status is ImportStatus.error
@@ -440,7 +558,9 @@ def run_stages_4_to_6(
                     continue
                 nested = session.begin_nested()
                 try:
-                    outcome = transform_staging_row(session, row, sheet_kind=sheet_kind)
+                    outcome = transform_staging_row(
+                        session, row, sheet_kind=sheet_kind, registry=stage5_registry
+                    )
                     if outcome.action == "errored":
                         _rollback_with_error_capture(session, row, nested)
                         counters["errored"] += 1

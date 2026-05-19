@@ -15,12 +15,8 @@ _CLEAR_KEYWORD_RE = re.compile(
     r"|(?:(?:clear(?:s|ed)?)\s+(\d{1,2}/\d{1,2}(?:/\d{4})?))",
     re.IGNORECASE,
 )
-_SPLIT_SUFFIX_LEXICON: tuple[str, ...] = ("par", "bal", "ser")
-SPLIT_SUFFIX_RE = re.compile(
-    r"-(?P<digits>\d+)(?P<token>" + "|".join(_SPLIT_SUFFIX_LEXICON) + r")$",
-    re.IGNORECASE,
-)
-SO_NUMBER_RE = re.compile(r"SO#", re.IGNORECASE)
+_SO_NUMBER_RE_RAW = r"SO#"
+SO_NUMBER_RE = re.compile(_SO_NUMBER_RE_RAW, re.IGNORECASE)
 _PART_NUMBER_SHAPED_RE = re.compile(r"^[A-Za-z0-9._\-\s]+$")
 _REPEAT_RE = re.compile(
     r"^(?P<bt>RONC|ROWC)(?:\s+(?P<ref>[^(]+?))?\s*(?:\(.*)?$",
@@ -135,20 +131,111 @@ def _parse_qualifier_line(line: str) -> tuple[BuildQualifier, str | None] | None
     return qualifier, normalised_ref
 
 
-def parse_part_line(line: str) -> tuple[str, str | None]:
-    """Apply SPLIT_SUFFIX_RE to a stripped, non-empty line.
+# ---------------------------------------------------------------------------
+# Phase 18b B# shape rule
+# ---------------------------------------------------------------------------
 
-    Pre:  line is stripped and non-empty (caller guarantees).
-    Post: when SPLIT_SUFFIX_RE matches the tail, split_suffix includes the
-          leading "-" and is lower-cased; part_number is the remainder with
-          trailing whitespace stripped.  Otherwise part_number is line
-          verbatim and split_suffix is None.
+_B_NUMBER_SHAPE_RE: re.Pattern[str] = re.compile(
+    r"^(?P<digits>\d+)(?P<sep>[-_.](?P<tail>.*))?$"
+)
+_REV_TOKEN_RE: re.Pattern[str] = re.compile(r"rev", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Phase 18c Phase 2* — Registry-driven non-B# decomposition (§5.2 / §5.3)
+# ---------------------------------------------------------------------------
+
+def decompose_part_line_by_registry(
+    line: str,
+    registry: set[str],
+) -> tuple[str, str | None]:
+    """Decompose the first line of a JOB cell by longest-prefix match against the registry.
+
+    Rule 2 of the three-rule composition contract (§5.1).  Only invoked when
+    the shape rule (Rule 1) did not fire.
+
+    Pre:  line is stripped, non-empty.
+          registry is the snapshot loaded at Stage 2.5.
+    Post: When line contains the substring "rev" (case-insensitive), returns
+          (line, None) — revision markers must not be stripped into split_suffix.
+          When no registered part_number is a prefix of line, returns (line, None).
+          Otherwise returns (longest_prefix_match, remainder-or-None).
     Raises: never.
     """
-    m = SPLIT_SUFFIX_RE.search(line)
-    if m is None:
-        return line, None
-    return line[: m.start()].rstrip(), line[m.start():].lower()
+    if _REV_TOKEN_RE.search(line) is not None:
+        return (line, None)
+    candidates = [pn for pn in registry if line.startswith(pn)]
+    if not candidates:
+        return (line, None)
+    best = max(candidates, key=len)
+    remainder = line[len(best):]
+    return (best, remainder or None)
+
+
+def decompose_part_line(
+    line: str,
+    registry: set[str],
+) -> tuple[str, str | None]:
+    """Compose Rule 1 (shape) + Rule 2 (registry-prefix) + Rule 3 (verbatim) per §5.1.
+
+    Pre:  line is stripped, non-empty.
+    Post: When shape rule fires:   returns shape rule's output.
+          Else when registry hits: returns longest-prefix split.
+          Else:                    returns (line, None).
+    Raises: never.
+    """
+    if shape_rule_would_fire(line):
+        return decompose_part_line_by_shape(line)
+    return decompose_part_line_by_registry(line, registry)
+
+
+def shape_rule_would_fire(first_line: str) -> bool:
+    """Return True iff decompose_part_line_by_shape applied to first_line would
+    take the "rule fires" branch.
+
+    Pre:  first_line is already stripped (caller's responsibility).
+    Post: returns True iff the rev token is absent AND the digit-shape regex
+          fullmatches first_line.  Independent of whether the rule strips
+          anything (pure-digit inputs satisfy the regex but produce the same
+          part_number as first_line; this predicate correctly reports them as
+          rule-fired).
+    Raises: never.
+    """
+    if not first_line:
+        return False
+    if _REV_TOKEN_RE.search(first_line) is not None:
+        return False
+    return _B_NUMBER_SHAPE_RE.fullmatch(first_line) is not None
+
+
+def decompose_part_line_by_shape(
+    line: str,
+) -> tuple[str, str | None]:
+    """Decompose the first line of a JOB cell into (part_number, split_suffix).
+
+    Uses the digit-shape rule per Phase 18b §5.1:
+
+    * If the line contains the substring ``rev`` (case-insensitive), the
+      shape rule is disqualified and the line is returned verbatim with no
+      suffix.
+    * If the line matches ``^<digits>(<sep><tail>)?$`` where sep is one of
+      ``{-, _, .}``, canonical is the digit run and split_suffix is the
+      separator + tail (or None when there is no separator).
+    * Otherwise the line is returned verbatim with no suffix.
+
+    Pre:  line is stripped and non-empty.
+    Post: returns (part_number, split_suffix); never raises.
+    """
+    if _REV_TOKEN_RE.search(line) is not None:
+        return (line, None)
+    match = _B_NUMBER_SHAPE_RE.fullmatch(line)
+    if match is None:
+        return (line, None)
+    digits: str = match.group("digits")
+    separator: str | None = match.group("sep")
+    if separator is None:
+        return (digits, None)
+    return (digits, separator)
 
 
 def looks_like_multi_part_cell(lines: list[str]) -> bool:
@@ -174,11 +261,17 @@ def looks_like_multi_part_cell(lines: list[str]) -> bool:
     return True
 
 
-def decompose_job_string_with_diagnostic(raw: str) -> JobDecomposition | DecomposeError:
+def decompose_job_string_with_diagnostic(
+    raw: str,
+    registry: set[str] = frozenset(),  # type: ignore[assignment]
+) -> JobDecomposition | DecomposeError:
     """Decompose a raw JOB cell string into a JobDecomposition, or return a
     DecomposeError with a specific failure code and user-visible message.
 
     Pre:  raw is a non-empty string.
+          registry is the set of known canonical part_numbers (Stage 2.5 snapshot).
+          Callers in the staging / transform path MUST pass the live registry.
+          Read-path callers may omit it; an empty registry produces verbatim fallback.
     Post: returns JobDecomposition on success; DecomposeError (R1–R4) on
           structural failure.  Check order: R4 (SO#) → R3 (multi-part) →
           single-line fallback → R1/R2 from line scan.
@@ -216,7 +309,7 @@ def decompose_job_string_with_diagnostic(raw: str) -> JobDecomposition | Decompo
             recovered_classifications=_extract_classifications(lines),
         )
 
-    part_number, split_suffix = parse_part_line(line0)
+    part_number, split_suffix = decompose_part_line(line0, registry)
 
     intermediates: list[str] = []
     build_type: BuildType | None = None

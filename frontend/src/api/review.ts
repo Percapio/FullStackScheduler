@@ -15,10 +15,11 @@ export interface ReviewRow {
   staging_row_id: number
   source_row_number: number
   original_cell_text: string
-  /** Phase 2: populated from registry-driven decompose. Null in Phase 1. */
-  parsed_split_suffix: string | null
+  review_part_number_override: string | null
   review_split_suffix_override: string | null
   review_status: 'pending' | 'verified' | 'edited' | 'deleted'
+  /** True iff the Phase 18b B# shape rule fired when the row was ingested. */
+  shape_rule_fired: boolean
 }
 
 /** An existing assembly close to a new parsed part number, by edit distance. */
@@ -27,12 +28,23 @@ export interface SimilarAssembly {
   edit_distance: number
 }
 
+/** Identity tuple for an intra-file duplicate group (Phase 18c §6.2). */
+export interface ReviewGroupIdentity {
+  part_number: string
+  build_type: string
+  split_suffix: string | null
+  repeat_reference: string | null
+  build_qualifier: string | null
+}
+
 /** One parsed canonical and all the staging rows that map to it. */
 export interface ReviewGroup {
   parsed_part_number: string
   rows: ReviewRow[]
   similar_assemblies: SimilarAssembly[]
   review_status: 'pending' | 'verified' | 'edited'
+  /** Populated only for intra_file_duplicates groups; null/absent for new_b/non_b groups. */
+  identity?: ReviewGroupIdentity | null
 }
 
 /** Full review payload returned by GET /{batch_id}/review. */
@@ -189,7 +201,11 @@ export async function deleteRow(
 
 /** POST /api/ingest/{batch_id}/confirm */
 export async function confirmReview(batchId: number): Promise<ConfirmResult> {
-  const resp = await apiClient.post<ConfirmResult>(`/api/ingest/${batchId}/confirm`)
+  const resp = await apiClient.post<ConfirmResult>(
+    `/api/ingest/${batchId}/confirm`,
+    undefined,
+    { timeout: 60_000 },  // Override global 30 s — Stage 4..6 is the longest sync operation.
+  )
   return resp.data
 }
 

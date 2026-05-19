@@ -25,29 +25,37 @@ def test_supersede_then_ship_creates_new_active_job(
     session_factory,
     client,
 ):
-    # Step 1: live v1 — bare 5000Z NEW.
+    # Phase 18b: pre-seed assembly so Stage 3.5 treats it as a known part,
+    # allowing Stage 4..6 to run inline (no review hold for a known B#).
+    with session_factory() as s:
+        s.add(Assembly(part_number="577700"))
+        s.commit()
+
+    # Step 1: live v1 — bare 577700 NEW.
     wb1 = schd_workbook_factory(
-        [{"data": {"JOB": "5000Z\nNEW", "QTY": "1", "CUSTOMER": "TESTCO"}}],
+        [{"data": {"JOB": "577700\nNEW", "QTY": "1", "CUSTOMER": "TESTCO"}}],
         filename="live_v1.xlsx",
     )
     r1 = ingest_workbook(wb1, session_factory=session_factory)
     assert r1.candidates_opened == 0
 
     # Step 2: live v2 — split into -1par + -2par.
+    # Phase 18b shape rule: "577700-1par" decomposes to ("577700", "-1par"),
+    # so both rows resolve to the existing Assembly 577700.
     wb2 = schd_workbook_factory(
         [
-            {"data": {"JOB": "5000Z-1par\nNEW", "QTY": "1", "CUSTOMER": "TESTCO"}},
-            {"data": {"JOB": "5000Z-2par\nNEW", "QTY": "1", "CUSTOMER": "TESTCO"}},
+            {"data": {"JOB": "577700-1par\nNEW", "QTY": "1", "CUSTOMER": "TESTCO"}},
+            {"data": {"JOB": "577700-2par\nNEW", "QTY": "1", "CUSTOMER": "TESTCO"}},
         ],
         filename="live_v2.xlsx",
     )
     r2 = ingest_workbook(wb2, session_factory=session_factory)
     assert r2.candidates_opened == 1
 
-    # Locate the pending candidate for the bare 5000Z job.
+    # Locate the pending candidate for the bare 577700 job.
     with session_factory() as s:
         asm = s.scalars(
-            select(Assembly).where(Assembly.part_number == "5000Z")
+            select(Assembly).where(Assembly.part_number == "577700")
         ).one()
         bare_job = s.scalars(
             select(Job)
@@ -76,7 +84,7 @@ def test_supersede_then_ship_creates_new_active_job(
 
     # Step 4: SHIPPED (AA) workbook for the same identity.
     hist_wb = workbook_factory(
-        [{"JOB": "5000Z\nNEW", "QTY": "1", "CUSTOMER": "TESTCO",
+        [{"JOB": "577700\nNEW", "QTY": "1", "CUSTOMER": "TESTCO",
           "SHIPPED": "04/15/2026"}]
     )
     r3 = ingest_workbook(hist_wb, session_factory=session_factory)

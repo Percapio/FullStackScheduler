@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, text
 
-from backend.app.models import ImportBatch, ImportStagingRow, ImportStatus
+from backend.app.config import Settings
+from backend.app.models import Assembly, ImportBatch, ImportStagingRow, ImportStatus
 from backend.app.services.staging import _DUPLICATE_ERROR_PREFIX
 
 
@@ -33,7 +35,12 @@ def _load_migration():
 def test_ingest_sets_duplicate_group_key_for_dup_rows(session, open_batch, workbook_factory, session_factory):
     """Stage 4 of ingest must write duplicate_group_key on rows whose JOB identity
     appears more than once in the batch."""
-    from backend.app.ingest import ingest_workbook
+    from backend.app.ingest import ingest_workbook, run_stages_4_to_6
+    from backend.app.models import SheetKind
+
+    # Phase 18b: pre-seed assemblies so Stage 3.5 treats them as known parts.
+    session.add_all([Assembly(part_number="128764"), Assembly(part_number="99999")])
+    session.commit()
 
     wb_path = workbook_factory(
         [
@@ -42,7 +49,19 @@ def test_ingest_sets_duplicate_group_key_for_dup_rows(session, open_batch, workb
             {"JOB": "99999\nNEW",  "QTY": "3",  "SHIP DATE": "01/01", "CUSTOMER": "Cust C"},
         ]
     )
-    result = ingest_workbook(wb_path, session_factory=session_factory)
+    # Phase 18c: Stage 3.6 holds the batch; run Stage 4 directly with flag True.
+    held = ingest_workbook(wb_path, session_factory=session_factory)
+    overridden = Settings(intra_file_collision_legacy_error_path=True)
+    with patch("backend.app.ingest.get_settings", return_value=overridden):
+        run_stages_4_to_6(
+            batch_id=held.batch_id,
+            rows_total=3,
+            sheet_kind=SheetKind.live,
+            source_sha256=held.source_sha256,
+            filename=held.filename,
+            duplicate_of=None,
+            session_factory=session_factory,
+        )
     session.expire_all()
 
     dup_rows = session.scalars(

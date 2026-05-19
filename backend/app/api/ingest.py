@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import reader
-from ..ingest import DuplicateBatchError, ReaderError, ingest_workbook, run_stages_4_to_6
+from ..ingest import DuplicateBatchError, ReaderError, ingest_workbook, load_assembly_part_numbers, matches_b_number_shape, run_stages_4_to_6
 from ..models import Assembly, ImportBatch, ImportStagingRow, ImportStatus
 from .deps import get_session, get_session_factory
 
@@ -259,13 +259,39 @@ def _require_row_in_review_states(
     return row
 
 
+def _shape_rule_fired_for_row(row: ImportStagingRow) -> bool:
+    """Return True iff the B# shape rule fires on the row's first cell line.
+
+    Per E11: the backend is the single source of truth for shape-rule outcome;
+    the frontend reads this value from the API response rather than mirroring
+    the regex client-side.
+
+    Pre:  row.raw_job or row.original_raw_job is not None.
+    Post: one regex match per call; negligible cost.
+    Raises: never.
+    """
+    from ..extractors import shape_rule_would_fire
+
+    source = row.original_raw_job or row.raw_job
+    if not source:
+        return False
+    first_line = source.split("\n")[0].strip()
+    return shape_rule_would_fire(first_line)
+
+
 def _group_view(
     session: Session,
     batch_id: int,
     pn: str,
     rows: list[ImportStagingRow],
+    *,
+    identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the ReviewGroupView dict for one parsed_part_number."""
+    """Build the ReviewGroupView dict for one parsed_part_number.
+
+    identity is populated only for intra_file_duplicates groups (Phase 18c §6.2);
+    it is None for new_b_numbers and new_non_b_numbers groups.
+    """
     non_deleted = [r for r in rows if r.review_status != "deleted"]
     # Derive group-level status per §6.4 normative derivation.
     if not non_deleted:
@@ -277,22 +303,26 @@ def _group_view(
     else:
         group_status = "verified"
 
-    return {
+    view: dict[str, Any] = {
         "parsed_part_number": pn,
         "rows": [
             {
                 "staging_row_id": r.id,
                 "source_row_number": r.source_row_number,
                 "original_cell_text": r.original_raw_job or r.raw_job,
-                "parsed_split_suffix": None,  # Phase 1: SPLIT_SUFFIX_RE still in use; Phase 2 fills this
+                "review_part_number_override": r.review_part_number_override,
                 "review_split_suffix_override": r.review_split_suffix_override,
                 "review_status": r.review_status,
+                "shape_rule_fired": _shape_rule_fired_for_row(r),
             }
             for r in rows
         ],
         "similar_assemblies": _similar_assemblies_cached(session, batch_id, pn),
         "review_status": group_status,
     }
+    if identity is not None:
+        view["identity"] = identity
+    return view
 
 
 def _rows_for_pn(
@@ -406,8 +436,14 @@ def ingest_upload(
                     {"parsed_part_number": g.parsed_part_number, "row_count": len(g.rows)}
                     for g in (result.new_b_numbers or [])
                 ],
-                "new_non_b_numbers": [],
-                "intra_file_duplicates": [],
+                "new_non_b_numbers": [
+                    {"parsed_part_number": g.parsed_part_number, "row_count": len(g.rows)}
+                    for g in (result.new_non_b_numbers or [])
+                ],
+                "intra_file_duplicates": [
+                    {"parsed_part_number": g.parsed_part_number, "row_count": len(g.rows)}
+                    for g in (result.intra_file_duplicates or [])
+                ],
             }
 
         return {
@@ -460,7 +496,7 @@ def list_awaiting_review(session: Session = Depends(get_session)):
             "source_file": b.source_file,
             "created_at": b.created_at.isoformat() if b.created_at else None,
             "new_b_count": new_b_count,
-            "new_non_b_count": 0,  # Phase 1: always 0
+            "new_non_b_count": 0,
             "pending_row_count": pending_count,
         })
     return result
@@ -487,28 +523,81 @@ def get_review_payload(batch_id: int, session: Session = Depends(get_session)):
 
         from ..extractors import decompose_job_string_with_diagnostic, DecomposeError
 
-        # Group by parsed_part_number.
-        # Fast path: use the stored column (populated at Stage 3.5 post-0010).
-        # Back-compat: fall back to Python-side decomposition for pre-0010 rows.
-        groups_map: dict[str, list[ImportStagingRow]] = {}
+        # Load registry for B# vs non-B# new-part classification.
+        registry = load_assembly_part_numbers(session)
+
+        # --- new_b_numbers and new_non_b_numbers ---
+        # Group rows by parsed_part_number; exclude rows whose pn is already
+        # in the registry (those are intra-file duplicates of existing parts,
+        # not new parts).
+        b_groups_map: dict[str, list[ImportStagingRow]] = {}
+        non_b_groups_map: dict[str, list[ImportStagingRow]] = {}
         for row in review_rows:
             pn = row.parsed_part_number
             if pn is None:
+                # Back-compat: pre-0010 rows lack the stored column.
                 if not row.raw_job:
                     continue
                 decomp = decompose_job_string_with_diagnostic(row.raw_job)
                 if decomp is None or isinstance(decomp, DecomposeError):
                     continue
                 pn = decomp.part_number
-            groups_map.setdefault(pn, []).append(row)
+            if pn in registry:
+                # Existing part — surfaces only via intra_file_duplicates.
+                continue
+            if matches_b_number_shape(pn):
+                b_groups_map.setdefault(pn, []).append(row)
+            else:
+                non_b_groups_map.setdefault(pn, []).append(row)
 
-        b_groups = [_group_view(session, batch_id, pn, rows) for pn, rows in groups_map.items()]
+        # --- intra_file_duplicates ---
+        # Group rows by full identity tuple; any tuple with 2+ rows is a
+        # duplicate group.  Rows appear here regardless of registry membership.
+        by_identity: dict[tuple, list[tuple]] = {}
+        for row in review_rows:
+            if not row.raw_job:
+                continue
+            decomp = decompose_job_string_with_diagnostic(row.raw_job)
+            if decomp is None or isinstance(decomp, DecomposeError):
+                continue
+            key = (
+                decomp.part_number,
+                decomp.build_type,
+                decomp.split_suffix,
+                decomp.repeat_reference,
+                decomp.build_qualifier,
+            )
+            by_identity.setdefault(key, []).append((decomp, row))
+
+        intra_file_groups = []
+        for key, pairs in by_identity.items():
+            if len(pairs) < 2:
+                continue
+            first_decomp, _ = pairs[0]
+            identity_dict = {
+                "part_number": first_decomp.part_number,
+                "build_type": first_decomp.build_type.value,
+                "split_suffix": first_decomp.split_suffix,
+                "repeat_reference": first_decomp.repeat_reference,
+                "build_qualifier": (
+                    first_decomp.build_qualifier.value
+                    if first_decomp.build_qualifier is not None
+                    else None
+                ),
+            }
+            dup_rows = [r for _, r in pairs]
+            intra_file_groups.append(
+                _group_view(session, batch_id, first_decomp.part_number, dup_rows, identity=identity_dict)
+            )
+
+        b_groups = [_group_view(session, batch_id, pn, rows) for pn, rows in b_groups_map.items()]
+        non_b_groups = [_group_view(session, batch_id, pn, rows) for pn, rows in non_b_groups_map.items()]
 
         return {
             "batch_id": batch_id,
             "new_b_numbers": b_groups,
-            "new_non_b_numbers": [],       # Phase 1: always empty
-            "intra_file_duplicates": [],   # Phase 1: always empty
+            "new_non_b_numbers": non_b_groups,
+            "intra_file_duplicates": intra_file_groups,
         }
 
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import axios from 'axios'
 import { apiClient } from '@/api/client'
 import BatchReviewPanel from '@/components/BatchReviewPanel.vue'
 import type { IngestResponse, IngestProcessedResponse, ConfirmResult } from '@/api/review'
@@ -80,6 +81,7 @@ const resp = await apiClient.post<IngestResponse>('/api/ingest', fd, {
   // the boundary and the server returns
   // [{"loc":["body","file"],"msg":"Field required"}].
   headers: { 'Content-Type': undefined },
+  timeout: 60_000,  // Override global 30 s — ingest is CPU-bound and stages 3–3.5 scale with registry size.
 })
     if (resp.data.requires_review) {
       // Batch held for operator review — transition to review panel.
@@ -89,11 +91,19 @@ const resp = await apiClient.post<IngestResponse>('/api/ingest', fd, {
       emit('success', resp.data)
     }
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    errorMessage.value =
-      typeof detail === 'string' ? detail
-      : detail ? JSON.stringify(detail)
-      : err?.message ?? 'Upload failed.'
+    if (axios.isAxiosError(err) && err.code === 'ECONNABORTED') {
+      // Axios timeout: the backend may have completed the upload despite the
+      // client-side cancellation (uvicorn keeps running the sync handler).
+      errorMessage.value =
+        "Upload timed out client-side, but the upload may have completed on the server. " +
+        "Open \u2018In-flight uploads\u2019 to check for a held batch matching this file before re-uploading."
+    } else {
+      const detail = err?.response?.data?.detail
+      errorMessage.value =
+        typeof detail === 'string' ? detail
+        : detail ? JSON.stringify(detail)
+        : err?.message ?? 'Upload failed.'
+    }
   } finally {
     uploading.value = false
   }

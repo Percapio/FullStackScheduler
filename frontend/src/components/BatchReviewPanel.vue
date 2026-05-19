@@ -23,6 +23,8 @@ import {
   type MutationResponse,
   type CanonicalMutationResponse,
 } from '@/api/review'
+import ReviewRowRenderer from './BatchReviewPanel/ReviewRowRenderer.vue'
+import { intraFileDuplicateKey } from './BatchReviewPanel/keys'
 
 const props = defineProps<{
   batchId: number
@@ -52,6 +54,12 @@ const canonicalInputs = ref<Record<string, string>>({})
 const groupLoading    = ref<Record<string, boolean>>({})
 /** split-suffix override input value, keyed by staging_row_id */
 const splitSuffixInputs = ref<Record<number, string>>({})
+/** Phase 18b: B# shape-rule state per row (seeded from row.shape_rule_fired) */
+const isBNumberByRow    = ref<Record<number, boolean>>({})
+/** Phase 18b: per-row canonical input value (used when row is not B#) */
+const canonicalByRow    = ref<Record<number, string>>({})
+/** Phase 18b: fine-grained per-row mutation busy flag */
+const rowMutating       = ref<Record<number, boolean>>({})
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -66,11 +74,45 @@ const allGroups = computed<ReviewGroup[]>(() => {
   ]
 })
 
-/** Confirm is allowed only when every non-deleted row is verified or edited. */
-const canConfirm = computed(() =>
-  allGroups.value.length > 0 &&
-  allGroups.value.every(g => g.review_status !== 'pending')
-)
+/** Confirm is allowed when all three guards pass (Phase 18b §6.4). */
+const canConfirm = computed(() => {
+  if (!payload.value) return false
+  // Guard 1: no 'pending' rows (back-compat for in-flight Phase 18a batches)
+  if (anyRowPending()) return false
+  // Guard 2: no unsaved canonical input (operator typed but not Applied)
+  if (anyUnsavedCanonicalInput()) return false
+  // Guard 3: no mutation in flight (Patch 02 P-6)
+  return mutationInFlightCount.value === 0
+})
+
+/** Tooltip text for the disabled Confirm button (Phase 18b Patch 01 I-1).
+ *  Returns undefined when the button is enabled; browsers suppress the tooltip.
+ */
+const confirmDisabledReason = computed<string | undefined>(() => {
+  if (!payload.value) return 'Loading\u2026'
+  if (anyRowPending())
+    return 'Some rows are still pending \u2014 verify or delete each before confirming.'
+  if (anyUnsavedCanonicalInput())
+    return 'Apply or revert pending canonical changes first.'
+  if (mutationInFlightCount.value > 0)
+    return 'Waiting for an in-flight action to finish.'
+  return undefined
+})
+
+function anyRowPending(): boolean {
+  return allGroups.value.some(g => g.rows.some(r => r.review_status === 'pending'))
+}
+
+function anyUnsavedCanonicalInput(): boolean {
+  return allGroups.value.some(g =>
+    g.rows.some(r => {
+      if (isBNumberByRow.value[r.staging_row_id]) return false
+      const typed     = (canonicalByRow.value[r.staging_row_id] ?? '').trim()
+      const persisted = r.review_part_number_override ?? g.parsed_part_number
+      return typed !== persisted
+    })
+  )
+}
 
 const anyBusy = computed(() => confirming.value || abandoning.value || mutationInFlightCount.value > 0)
 
@@ -87,6 +129,10 @@ async function load() {
     for (const g of allGroups.value) {
       canonicalInputs.value[g.parsed_part_number] = g.parsed_part_number
       for (const r of g.rows) {
+        isBNumberByRow.value[r.staging_row_id] = r.shape_rule_fired
+        // Seed from the persisted canonical so Guard 2 does not fire on load
+        // for rows whose override is already set from a prior session.
+        canonicalByRow.value[r.staging_row_id] = r.review_part_number_override ?? g.parsed_part_number
         splitSuffixInputs.value[r.staging_row_id] = r.review_split_suffix_override ?? ''
       }
     }
@@ -189,6 +235,48 @@ async function handleSetSplitSuffix(_group: ReviewGroup, row: ReviewRow) {
       applyMutationResponse(resp)
     } catch (err: any) {
       actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Set split suffix failed.'
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 18b B# toggle + per-row canonical
+// ---------------------------------------------------------------------------
+
+async function handleBNumberToggle(group: ReviewGroup, row: ReviewRow, checked: boolean) {
+  isBNumberByRow.value[row.staging_row_id] = checked
+  if (checked) {
+    // Revert: re-apply the parsed canonical to restore 'verified' status.
+    await runMutation(async () => {
+      try {
+        const resp = await setCanonical(props.batchId, group.parsed_part_number, group.parsed_part_number)
+        applyMutationResponse(resp)
+        canonicalByRow.value[row.staging_row_id] = group.parsed_part_number
+      } catch (err: any) {
+        actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Revert canonical failed.'
+      }
+    })
+  } else {
+    // Seed from persisted canonical so the operator's prior edit (if any)
+    // is preserved as the starting point rather than discarded.
+    canonicalByRow.value[row.staging_row_id] =
+      row.review_part_number_override ?? row.original_cell_text.split('\n')[0] ?? ''
+  }
+}
+
+async function handleApplyCanonical(group: ReviewGroup, row: ReviewRow) {
+  const desired = (canonicalByRow.value[row.staging_row_id] ?? '').trim()
+  if (!desired) return
+  actionError.value = null
+  rowMutating.value[row.staging_row_id] = true
+  await runMutation(async () => {
+    try {
+      const resp = await setCanonical(props.batchId, group.parsed_part_number, desired)
+      applyMutationResponse(resp)
+    } catch (err: any) {
+      actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Apply canonical failed.'
+    } finally {
+      rowMutating.value[row.staging_row_id] = false
     }
   })
 }
@@ -380,6 +468,36 @@ async function handleAbandon() {
                   </button>
                 </div>
 
+                <!-- Phase 18b: B# toggle + per-row canonical (shown on unchecked) -->
+                <div v-if="row.review_status !== 'deleted'"
+                     class="flex items-center gap-2 text-xs mt-1 w-full">
+                  <label :for="`bnumber-${row.staging_row_id}`"
+                         class="flex items-center gap-1 text-slate-500 dark:text-slate-400 shrink-0 cursor-pointer select-none">
+                    <input :id="`bnumber-${row.staging_row_id}`"
+                           type="checkbox"
+                           :checked="isBNumberByRow[row.staging_row_id]"
+                           :disabled="anyBusy"
+                           class="accent-sky-600"
+                           @change="handleBNumberToggle(group, row, ($event.target as HTMLInputElement).checked)" />
+                    B#
+                  </label>
+                  <template v-if="!isBNumberByRow[row.staging_row_id]">
+                    <input :id="`canonical-row-${row.staging_row_id}`"
+                           v-model="canonicalByRow[row.staging_row_id]"
+                           type="text"
+                           placeholder="canonical"
+                           class="flex-1 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
+                           :disabled="anyBusy"
+                           @keydown.enter="handleApplyCanonical(group, row)" />
+                    <button type="button"
+                            class="shrink-0 px-1.5 py-0.5 rounded border border-sky-300 text-sky-700 dark:text-sky-300 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors duration-75 disabled:opacity-50"
+                            :disabled="!canonicalByRow[row.staging_row_id]?.trim() || anyBusy"
+                            @click="handleApplyCanonical(group, row)">
+                      Apply
+                    </button>
+                  </template>
+                </div>
+
                 <!-- Split-suffix override (visible after PUT /canonical has run) -->
                 <div v-if="canEditSplitSuffix(row)"
                      class="flex items-center gap-1.5 text-xs mt-1 w-full">
@@ -409,6 +527,62 @@ async function handleAbandon() {
         </div>
       </div>
 
+      <!-- Intra-file duplicates section (Phase 18c §6.4) -->
+      <div v-if="payload.intra_file_duplicates.length > 0">
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">
+          Intra-file duplicates ({{ payload.intra_file_duplicates.length }})
+        </h3>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          These rows share a complete identity. Either give them distinct split suffixes,
+          delete a row, or leave them — Stage 4 will only error on remaining collisions.
+        </p>
+
+        <section v-for="group in payload.intra_file_duplicates"
+                 :key="intraFileDuplicateKey(group)"
+                 class="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/10 mb-3">
+
+          <!-- Identity header -->
+          <div class="px-4 py-2 border-b border-amber-200 dark:border-amber-700">
+            <h4 class="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-1">Duplicate identity</h4>
+            <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+              <dt class="text-slate-500 dark:text-slate-400">Part number</dt>
+              <dd class="font-mono text-slate-800 dark:text-slate-100">{{ group.identity?.part_number ?? group.parsed_part_number }}</dd>
+              <dt class="text-slate-500 dark:text-slate-400">Build type</dt>
+              <dd class="font-mono text-slate-800 dark:text-slate-100">{{ group.identity?.build_type ?? '—' }}</dd>
+              <dt class="text-slate-500 dark:text-slate-400">Split suffix</dt>
+              <dd class="font-mono text-slate-800 dark:text-slate-100">{{ group.identity?.split_suffix ?? '—' }}</dd>
+              <dt class="text-slate-500 dark:text-slate-400">Repeat reference</dt>
+              <dd class="font-mono text-slate-800 dark:text-slate-100">{{ group.identity?.repeat_reference ?? '—' }}</dd>
+              <dt class="text-slate-500 dark:text-slate-400">Build qualifier</dt>
+              <dd class="font-mono text-slate-800 dark:text-slate-100">{{ group.identity?.build_qualifier ?? '—' }}</dd>
+            </dl>
+          </div>
+
+          <div class="px-4 py-3">
+            <ul class="space-y-1">
+              <ReviewRowRenderer
+                v-for="row in group.rows"
+                :key="row.staging_row_id"
+                :group="group"
+                :row="row"
+                :is-b-number="isBNumberByRow[row.staging_row_id] ?? false"
+                :canonical-value="canonicalByRow[row.staging_row_id] ?? group.parsed_part_number"
+                :split-suffix-value="splitSuffixInputs[row.staging_row_id] ?? ''"
+                :any-busy="anyBusy"
+                :row-mutating="rowMutating[row.staging_row_id] ?? false"
+                @verify="handleVerify(group, $event)"
+                @delete="handleDelete(group, $event)"
+                @b-number-toggle="(_rowId, checked) => handleBNumberToggle(group, row, checked)"
+                @apply-canonical="handleApplyCanonical(group, row)"
+                @set-split-suffix="handleSetSplitSuffix(group, row)"
+                @update:canonical-value="canonicalByRow[row.staging_row_id] = $event"
+                @update:split-suffix-value="splitSuffixInputs[row.staging_row_id] = $event"
+              />
+            </ul>
+          </div>
+        </section>
+      </div>
+
       <!-- Action error -->
       <div v-if="actionError"
            class="px-3 py-2 rounded border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-700 text-red-800 dark:text-red-200 text-sm"
@@ -429,7 +603,7 @@ async function handleAbandon() {
         <button type="button"
                 class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-sky-500 transition-colors duration-100"
                 :disabled="!canConfirm || anyBusy"
-                :title="canConfirm ? undefined : 'All rows must be verified or deleted before confirming'"
+                :title="confirmDisabledReason"
                 @click="handleConfirm">
           <svg v-if="confirming"
                class="w-4 h-4 animate-spin"

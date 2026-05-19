@@ -6,6 +6,9 @@
  *  - Split-suffix input is hidden for pending rows (PUT /canonical not yet called)
  *  - Clicking "Apply" calls patchSplitSuffix with the entered value
  *  - patchSplitSuffix is called with null when the field is cleared
+ *  - Phase 18b: B# checkbox is checked when shape_rule_fired is true
+ *  - Phase 18b: unchecking B# checkbox reveals per-row canonical input
+ *  - Phase 18b: clicking Apply on per-row canonical calls setCanonical
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -49,9 +52,10 @@ function makeGroup(reviewStatus: 'pending' | 'verified' | 'edited', rowStatus: '
         staging_row_id: 101,
         source_row_number: 1,
         original_cell_text: '123456\nNEW',
-        parsed_split_suffix: null as string | null,
+        review_part_number_override: null as string | null,
         review_split_suffix_override: null as string | null,
         review_status: rowStatus,
+        shape_rule_fired: true,
       },
     ],
     similar_assemblies: [],
@@ -222,7 +226,9 @@ describe('BatchReviewPanel — P-6: buttons disabled while mutation in flight', 
     const w = mountPanel(payload)
     await flushPromises()
 
-    const verifyBtn = w.findAll('button').find(b => b.text().toLowerCase().includes('verify'))
+    // Use exact text match to target the row-level Verify button, not the
+    // group-level "Verify all" button (which resolves immediately via setCanonical).
+    const verifyBtn = w.findAll('button').find(b => b.text().trim() === 'Verify')
     if (!verifyBtn) return
 
     // Trigger without awaiting.
@@ -246,3 +252,136 @@ describe('BatchReviewPanel — P-6: buttons disabled while mutation in flight', 
     await flushPromises()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Phase 18b §7: B# checkbox per-row
+// ---------------------------------------------------------------------------
+
+describe('BatchReviewPanel — Phase 18b B# checkbox', () => {
+  it('B# checkbox is checked when shape_rule_fired is true', async () => {
+    const group = makeGroup('verified', 'verified')
+    // shape_rule_fired: true is the default in makeGroup
+    const w = mountPanel(makePayload({ new_b_numbers: [group] }))
+    await flushPromises()
+
+    const checkbox = w.find<HTMLInputElement>('input[type="checkbox"]')
+    expect(checkbox.exists()).toBe(true)
+    expect(checkbox.element.checked).toBe(true)
+  })
+
+  it('unchecking B# checkbox reveals per-row canonical input', async () => {
+    const group = makeGroup('verified', 'verified')
+    const w = mountPanel(makePayload({ new_b_numbers: [group] }))
+    await flushPromises()
+
+    const checkbox = w.find<HTMLInputElement>('input[type="checkbox"]')
+    await checkbox.setValue(false)
+    await checkbox.trigger('change')
+    await flushPromises()
+
+    const canonicalInput = w.find('input[placeholder="canonical"]')
+    expect(canonicalInput.exists()).toBe(true)
+  })
+
+  it('B# checkbox unchecked: canonical input not shown when checked', async () => {
+    const group = makeGroup('verified', 'verified')
+    // shape_rule_fired defaults to true → checkbox checked → no canonical input
+    const w = mountPanel(makePayload({ new_b_numbers: [group] }))
+    await flushPromises()
+
+    const canonicalInput = w.find('input[placeholder="canonical"]')
+    expect(canonicalInput.exists()).toBe(false)
+  })
+
+  it('clicking Apply on per-row canonical calls setCanonical', async () => {
+    const group = makeGroup('verified', 'verified')
+    group.rows[0].shape_rule_fired = false  // row starts as non-B#
+    const w = mountPanel(makePayload({ new_b_numbers: [group] }))
+    await flushPromises()
+
+    const canonicalInput = w.find('input[placeholder="canonical"]')
+    await canonicalInput.setValue('999999')
+
+    // Find the Apply button next to the canonical input (not the split-suffix Apply)
+    const applyBtns = w.findAll('button').filter(b => b.text() === 'Apply')
+    // First Apply is the per-row canonical Apply
+    await applyBtns[0].trigger('click')
+    await flushPromises()
+
+    expect(mockSetCanonical).toHaveBeenCalledWith(7, '123456', '999999')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 18b Patch 01 P-2.3: Guard 2 fix + persisted-override seed
+// ---------------------------------------------------------------------------
+
+describe('BatchReviewPanel — Patch 01 Guard 2 + persisted-override seed', () => {
+  it('Guard 2 does not fire when typed value equals persisted override', async () => {
+    // Row has a persisted override from a prior setCanonical call.
+    const group = makeGroup('edited', 'edited')
+    group.rows[0].shape_rule_fired = false
+    group.rows[0].review_part_number_override = 'OCTOFOO'
+
+    // Seed canonicalByRow so it matches the persisted override.
+    // The component seeds on load; here we start the row as non-B# so
+    // canonicalByRow is seeded from review_part_number_override ?? original_cell_text.
+    mockFetchReviewPayload.mockResolvedValue(makePayload({ new_b_numbers: [group] }))
+
+    const w = mountPanel(makePayload({ new_b_numbers: [group] }))
+    await flushPromises()
+
+    // The typed input should be pre-seeded with 'OCTOFOO' (the persisted override).
+    const canonicalInput = w.find<HTMLInputElement>('input[placeholder="canonical"]')
+    expect(canonicalInput.exists()).toBe(true)
+    expect(canonicalInput.element.value).toBe('OCTOFOO')
+
+    // Confirm button should be enabled: typed matches persisted, so Guard 2 does not fire.
+    const confirmBtn = w.findAll('button').find(b => b.text().includes('Confirm'))
+    expect((confirmBtn!.element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('Uncheck seeds canonical input from persisted override when override is set', async () => {
+    // Row starts as B# (shape_rule_fired=true, checkbox checked).
+    // It has a persisted override from a prior setCanonical call.
+    const group = makeGroup('edited', 'edited')
+    group.rows[0].shape_rule_fired = true
+    group.rows[0].review_part_number_override = 'OCTOFOO'
+
+    const w = mountPanel(makePayload({ new_b_numbers: [group] }))
+    await flushPromises()
+
+    // Uncheck the B# checkbox.
+    const checkbox = w.find<HTMLInputElement>('input[type="checkbox"]')
+    await checkbox.setValue(false)
+    await checkbox.trigger('change')
+    await flushPromises()
+
+    // The canonical input should be seeded from the persisted override, not original_cell_text.
+    const canonicalInput = w.find<HTMLInputElement>('input[placeholder="canonical"]')
+    expect(canonicalInput.exists()).toBe(true)
+    expect(canonicalInput.element.value).toBe('OCTOFOO')
+  })
+
+  it('Uncheck seeds canonical input from original cell text when override is null', async () => {
+    // Row starts as B# (shape_rule_fired=true, checkbox checked).
+    // No persisted override — pre-confirmation default.
+    const group = makeGroup('verified', 'verified')
+    group.rows[0].shape_rule_fired = true
+    group.rows[0].review_part_number_override = null
+
+    const w = mountPanel(makePayload({ new_b_numbers: [group] }))
+    await flushPromises()
+
+    const checkbox = w.find<HTMLInputElement>('input[type="checkbox"]')
+    await checkbox.setValue(false)
+    await checkbox.trigger('change')
+    await flushPromises()
+
+    // Should seed from the first line of original_cell_text ('123456').
+    const canonicalInput = w.find<HTMLInputElement>('input[placeholder="canonical"]')
+    expect(canonicalInput.exists()).toBe(true)
+    expect(canonicalInput.element.value).toBe('123456')
+  })
+})
+

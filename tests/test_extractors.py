@@ -10,7 +10,6 @@ from backend.app.extractors import (
     extract_clear_date_from_notes,
     extract_ship_fields,
     extract_shipped_date,
-    parse_part_line,
 )
 from backend.app.models import BuildQualifier, BuildType
 
@@ -65,19 +64,20 @@ def test_decompose_job_unknown_build_type_returns_none():
 
 @pytest.mark.parametrize("raw,expected_part,expected_suffix", [
     ("137845\nNEW", "137845", None),
-    # Non-canonical suffixes (no lexicon token) stay in part_number:
-    ("137845-1\nNEW", "137845-1", None),
-    # Canonical lexicon suffixes are split out:
+    # Phase 18b shape rule: digit-prefix lines with separator split at the digit run.
+    ("137845-1\nNEW",   "137845", "-1"),
+    # Lexicon suffixes (par/bal/ser) still split (covered by shape rule):
     ("137845-1par\nNEW", "137845", "-1par"),
     ("137845-3bal\nNEW", "137845", "-3bal"),
-    # Non-canonical single-letter / dotted variants stay in part_number:
-    ("137845-A\nNEW", "137845-A", None),
-    ("137845.1\nNEW", "137845.1", None),
-    ("137845 -1\nNEW", "137845 -1", None),
-    # Canonical suffix after a compound part number:
-    ("ABC-123-1par\nNEW", "ABC-123", "-1par"),
-    # Non-canonical dotted version stays verbatim:
-    ("ABC-123.A\nNEW", "ABC-123.A", None),
+    # Single-letter suffix also splits under new rule:
+    ("137845-A\nNEW",   "137845", "-A"),
+    # Dot separator splits:
+    ("137845.1\nNEW",   "137845", ".1"),
+    # Space before '-' is not a valid separator — not split:
+    ("137845 -1\nNEW",  "137845 -1", None),
+    # Non-digit prefix — shape rule does not fire; line returned verbatim:
+    ("ABC-123-1par\nNEW", "ABC-123-1par", None),
+    ("ABC-123.A\nNEW",   "ABC-123.A",   None),
 ])
 def test_decompose_parses_split_suffix(raw, expected_part, expected_suffix):
     result = decompose_job_string(raw)
@@ -151,10 +151,10 @@ def test_decompose_single_intermediate_folds_into_split_suffix():
     raw = "131635-2nd\n4BAL\nROWC 1st Article"
     result = decompose_job_string(raw)
     assert result is not None
-    # "-2nd" has no canonical lexicon token, so stays in part_number verbatim.
-    assert result.part_number == "131635-2nd"
-    # The intermediate "4BAL" folds into split_suffix (no line-0 suffix to prepend).
-    assert result.split_suffix == "4bal"
+    # Phase 18b: shape rule fires on "131635-2nd" → part="131635", suffix="-2nd".
+    # The intermediate "4BAL" then folds into the suffix.
+    assert result.part_number == "131635"
+    assert result.split_suffix == "-2nd 4bal"
     assert result.build_type == BuildType.rowc
     assert result.repeat_reference == "1st article"
     assert result.classification_codes == ()
@@ -338,46 +338,6 @@ def test_decompose_whitespace_delimited_qualifier_cell(raw, expected_part, expec
     assert result.build_type == BuildType.new
     assert result.build_qualifier == expected_q
     assert result.repeat_reference == expected_ref
-
-
-# ---- Stage 1: parse_part_line canonical lexicon ------------------------------
-
-@pytest.mark.parametrize("line,expected_part,expected_suffix", [
-    ("332-0034-1par",    "332-0034",         "-1par"),
-    ("FOO-12bal",        "FOO",              "-12bal"),
-    ("BAR-3ser",         "BAR",              "-3ser"),
-    ("332-0034 RevD-2bal", "332-0034 RevD",  "-2bal"),
-    ("FMC-SSB1-1.A.1",  "FMC-SSB1-1.A.1",  None),
-    ("332-0034 Rev E",  "332-0034 Rev E",   None),
-    ("332-0034",        "332-0034",         None),
-    ("332-0034 RevD",   "332-0034 RevD",    None),
-])
-def test_part_line_canonical_lexicon(line, expected_part, expected_suffix):
-    part, suffix = parse_part_line(line)
-    assert part == expected_part
-    assert suffix == expected_suffix
-
-
-def test_part_line_canonical_suffix_par():
-    assert parse_part_line("332-0034-1par") == ("332-0034", "-1par")
-
-
-def test_part_line_canonical_suffix_bal():
-    assert parse_part_line("FOO-12bal") == ("FOO", "-12bal")
-
-
-def test_part_line_canonical_suffix_ser():
-    assert parse_part_line("BAR-3ser") == ("BAR", "-3ser")
-
-
-def test_part_line_no_suffix_when_unknown_token():
-    """Non-lexicon suffix token stays in part_number verbatim."""
-    assert parse_part_line("332-0034 RevD") == ("332-0034 RevD", None)
-
-
-def test_part_line_dotted_version_preserved():
-    """Dotted version strings are not split — the leading '-' is mandatory."""
-    assert parse_part_line("FMC-SSB1-1.A.1") == ("FMC-SSB1-1.A.1", None)
 
 
 # ---- Stage 2: R4_so_number_in_job -------------------------------------------

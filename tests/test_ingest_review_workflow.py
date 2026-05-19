@@ -1,8 +1,8 @@
 """Tests for Phase 18a Phase 1 — held-state review workflow.
 
 Covers:
- - Stage 3.5: classify_new_parts_for_review sets review_status='pending' for new B#s
- - ingest_workbook returns held_for_review when new B# parts present
+ - Stage 3.5: classify_new_parts_for_review sets review_status='verified' for new parts (Phase 18b)
+ - ingest_workbook returns held_for_review when new B# or non-B# parts present
  - ingest_workbook runs inline for no-review batches
  - Stage 1 duplicate guard allows re-upload after abandon
  - State-transition matrix for staging row review_status
@@ -83,11 +83,13 @@ class TestMatchesBNumberShape:
     def test_six_digits_is_b_number(self):
         assert matches_b_number_shape("123456") is True
 
-    def test_five_digits_not_b_number(self):
-        assert matches_b_number_shape("12345") is False
+    def test_five_digits_qualifies_phase18b(self):
+        """Phase 18b E4: length is no longer constrained to 6."""
+        assert matches_b_number_shape("12345") is True
 
-    def test_seven_digits_not_b_number(self):
-        assert matches_b_number_shape("1234567") is False
+    def test_seven_digits_qualifies_phase18b(self):
+        """Phase 18b E4: seven-digit values also qualify."""
+        assert matches_b_number_shape("1234567") is True
 
     def test_six_chars_with_letter_not_b_number(self):
         assert matches_b_number_shape("12345A") is False
@@ -104,19 +106,18 @@ class TestMatchesBNumberShape:
 # ---------------------------------------------------------------------------
 
 class TestClassifyNewPartsForReview:
-    def test_new_b_number_gets_pending_status(self, session):
-        """New 6-digit B# not in registry → review_status='pending'."""
+    def test_new_b_number_gets_verified_status(self, session):
+        """Phase 18b: new B# not in registry → review_status='verified' (pre-approved)."""
         batch = _make_batch(session)
         row = ImportStagingRow(batch_id=batch.id, source_row_number=1, raw_job="123456\nNEW")
         session.add(row)
         session.flush()
 
-        result = classify_new_parts_for_review(session, [row])
+        result = classify_new_parts_for_review(session, [row], set())
 
         assert len(result.b) == 1
         assert result.b[0].parsed_part_number == "123456"
-        assert row.review_status == "pending"
-        assert result.non_b == []
+        assert row.review_status == "verified"
         assert result.intra_file_duplicates == []
 
     def test_existing_b_number_passes_through(self, session):
@@ -128,23 +129,23 @@ class TestClassifyNewPartsForReview:
         session.add(row)
         session.flush()
 
-        result = classify_new_parts_for_review(session, [row])
+        result = classify_new_parts_for_review(session, [row], {"123456"})
 
         assert result.is_empty() is True
         assert row.review_status is None
 
-    def test_non_b_number_passes_through_silently_in_phase1(self, session):
-        """Non-B# parts are silently passed through in Phase 1."""
+    def test_non_b_number_grouped_in_non_b_phase18b(self, session):
+        """Phase 18b: non-B# parts now appear in non_b with review_status='verified'."""
         batch = _make_batch(session)
         row = ImportStagingRow(batch_id=batch.id, source_row_number=1, raw_job="OCTO-QUAD\nNEW")
         session.add(row)
         session.flush()
 
-        result = classify_new_parts_for_review(session, [row])
+        result = classify_new_parts_for_review(session, [row], set())
 
-        # Phase 1: non_b is always empty; no review_status set
-        assert result.non_b == []
-        assert row.review_status is None
+        assert len(result.non_b) == 1
+        assert result.non_b[0].parsed_part_number == "OCTO-QUAD"
+        assert row.review_status == "verified"
 
     def test_invalid_raw_job_skipped(self, session):
         """Rows that fail decomposition are silently skipped."""
@@ -153,7 +154,7 @@ class TestClassifyNewPartsForReview:
         session.add(row)
         session.flush()
 
-        result = classify_new_parts_for_review(session, [row])
+        result = classify_new_parts_for_review(session, [row], set())
 
         assert result.is_empty() is True
         assert row.review_status is None
@@ -169,11 +170,11 @@ class TestClassifyNewPartsForReview:
             session.add(r)
         session.flush()
 
-        result = classify_new_parts_for_review(session, rows)
+        result = classify_new_parts_for_review(session, rows, set())
 
         assert len(result.b) == 1
         assert len(result.b[0].rows) == 3
-        assert all(r.review_status == "pending" for r in rows)
+        assert all(r.review_status == "verified" for r in rows)
 
     def test_is_empty_true_when_no_new_parts(self, session):
         result = ReviewClassification()
@@ -184,7 +185,7 @@ class TestClassifyNewPartsForReview:
         row = ImportStagingRow(batch_id=batch.id, source_row_number=1, raw_job="123456\nNEW")
         session.add(row)
         session.flush()
-        result = classify_new_parts_for_review(session, [row])
+        result = classify_new_parts_for_review(session, [row], set())
         assert result.is_empty() is False
 
 
@@ -210,7 +211,7 @@ class TestIngestWorkbookHeldState:
             row = s.scalars(
                 select(ImportStagingRow).where(ImportStagingRow.batch_id == result.batch_id)
             ).first()
-            assert row.review_status == "pending"
+            assert row.review_status == "verified"
 
     def test_known_part_number_runs_inline(self, workbook_factory, session_factory):
         """Workbook with a known assembly does not hold for review."""
@@ -223,12 +224,13 @@ class TestIngestWorkbookHeldState:
 
         assert result.kind == "processed_or_error"
 
-    def test_non_b_number_runs_inline_in_phase1(self, workbook_factory, session_factory):
-        """Non-B# new part passes through inline in Phase 1 (not held)."""
+    def test_non_b_number_held_for_review_phase18b(self, workbook_factory, session_factory):
+        """Phase 18b: non-B# new part now holds for review (non_b populated)."""
         path = workbook_factory([{"JOB": "MYPART\nNEW", "QTY": "10", "CUSTOMER": "ACME"}])
         result = ingest_workbook(path, session_factory=session_factory)
 
-        assert result.kind == "processed_or_error"
+        assert result.kind == "held_for_review"
+        assert len(result.new_non_b_numbers) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -390,20 +392,8 @@ class TestReviewStateTransitions:
         assert result.kind == "held_for_review"
         batch_id = result.batch_id
 
-        # Verify the pending row
-        with session_factory() as s:
-            row = s.scalars(
-                select(ImportStagingRow)
-                .where(ImportStagingRow.batch_id == batch_id)
-                .where(ImportStagingRow.review_status == "pending")
-            ).first()
-            assert row is not None
-            row_id = row.id
-
-        resp = client.post(f"/api/ingest/{batch_id}/staging-row/{row_id}/verify")
-        assert resp.status_code == 200
-
-        # Confirm
+        # Phase 18b: rows are pre-approved as 'verified'; no manual verify needed.
+        # Confirm immediately.
         resp = client.post(f"/api/ingest/{batch_id}/confirm")
         assert resp.status_code == 200
 
@@ -430,16 +420,13 @@ class TestReviewStateTransitions:
         assert result.kind == "held_for_review"
         batch_id = result.batch_id
 
+        # Phase 18b: rows start as 'verified'; get the row id directly.
         with session_factory() as s:
             row = s.scalars(
                 select(ImportStagingRow)
                 .where(ImportStagingRow.batch_id == batch_id)
-                .where(ImportStagingRow.review_status == "pending")
             ).first()
             row_id = row.id
-
-        # Verify (accept the row as-is)
-        client.post(f"/api/ingest/{batch_id}/staging-row/{row_id}/verify")
 
         resp = client.post(f"/api/ingest/{batch_id}/confirm")
         assert resp.status_code == 200
@@ -1065,8 +1052,8 @@ class TestParsedPartNumberPopulation:
         rows = list(session.scalars(
             select(ImportStagingRow).where(ImportStagingRow.batch_id == result.batch_id)
         ).all())
-        review_rows = [r for r in rows if r.review_status == "pending"]
-        assert review_rows, "Expected at least one pending review row"
+        review_rows = [r for r in rows if r.review_status == "verified"]
+        assert review_rows, "Expected at least one verified review row (Phase 18b pre-approval)"
         for row in review_rows:
             assert row.parsed_part_number == "138623", (
                 f"Expected parsed_part_number='138623', got {row.parsed_part_number!r}"
@@ -1094,3 +1081,90 @@ class TestParsedPartNumberPopulation:
         assert any(r["staging_row_id"] == row.id for r in all_rows), (
             "Expected pre-0010 row (parsed_part_number IS NULL) to appear in review payload"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 18b §6 — pre-approval default + non-B# grouping
+# ---------------------------------------------------------------------------
+
+class TestPhase18bPreApproval:
+    """Phase 18b §6.1–6.2: every new-part row starts as 'verified', and confirm
+    is callable immediately without any manual per-row action."""
+
+    def test_stage_3_5_marks_new_b_rows_verified_by_default(self, session):
+        """classify_new_parts_for_review stamps 'verified' on new B# rows."""
+        batch = _make_batch(session)
+        row = ImportStagingRow(batch_id=batch.id, source_row_number=1, raw_job="567890\nNEW")
+        session.add(row)
+        session.flush()
+
+        result = classify_new_parts_for_review(session, [row], set())
+
+        assert row.review_status == "verified"
+        assert result.b[0].parsed_part_number == "567890"
+
+    def test_stage_3_5_marks_new_non_b_rows_verified_by_default(self, session):
+        """classify_new_parts_for_review stamps 'verified' on new non-B# rows."""
+        batch = _make_batch(session)
+        row = ImportStagingRow(batch_id=batch.id, source_row_number=1, raw_job="ALPHA-PART\nNEW")
+        session.add(row)
+        session.flush()
+
+        result = classify_new_parts_for_review(session, [row], set())
+
+        assert row.review_status == "verified"
+        assert result.non_b[0].parsed_part_number == "ALPHA-PART"
+
+    def test_confirm_immediately_callable_on_pre_approved_batch(
+        self, client, workbook_factory, session_factory
+    ):
+        """A freshly-ingested batch with new B# parts can be confirmed without
+        any manual verify step because rows start as 'verified'."""
+        path = workbook_factory(
+            [{"JOB": "567890\nNEW", "QTY": "1", "CUSTOMER": "ACME"}],
+            seed_assemblies=False,
+        )
+        result = ingest_workbook(path, session_factory=session_factory)
+        assert result.kind == "held_for_review"
+        batch_id = result.batch_id
+
+        resp = client.post(f"/api/ingest/{batch_id}/confirm")
+        assert resp.status_code == 200
+
+    def test_phase_18a_pending_row_back_compat(self, client, session):
+        """POST /verify still transitions a 'pending' row — back-compat for
+        in-flight Phase 18a batches that were held before the 18b deploy."""
+        b = _make_batch(session)
+        row = _make_review_row(session, b, review_status="pending", raw_job="123456\nNEW")
+        session.commit()
+
+        resp = client.post(f"/api/ingest/{b.id}/staging-row/{row.id}/verify")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["row"]["review_status"] == "verified"
+
+    def test_get_review_payload_reports_shape_rule_fired_true_for_pure_digit_b_number(
+        self, client, session, workbook_factory, session_factory
+    ):
+        """GET /review returns shape_rule_fired=True for a pure-digit cell line.
+
+        Regression for Phase 18b Patch 01 F1: pure-digit B# values (e.g. '555555')
+        must report shape_rule_fired=True so the frontend checks the B# checkbox by
+        default.  The old predicate (part != first_line) returned False because the
+        digit run equals the verbatim input.
+        """
+        path = workbook_factory(
+            [{"JOB": "555555\nNEW", "QTY": "1", "CUSTOMER": "ACME"}],
+            seed_assemblies=False,
+        )
+        result = ingest_workbook(path, session_factory=session_factory)
+        assert result.kind == "held_for_review"
+        batch_id = result.batch_id
+
+        resp = client.get(f"/api/ingest/{batch_id}/review")
+        assert resp.status_code == 200
+        payload = resp.json()
+        rows = payload["new_b_numbers"][0]["rows"]
+        assert len(rows) == 1
+        assert rows[0]["shape_rule_fired"] is True
+

@@ -18,6 +18,7 @@ from .extractors import (
     extract_ship_fields,
     extract_shipped_date,
 )
+from .config import get_settings
 from .models import (
     Assembly,
     BuildQualifier,
@@ -345,7 +346,10 @@ def _apply_unship(row: ImportStagingRow, job: Job) -> None:
     )
 
 
-def effective_decomposition(row: ImportStagingRow) -> JobDecomposition | DecomposeError:
+def effective_decomposition(
+    row: ImportStagingRow,
+    registry: set[str] = frozenset(),  # type: ignore[assignment]
+) -> JobDecomposition | DecomposeError:
     """Return the decomposition that Stage 5 should use for this staging row.
 
     When the row carries operator review overrides (review_part_number_override
@@ -359,12 +363,14 @@ def effective_decomposition(row: ImportStagingRow) -> JobDecomposition | Decompo
     transform layer couples to the review-workflow state.
 
     Pre:  row.raw_job is the original uploaded cell text.
+          registry is the live snapshot at Stage 5 confirm time (fresh reload,
+          NOT the Stage 2.5 snapshot).  See §5.4 for the split-snapshot contract.
     Post: returns a JobDecomposition reflecting review overrides when set,
           or the raw_job decomposition otherwise.
           Returns DecomposeError as a VALUE when raw_job parsing fails.
     Raises: never.
     """
-    parsed = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
+    parsed = decompose_job_string_with_diagnostic(row.raw_job, registry) if row.raw_job else None
     if parsed is None or isinstance(parsed, DecomposeError):
         return parsed  # type: ignore[return-value]
     if row.review_part_number_override is None:
@@ -380,15 +386,17 @@ def transform_staging_row(
     row: ImportStagingRow,
     *,
     sheet_kind: SheetKind = SheetKind.live,
+    registry: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> TransformOutcome:
     """Transform a single pending staging row into a Job upsert.
 
     Pre:  row.batch_id is set.  sheet_kind matches the row's batch sheet_kind.
+          registry is the live snapshot at Stage 5 confirm time.
     Post: Either inserts or updates a Job and marks the row processed, or marks
           the row errored.  Returns TransformOutcome describing the action taken.
     Raises: never (all exceptions result in a row-level error).
     """
-    decomp_result = effective_decomposition(row)
+    decomp_result = effective_decomposition(row, registry)
     if decomp_result is None or isinstance(decomp_result, DecomposeError):
         _mark_decompose_error(row, decomp_result)
         return TransformOutcome(None, "errored")

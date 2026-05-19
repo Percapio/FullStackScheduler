@@ -57,12 +57,13 @@ class TestMigration0010:
         with engine.connect() as conn:
             # Insert a minimal import_batch to satisfy FK.
             conn.execute(text(
-                "INSERT INTO import_batches (status, sheet_kind, row_count, created_at, updated_at) "
-                "VALUES ('pending', 'SCHD', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                "INSERT INTO import_batches (source_file, status, sheet_kind, row_count, created_at, updated_at) "
+                "VALUES ('test.xlsx', 'pending', 'live', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
             ))
             batch_id = conn.execute(text("SELECT last_insert_rowid()")).scalar()
             conn.execute(text(
-                "INSERT INTO import_staging (batch_id, source_row_number) VALUES (:bid, 1)"
+                "INSERT INTO import_staging (batch_id, source_row_number, processing_status) "
+                "VALUES (:bid, 1, 'pending')"
             ), {"bid": batch_id})
             result = conn.execute(text(
                 "SELECT parsed_part_number FROM import_staging WHERE batch_id = :bid"
