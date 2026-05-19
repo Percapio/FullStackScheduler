@@ -86,9 +86,9 @@ class ReviewClassification:
     """Output of classify_new_parts_for_review (Phase 18b form).
 
     b:                     new pure-digit canonicals (matches_b_number_shape returns
-                           True; predicate is ``^\\d+$`` per E4).  Length is not
-                           constrained — five-digit legacy and seven-plus-digit future
-                           values are both valid.
+                           True; predicate is ``^\\d{5,6}$`` per Phase 19).  Exactly
+                           5 or 6 digits; values outside that range are routed to
+                           non_b.
     non_b:                 new canonicals that are not pure-digit.  Populated under
                            Phase 18b; empty only when no non-B# new parts are present.
     intra_file_duplicates: groups of staging rows sharing identity within the same
@@ -103,17 +103,19 @@ class ReviewClassification:
         return not self.b and not self.non_b and not self.intra_file_duplicates
 
 
-_B_NUMBER_RE = re.compile(r"^\d+$")
+_B_NUMBER_RE = re.compile(r"^\d{5,6}$")
 
 
 def matches_b_number_shape(pn: str) -> bool:
-    """True iff pn is one or more decimal digits only (the company's B# format).
+    """Return True iff pn is exactly 5 or 6 decimal digits.
 
-    Phase 18b revision per E4: length is not constrained.  Five-digit legacy
-    values (e.g. 99000) and future seven-plus-digit values are both valid.
+    Phase 19 alignment: the length contract matches DIGIT_SHAPE_PATTERN in
+    extractors.py.  A canonical that does not fast-fire the shape rule cannot
+    classify as a B#.
 
     Pre:  pn is the canonical produced by decompose_job_string_with_diagnostic.
-    Post: deterministic; raises never.
+    Post: deterministic; pure function.
+    Raises: never.
     """
     return _B_NUMBER_RE.fullmatch(pn) is not None
 
@@ -154,7 +156,7 @@ def classify_new_parts_for_review(
     for row in staging:
         if not row.raw_job:
             continue
-        decomp = decompose_job_string_with_diagnostic(row.raw_job, registry)
+        decomp = decompose_job_string_with_diagnostic(row.raw_job)
         if decomp is None or isinstance(decomp, DecomposeError):
             continue
         # P-5: persist parsed_part_number for all rows with a successful decomp
@@ -196,7 +198,7 @@ def augment_with_intra_file_duplicates(
     for row in staging:
         if not row.raw_job:
             continue
-        decomp = decompose_job_string_with_diagnostic(row.raw_job, registry)
+        decomp = decompose_job_string_with_diagnostic(row.raw_job)
         if decomp is None or isinstance(decomp, DecomposeError):
             continue
         identity = IdentityTuple(
@@ -519,7 +521,7 @@ def run_stages_4_to_6(
             settings = get_settings()
             by_identity: dict[tuple, list[ImportStagingRow]] = {}
             for row in pending:
-                decomp_result = decompose_job_string_with_diagnostic(row.raw_job, stage5_registry) if row.raw_job else None
+                decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
                 if decomp_result is None or isinstance(decomp_result, DecomposeError):
                     _mark_decompose_error(row, decomp_result)
                     continue
@@ -559,7 +561,7 @@ def run_stages_4_to_6(
                 nested = session.begin_nested()
                 try:
                     outcome = transform_staging_row(
-                        session, row, sheet_kind=sheet_kind, registry=stage5_registry
+                        session, row, sheet_kind=sheet_kind
                     )
                     if outcome.action == "errored":
                         _rollback_with_error_capture(session, row, nested)

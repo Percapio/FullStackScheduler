@@ -375,35 +375,41 @@ def test_canonical_repeat_ref_without_so_number_succeeds():
     assert result.repeat_reference == "332-0034 revb"
 
 
-# ---- Stage 3: R3_multi_part_cell --------------------------------------------
+# ---- Stage 3: R3 deletion regression (Phase 19) ----------------------------
+# R3_multi_part_cell is removed. Cells that previously short-circuited to R3
+# now fall through to the build-classifier loop and emerge as R1_no_classifier.
 
-def test_r3_multi_part_eight_numerics():
-    raw = "15635\n15636\n15637\n15638\n15639\n15640\n15641\n15642"
-    result = decompose_job_string_with_diagnostic(raw)
-    assert isinstance(result, DecomposeError)
-    assert result.code == "R3_multi_part_cell"
-    assert "multiple part numbers" in result.message
-
-
-def test_r3_does_not_fire_with_build_type_line():
-    """A cell with a valid build-type line is not R3."""
-    result = decompose_job_string("15635\nNEW")
-    assert result is not None
-    assert result.build_type == BuildType.new
-
-
-def test_r3_does_not_fire_with_classifications():
-    """Parens disqualify R3; the cell falls through to R1 with recovered codes."""
-    result = decompose_job_string_with_diagnostic("FOO\n(CUI/ITAR)")
+def test_r3_deletion_alphabetic_multi_line_returns_r1():
+    """ABC-12345\\nDEF-67890 was R3 in Phase 18c; Phase 19 returns R1."""
+    result = decompose_job_string_with_diagnostic("ABC-12345\nDEF-67890")
     assert isinstance(result, DecomposeError)
     assert result.code == "R1_no_classifier"
-    assert result.recovered_classifications == ("CUI", "ITAR")
 
 
-def test_r3_alphabetic_part_number_shaped_lines():
-    result = decompose_job_string_with_diagnostic("FOO\nBAR")
+def test_r3_deletion_pure_digit_multi_line_no_classifier_returns_r1():
+    """12345\\n67890 has no build classifier — R1, not R3.
+
+    Non-obvious case: shape rule fires on line[0]="12345" producing canonical
+    part_number="12345". The build-classifier loop then walks line[1]="67890",
+    finds neither a build_type nor a qualifier, and reaches end-of-loop with
+    build_type is None → R1.
+    """
+    result = decompose_job_string_with_diagnostic("12345\n67890")
     assert isinstance(result, DecomposeError)
-    assert result.code == "R3_multi_part_cell"
+    assert result.code == "R1_no_classifier"
+
+
+def test_r3_deletion_positive_contrast_digit_cell_with_classifier():
+    """12345\\nRONC\\n67890 succeeds: 67890 is an intermediate folded into split_suffix.
+
+    Positive contrast for the pure-digit R1 case above: multi-line digit cells
+    are NOT blanket failures — a valid build classifier makes them parse cleanly.
+    """
+    result = decompose_job_string_with_diagnostic("12345\nRONC\n67890")
+    assert isinstance(result, JobDecomposition)
+    assert result.part_number == "12345"
+    assert result.build_type == BuildType.ronc
+    assert result.split_suffix == "67890"
 
 
 # ---- Stage 4: R1 recovered_classifications ----------------------------------

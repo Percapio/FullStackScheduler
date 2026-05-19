@@ -17,7 +17,6 @@ _CLEAR_KEYWORD_RE = re.compile(
 )
 _SO_NUMBER_RE_RAW = r"SO#"
 SO_NUMBER_RE = re.compile(_SO_NUMBER_RE_RAW, re.IGNORECASE)
-_PART_NUMBER_SHAPED_RE = re.compile(r"^[A-Za-z0-9._\-\s]+$")
 _REPEAT_RE = re.compile(
     r"^(?P<bt>RONC|ROWC)(?:\s+(?P<ref>[^(]+?))?\s*(?:\(.*)?$",
     re.IGNORECASE,
@@ -76,7 +75,6 @@ class DecomposeError:
     code: Literal[
         "R1_no_classifier",
         "R2_multiple_qualifiers",
-        "R3_multi_part_cell",
         "R4_so_number_in_job",
     ]
     message: str
@@ -132,80 +130,14 @@ def _parse_qualifier_line(line: str) -> tuple[BuildQualifier, str | None] | None
 
 
 # ---------------------------------------------------------------------------
-# Phase 18b B# shape rule
+# Phase 19 B# shape rule — exactly 5 or 6 digits
 # ---------------------------------------------------------------------------
 
 _B_NUMBER_SHAPE_RE: re.Pattern[str] = re.compile(
-    r"^(?P<digits>\d+)(?P<sep>[-_.](?P<tail>.*))?$"
+    r"^(?P<digits>\d{5,6})(?P<sep_with_tail>[-_.].*)?$"
 )
 _REV_TOKEN_RE: re.Pattern[str] = re.compile(r"rev", re.IGNORECASE)
 
-
-# ---------------------------------------------------------------------------
-# Phase 18c Phase 2* — Registry-driven non-B# decomposition (§5.2 / §5.3)
-# ---------------------------------------------------------------------------
-
-def decompose_part_line_by_registry(
-    line: str,
-    registry: set[str],
-) -> tuple[str, str | None]:
-    """Decompose the first line of a JOB cell by longest-prefix match against the registry.
-
-    Rule 2 of the three-rule composition contract (§5.1).  Only invoked when
-    the shape rule (Rule 1) did not fire.
-
-    Pre:  line is stripped, non-empty.
-          registry is the snapshot loaded at Stage 2.5.
-    Post: When line contains the substring "rev" (case-insensitive), returns
-          (line, None) — revision markers must not be stripped into split_suffix.
-          When no registered part_number is a prefix of line, returns (line, None).
-          Otherwise returns (longest_prefix_match, remainder-or-None).
-    Raises: never.
-    """
-    if _REV_TOKEN_RE.search(line) is not None:
-        return (line, None)
-    candidates = [pn for pn in registry if line.startswith(pn)]
-    if not candidates:
-        return (line, None)
-    best = max(candidates, key=len)
-    remainder = line[len(best):]
-    return (best, remainder or None)
-
-
-def decompose_part_line(
-    line: str,
-    registry: set[str],
-) -> tuple[str, str | None]:
-    """Compose Rule 1 (shape) + Rule 2 (registry-prefix) + Rule 3 (verbatim) per §5.1.
-
-    Pre:  line is stripped, non-empty.
-    Post: When shape rule fires:   returns shape rule's output.
-          Else when registry hits: returns longest-prefix split.
-          Else:                    returns (line, None).
-    Raises: never.
-    """
-    if shape_rule_would_fire(line):
-        return decompose_part_line_by_shape(line)
-    return decompose_part_line_by_registry(line, registry)
-
-
-def shape_rule_would_fire(first_line: str) -> bool:
-    """Return True iff decompose_part_line_by_shape applied to first_line would
-    take the "rule fires" branch.
-
-    Pre:  first_line is already stripped (caller's responsibility).
-    Post: returns True iff the rev token is absent AND the digit-shape regex
-          fullmatches first_line.  Independent of whether the rule strips
-          anything (pure-digit inputs satisfy the regex but produce the same
-          part_number as first_line; this predicate correctly reports them as
-          rule-fired).
-    Raises: never.
-    """
-    if not first_line:
-        return False
-    if _REV_TOKEN_RE.search(first_line) is not None:
-        return False
-    return _B_NUMBER_SHAPE_RE.fullmatch(first_line) is not None
 
 
 def decompose_part_line_by_shape(
@@ -232,33 +164,10 @@ def decompose_part_line_by_shape(
     if match is None:
         return (line, None)
     digits: str = match.group("digits")
-    separator: str | None = match.group("sep")
-    if separator is None:
+    sep_with_tail: str | None = match.group("sep_with_tail")
+    if sep_with_tail is None:
         return (digits, None)
-    return (digits, separator)
-
-
-def looks_like_multi_part_cell(lines: list[str]) -> bool:
-    """Return True when every non-empty line is part-number-shaped and none
-    carries a build-type or build-qualifier token.
-
-    Pre:  lines is the result of raw.split("\\n"); raw was non-empty.
-    Post: True iff the cell is a multi-part candidate (R3 guard).
-          Single-line cells return False (they belong to the single-line
-          fallback path).
-    Raises: never.
-    """
-    non_empty = [ln.strip() for ln in lines if ln.strip()]
-    if len(non_empty) < 2:
-        return False
-    for ln in non_empty:
-        if _parse_build_line(ln) is not None:
-            return False
-        if _parse_qualifier_line(ln) is not None:
-            return False
-        if _PART_NUMBER_SHAPED_RE.match(ln) is None:
-            return False
-    return True
+    return (digits, sep_with_tail)
 
 
 def decompose_job_string_with_diagnostic(
@@ -285,11 +194,7 @@ def decompose_job_string_with_diagnostic(
 
     lines = raw.split("\n")
 
-    if looks_like_multi_part_cell(lines):
-        return DecomposeError(
-            code="R3_multi_part_cell",
-            message=f"JOB cell appears to contain multiple part numbers: {raw!r}",
-        )
+    # R3 detection is intentionally absent (Phase 19).
 
     if len(lines) < 2:
         tokens = raw.strip().split(None, 1)
@@ -309,7 +214,7 @@ def decompose_job_string_with_diagnostic(
             recovered_classifications=_extract_classifications(lines),
         )
 
-    part_number, split_suffix = decompose_part_line(line0, registry)
+    part_number, split_suffix = decompose_part_line_by_shape(line0)
 
     intermediates: list[str] = []
     build_type: BuildType | None = None

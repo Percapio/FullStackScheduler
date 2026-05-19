@@ -270,13 +270,21 @@ def _shape_rule_fired_for_row(row: ImportStagingRow) -> bool:
     Post: one regex match per call; negligible cost.
     Raises: never.
     """
-    from ..extractors import shape_rule_would_fire
+    from ..extractors import decompose_part_line_by_shape
 
     source = row.original_raw_job or row.raw_job
     if not source:
         return False
     first_line = source.split("\n")[0].strip()
-    return shape_rule_would_fire(first_line)
+    # Shape rule fires iff the canonical part_number is exactly 5 or 6 digits
+    # (Phase 19 contract).  decompose_part_line_by_shape returns the verbatim
+    # line when the rev guard fires or the regex does not match, so the digit
+    # check acts as the correct discriminant without exposing private regexes.
+    # TODO: TDD §2 listed shape_rule_would_fire as "delete — only caller was
+    # decompose_part_line" but this caller was missed; update TDD §2 in a
+    # follow-up pass.
+    part_number, _ = decompose_part_line_by_shape(first_line)
+    return part_number.isdigit() and 5 <= len(part_number) <= 6
 
 
 def _group_view(

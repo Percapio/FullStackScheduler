@@ -87,9 +87,13 @@ class TestMatchesBNumberShape:
         """Phase 18b E4: length is no longer constrained to 6."""
         assert matches_b_number_shape("12345") is True
 
-    def test_seven_digits_qualifies_phase18b(self):
-        """Phase 18b E4: seven-digit values also qualify."""
-        assert matches_b_number_shape("1234567") is True
+    def test_seven_digits_not_b_number_phase19(self):
+        """Phase 19: shape rule tightened to exactly 5–6 digits; 7 digits no longer qualifies."""
+        assert matches_b_number_shape("1234567") is False
+
+    def test_four_digits_not_b_number_phase19(self):
+        """Phase 19: 4-digit value does not meet the 5/6-digit contract."""
+        assert matches_b_number_shape("1234") is False
 
     def test_six_chars_with_letter_not_b_number(self):
         assert matches_b_number_shape("12345A") is False
@@ -231,6 +235,34 @@ class TestIngestWorkbookHeldState:
 
         assert result.kind == "held_for_review"
         assert len(result.new_non_b_numbers) == 1
+
+    def test_ex_r3_letter_prefix_part_routes_to_non_b(self, workbook_factory, session_factory):
+        """Phase 19 R3-deletion regression: ABC-12345\\nNEW routes to non_b.
+
+        Under Phase 18c this cell could have raised R3_multi_part_cell when
+        paired with a sibling part-shaped line.  Under Phase 19 it fast-fails
+        to verbatim, classifies as non-B# (no digit shape), and holds the batch
+        for review.  The fixture uses seed_assemblies=False so the registry is
+        empty and ABC-12345 is guaranteed to be absent.
+        """
+        path = workbook_factory(
+            [{"JOB": "ABC-12345\nNEW", "QTY": "10", "CUSTOMER": "ACME"}],
+            seed_assemblies=False,
+        )
+        result = ingest_workbook(path, session_factory=session_factory)
+
+        assert result.kind == "held_for_review"
+        assert len(result.new_non_b_numbers) == 1
+        assert result.new_non_b_numbers[0].parsed_part_number == "ABC-12345"
+
+        with session_factory() as s:
+            batch = s.get(ImportBatch, result.batch_id)
+            assert batch.status == ImportStatus.awaiting_review
+
+            row = s.scalars(
+                select(ImportStagingRow).where(ImportStagingRow.batch_id == result.batch_id)
+            ).first()
+            assert row.parsed_part_number == "ABC-12345"
 
 
 # ---------------------------------------------------------------------------

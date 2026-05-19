@@ -1,9 +1,9 @@
-"""Tests for Phase 18b §5 — decompose_part_line_by_shape and shape_rule_would_fire.
+"""Tests for Phase 19 §4 — decompose_part_line_by_shape (5/6-digit shape rule).
 
 Each test exercises one row of the specification table from TDD §11.
 Naming convention: Method_Condition_ExpectedOutcome.
 """
-from backend.app.extractors import decompose_part_line_by_shape, shape_rule_would_fire
+from backend.app.extractors import decompose_part_line_by_shape
 
 
 # ---------------------------------------------------------------------------
@@ -48,9 +48,15 @@ def test_five_digit_b_number_qualifies():
     assert decompose_part_line_by_shape("99000-bal") == ("99000", "-bal")
 
 
-def test_seven_digit_pure_run_qualifies_with_no_suffix():
-    """Seven-digit run with no suffix qualifies (Audit Finding 2)."""
+def test_four_digit_pure_run_returns_verbatim():
+    """Four-digit run does not match 5/6-digit shape; returned verbatim."""
+    assert decompose_part_line_by_shape("1234") == ("1234", None)
+
+
+def test_seven_digit_pure_run_returns_verbatim():
+    """Seven-digit run does not match 5/6-digit shape (Phase 19); returned verbatim."""
     assert decompose_part_line_by_shape("1181070") == ("1181070", None)
+    assert decompose_part_line_by_shape("1234567") == ("1234567", None)
 
 
 # ---------------------------------------------------------------------------
@@ -106,38 +112,19 @@ def test_bare_trailing_separator_underscore_qualifies_as_suffix():
 
 
 # ---------------------------------------------------------------------------
-# shape_rule_would_fire — Phase 18b Patch 01 P-1.3
-# Regression for F1: the predicate must report True for pure-digit inputs
-# even though decompose_part_line_by_shape returns the same string unchanged.
+# Phase 19 — ex-R3 fast-fail cases
 # ---------------------------------------------------------------------------
 
-def test_shape_rule_would_fire_returns_true_for_pure_digit_canonical():
-    """Pure-digit cell lines with no separator must report shape_rule_would_fire=True.
+def test_letter_prefix_abc_returns_verbatim():
+    """Lines starting with letters fast-fail to verbatim (no shape match)."""
+    assert decompose_part_line_by_shape("ABC-12345") == ("ABC-12345", None)
 
-    Regression for Phase 18b Patch 01 F1: the old predicate (part != first_line)
-    returned False for these inputs because the digit run equals the input line.
+
+def test_rev_guard_on_five_digit_with_rev_tail():
+    """5-digit prefix followed by '-rev1' is disqualified by the rev guard.
+
+    Without the guard, '12345' would match the shape rule and '-rev1' would
+    become the split_suffix.  The rev guard must fire first.
     """
-    assert shape_rule_would_fire("118107")  is True
-    assert shape_rule_would_fire("99000")   is True
-    assert shape_rule_would_fire("1181070") is True
+    assert decompose_part_line_by_shape("12345-rev1") == ("12345-rev1", None)
 
-
-def test_shape_rule_would_fire_returns_false_for_rev_disqualified():
-    """Lines containing the rev token are not rule-fired."""
-    assert shape_rule_would_fire("118107_REV.A") is False
-
-
-def test_shape_rule_would_fire_returns_false_for_non_digit_lead():
-    """Lines starting with non-digits are not rule-fired."""
-    assert shape_rule_would_fire("OCTO-QUAD-H1") is False
-
-
-def test_shape_rule_would_fire_returns_true_for_digits_with_suffix():
-    """Digit lines with valid separators are rule-fired."""
-    assert shape_rule_would_fire("118107-2") is True
-    assert shape_rule_would_fire("118107.")  is True
-
-
-def test_shape_rule_would_fire_returns_false_for_empty_string():
-    """Empty string returns False without raising."""
-    assert shape_rule_would_fire("") is False

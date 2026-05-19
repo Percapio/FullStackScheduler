@@ -103,16 +103,6 @@ def _mark_decompose_error(row: ImportStagingRow, err: DecomposeError | None) -> 
             f"Multiple build qualifiers in JOB cell: {row.raw_job!r}",
             suggestion="JOB cell may contain at most one of RWK, REWORK, or RMA. Remove the redundant token.",
         )
-    elif err.code == "R3_multi_part_cell":
-        _mark_error(
-            row,
-            f"JOB cell appears to contain multiple part numbers: {row.raw_job!r}",
-            suggestion=(
-                "This JOB cell looks like several part numbers stacked together. "
-                "Each job needs its own row with its own QTY, customer, and ship date. "
-                "Split the cell into separate rows, then re-ingest."
-            ),
-        )
     elif err.code == "R4_so_number_in_job":
         _mark_error(
             row,
@@ -348,31 +338,36 @@ def _apply_unship(row: ImportStagingRow, job: Job) -> None:
 
 def effective_decomposition(
     row: ImportStagingRow,
-    registry: set[str] = frozenset(),  # type: ignore[assignment]
-) -> JobDecomposition | DecomposeError:
-    """Return the decomposition that Stage 5 should use for this staging row.
+) -> JobDecomposition | DecomposeError | None:
+    """Return the decomposition Stage 5 should use for this staging row.
 
-    When the row carries operator review overrides (review_part_number_override
-    and/or review_split_suffix_override), those values replace the parsed
-    part_number and split_suffix.  All other identity components (build_type,
-    repeat_reference, classification_codes, build_qualifier) always come from
-    the raw_job decomposition.
+    Phase 19: parser no longer accepts a registry, so this wrapper does not
+    forward one.  Operator overrides (review_part_number_override,
+    review_split_suffix_override) take precedence over the raw_job parse exactly
+    as before — the override path is unchanged.
+
+    Override invariant (pre-existing, Phase 18a; explicitly NOT modified by Phase 19):
+        A non-null review_split_suffix_override is honored ONLY when
+        review_part_number_override is also non-null.  When the part-number
+        override is null, the suffix override is silently ignored and the raw_job
+        decomposition is returned in full.
 
     Tight coupling note: this function reads the review-override columns added
     in Phase 18a migration 0009.  Its existence is the single point where the
     transform layer couples to the review-workflow state.
 
-    Pre:  row.raw_job is the original uploaded cell text.
-          registry is the live snapshot at Stage 5 confirm time (fresh reload,
-          NOT the Stage 2.5 snapshot).  See §5.4 for the split-snapshot contract.
-    Post: returns a JobDecomposition reflecting review overrides when set,
-          or the raw_job decomposition otherwise.
+    Pre:  staging_row.raw_job is the original cell text.
+          review_part_number_override is null OR both override columns are non-null
+          (caller-upheld invariant; see Override invariant above).
+    Post: Returns a JobDecomposition reflecting review overrides when both
+          override columns are non-null, or the raw_job decomposition otherwise.
           Returns DecomposeError as a VALUE when raw_job parsing fails.
+          Returns None when raw_job is empty/None.
     Raises: never.
     """
-    parsed = decompose_job_string_with_diagnostic(row.raw_job, registry) if row.raw_job else None
+    parsed = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
     if parsed is None or isinstance(parsed, DecomposeError):
-        return parsed  # type: ignore[return-value]
+        return parsed
     if row.review_part_number_override is None:
         return parsed
     return parsed.with_overrides(
@@ -386,17 +381,15 @@ def transform_staging_row(
     row: ImportStagingRow,
     *,
     sheet_kind: SheetKind = SheetKind.live,
-    registry: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> TransformOutcome:
     """Transform a single pending staging row into a Job upsert.
 
     Pre:  row.batch_id is set.  sheet_kind matches the row's batch sheet_kind.
-          registry is the live snapshot at Stage 5 confirm time.
     Post: Either inserts or updates a Job and marks the row processed, or marks
           the row errored.  Returns TransformOutcome describing the action taken.
     Raises: never (all exceptions result in a row-level error).
     """
-    decomp_result = effective_decomposition(row, registry)
+    decomp_result = effective_decomposition(row)
     if decomp_result is None or isinstance(decomp_result, DecomposeError):
         _mark_decompose_error(row, decomp_result)
         return TransformOutcome(None, "errored")
