@@ -1,9 +1,7 @@
 """Lifecycle operations for Job supersession.
 
 Epoch 2: shipped-history shield.
-Epoch 3: candidate detection (CandidateDelta, detect_supersession_candidates,
-          _infer_reason).
-Resolution services are added in Epoch 4.
+Resolution services are in Epoch 4.
 """
 from __future__ import annotations
 
@@ -15,14 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import (
-    CandidateReason,
     CandidateResolution,
-    ImportBatch,
-    ImportStagingRow,
-    ImportStatus,
     Job,
     JobSupersessionCandidate,
-    SheetKind,
 )
 
 log = logging.getLogger(__name__)
@@ -55,196 +48,8 @@ def _has_any_shipped_history(session: Session, job: Job) -> bool:  # noqa: ARG00
 
 
 # ---------------------------------------------------------------------------
-# Candidate detection (Epoch 3)
+# Candidate detection (Epoch 3) — deleted in Phase 20
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class CandidateDelta:
-    """Immutable summary of one detection pass.
-
-    Pre:  all tuple elements are valid DB ids or assembly ids.
-    Post: all tuples are de-duplicated by the service layer; order is
-          insertion order within each category.
-    """
-
-    new_pending_candidate_ids: tuple[int, ...]
-    auto_returned_candidate_ids: tuple[int, ...]
-    skipped_shipped_job_ids: tuple[int, ...]
-    skipped_already_pending_job_ids: tuple[int, ...]
-    touched_assembly_ids: tuple[int, ...]
-
-    @classmethod
-    def empty(cls) -> CandidateDelta:
-        """Return the zero-delta for historical batches or empty live batches."""
-        return cls(
-            new_pending_candidate_ids=(),
-            auto_returned_candidate_ids=(),
-            skipped_shipped_job_ids=(),
-            skipped_already_pending_job_ids=(),
-            touched_assembly_ids=(),
-        )
-
-
-def _infer_reason(
-    session: Session,
-    job: Job,
-    referenced_job_ids: set[int],
-) -> CandidateReason:
-    """Classify the orphan for operator UX badge text.
-
-    Pre:  job.id is NOT in referenced_job_ids.  session is live.
-    Post: Comparisons use IS NOT DISTINCT FROM for nullable columns
-          (matching transform.py convention — audit #10).
-          Returns CandidateReason.orphan_after_split when ≥2 referenced
-          jobs share (assembly_id, build_type, repeat_reference,
-          build_qualifier) with the orphan AND have non-empty split_suffix.
-          Returns CandidateReason.orphan_after_recombine when exactly one
-          referenced job satisfies the match AND has split_suffix IS NULL
-          while the orphan's split_suffix IS NOT NULL.
-          Returns CandidateReason.orphan_other in every other shape.
-    Raises: never.
-    """
-    if not referenced_job_ids:
-        return CandidateReason.orphan_other
-
-    siblings = session.scalars(
-        select(Job)
-        .where(Job.id.in_(list(referenced_job_ids)))
-        .where(Job.assembly_id == job.assembly_id)
-        .where(Job.build_type.is_not_distinct_from(job.build_type))
-        .where(Job.repeat_reference.is_not_distinct_from(job.repeat_reference))
-        .where(Job.build_qualifier.is_not_distinct_from(job.build_qualifier))
-    ).all()
-
-    split_siblings = [j for j in siblings if j.split_suffix]
-
-    if len(split_siblings) >= 2:
-        return CandidateReason.orphan_after_split
-
-    if (
-        len(siblings) == 1
-        and siblings[0].split_suffix is None
-        and job.split_suffix is not None
-    ):
-        return CandidateReason.orphan_after_recombine
-
-    return CandidateReason.orphan_other
-
-
-def detect_supersession_candidates(
-    session: Session,
-    batch: ImportBatch,
-) -> CandidateDelta:
-    """Persist supersession candidates for orphaned jobs in a live ingest.
-
-    Pre:  batch.sheet_kind is set.
-          Stage 5 has finished; resolved_job_id is populated for every
-          staging row whose processing_status == ImportStatus.processed.
-          session is inside the same outer transaction as Stage 5.
-    Post: When batch.sheet_kind != SheetKind.live: returns
-          CandidateDelta.empty() and writes nothing.
-          When batch.sheet_kind == SheetKind.live: opens new candidates
-          for unshipped active jobs that disappeared from this batch and
-          auto-resolves prior pending candidates whose job reappeared.
-    Raises: propagates any DB-layer error; no application-level exceptions.
-    """
-    if batch.sheet_kind != SheetKind.live:
-        return CandidateDelta.empty()
-
-    # Collect (assembly_id, job_id) pairs for every processed row in this batch.
-    referenced_pairs = session.execute(
-        select(Job.assembly_id, Job.id)
-        .join(ImportStagingRow, ImportStagingRow.resolved_job_id == Job.id)
-        .where(ImportStagingRow.batch_id == batch.id)
-        .where(ImportStagingRow.processing_status == ImportStatus.processed)
-        .where(ImportStagingRow.resolved_job_id.is_not(None))
-    ).all()
-
-    touched_assembly_ids: set[int] = {row.assembly_id for row in referenced_pairs}
-    referenced_job_ids: set[int] = {row.id for row in referenced_pairs}
-
-    # Auto-return prior pending candidates whose job reappeared in this batch.
-    auto_returned: list[int] = []
-    if referenced_job_ids:
-        candidates_to_close = session.scalars(
-            select(JobSupersessionCandidate)
-            .where(JobSupersessionCandidate.resolved_at.is_(None))
-            .where(JobSupersessionCandidate.job_id.in_(list(referenced_job_ids)))
-        ).all()
-        for cand in candidates_to_close:
-            cand.resolved_at = _now_utc()
-            cand.resolution = CandidateResolution.auto_returned
-            auto_returned.append(cand.id)
-
-    if not touched_assembly_ids:
-        return CandidateDelta(
-            new_pending_candidate_ids=(),
-            auto_returned_candidate_ids=tuple(auto_returned),
-            skipped_shipped_job_ids=(),
-            skipped_already_pending_job_ids=(),
-            touched_assembly_ids=(),
-        )
-
-    # Find active, unshipped jobs in touched assemblies that are NOT referenced.
-    candidate_jobs = session.scalars(
-        select(Job)
-        .where(Job.assembly_id.in_(list(touched_assembly_ids)))
-        .where(Job.superseded_at.is_(None))
-        .where(Job.shipped_at.is_(None))
-        .where(Job.id.not_in(list(referenced_job_ids)))
-    ).all()
-
-    # Build a set of job_ids that already have a pending candidate.
-    pending_index: set[int] = set(
-        session.scalars(
-            select(JobSupersessionCandidate.job_id)
-            .where(JobSupersessionCandidate.resolved_at.is_(None))
-        ).all()
-    )
-
-    new_pending: list[int] = []
-    skipped_shipped: list[int] = []
-    skipped_already_pending: list[int] = []
-
-    for job in candidate_jobs:
-        if job.id in pending_index:
-            skipped_already_pending.append(job.id)
-            continue
-        if _has_any_shipped_history(session, job):
-            # Defence — should be unreachable given the shipped_at IS NULL
-            # filter above; guards against invariant violations elsewhere.
-            skipped_shipped.append(job.id)
-            continue
-
-        cand = JobSupersessionCandidate(
-            job_id=job.id,
-            detected_in_batch_id=batch.id,
-            reason=_infer_reason(session, job, referenced_job_ids),
-            detected_at=_now_utc(),
-        )
-        session.add(cand)
-        session.flush()
-        new_pending.append(cand.id)
-
-    log.info(
-        "supersession.detect.delta",
-        extra={
-            "batch_id": batch.id,
-            "new_pending": len(new_pending),
-            "auto_returned": len(auto_returned),
-            "skipped_shipped": len(skipped_shipped),
-            "skipped_pending": len(skipped_already_pending),
-        },
-    )
-
-    return CandidateDelta(
-        new_pending_candidate_ids=tuple(new_pending),
-        auto_returned_candidate_ids=tuple(auto_returned),
-        skipped_shipped_job_ids=tuple(skipped_shipped),
-        skipped_already_pending_job_ids=tuple(skipped_already_pending),
-        touched_assembly_ids=tuple(touched_assembly_ids),
-    )
 
 
 # ---------------------------------------------------------------------------

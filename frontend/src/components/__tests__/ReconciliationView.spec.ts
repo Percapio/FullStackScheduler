@@ -3,14 +3,12 @@ import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ReconciliationView from '../../views/ReconciliationView.vue'
 import { useStagingStore } from '@/stores/staging'
-import { useSupersessionStore } from '@/stores/supersession'
 const mockFetchErrored   = vi.fn()
 const mockFetchDetail    = vi.fn()
 const mockFetchDiscarded = vi.fn()
 const mockFetchConflicts = vi.fn()
 const mockDeleteStagingRow = vi.fn()
 const mockPostRestoreStagingRow = vi.fn()
-const mockFetchCandidates = vi.fn()
 
 vi.mock('@/api/staging', () => ({
   fetchErrored:           (...a: unknown[]) => mockFetchErrored(...a),
@@ -19,13 +17,6 @@ vi.mock('@/api/staging', () => ({
   fetchConflicts:         (...a: unknown[]) => mockFetchConflicts(...a),
   deleteStagingRow:       (...a: unknown[]) => mockDeleteStagingRow(...a),
   postRestoreStagingRow:  (...a: unknown[]) => mockPostRestoreStagingRow(...a),
-}))
-
-vi.mock('@/api/supersession', () => ({
-  fetchSupersessionCandidates:       (...a: unknown[]) => mockFetchCandidates(...a),
-  approveSupersessionCandidate:      vi.fn(),
-  rejectSupersessionCandidate:       vi.fn(),
-  bulkApproveSupersessionCandidates: vi.fn(),
 }))
 
 vi.mock('@/api/client', () => ({
@@ -44,7 +35,6 @@ function mountView() {
   mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
   mockFetchDiscarded.mockResolvedValue({ rows: [], total: 0 })
   mockFetchConflicts.mockResolvedValue([])
-  mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
   wrapper = mount(ReconciliationView, { attachTo: document.body })
   const store = useStagingStore()
   return { wrapper, store }
@@ -57,9 +47,7 @@ beforeEach(() => {
   mockFetchConflicts.mockReset()
   mockDeleteStagingRow.mockReset()
   mockPostRestoreStagingRow.mockReset()
-  mockFetchCandidates.mockReset()
   mockFetchConflicts.mockResolvedValue([])
-  mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
 })
 
 afterEach(() => {
@@ -120,42 +108,6 @@ describe('ReconciliationView', () => {
 
   // NOTE: "single-page invariant: loadErrored passes (100, 0) to fetchErrored" retired in
   // Phase 15 Epoch 1. The errored table is now paginated (50-per-page) with server-side search.
-
-  it('calls supersessionStore.loadPending on mount', async () => {
-    setActivePinia(createPinia())
-    mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
-    mockFetchDiscarded.mockResolvedValue({ rows: [], total: 0 })
-    mockFetchConflicts.mockResolvedValue([])
-    mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
-    const w = mount(ReconciliationView, { attachTo: document.body })
-    const supersessionStore = useSupersessionStore()
-    const spy = vi.spyOn(supersessionStore, 'loadPending').mockResolvedValue()
-    w.unmount()
-
-    // Remount so spy is in place before onMounted fires.
-    mockFetchErrored.mockResolvedValue({ rows: [], total: 0 })
-    mockFetchDiscarded.mockResolvedValue({ rows: [], total: 0 })
-    mockFetchCandidates.mockResolvedValue({ items: [], total: 0 })
-    const w2 = mount(ReconciliationView, { attachTo: document.body })
-    await flushPromises()
-    expect(spy).toHaveBeenCalledTimes(1)
-    w2.unmount()
-  })
-
-  it('renders SupersessionCandidateList above ConflictGroupList', async () => {
-    mountView()
-    await flushPromises()
-    const supersessionEl = document.body.querySelector('[data-testid="supersession-candidate-list"]')
-    const conflictEl     = document.body.querySelector('[data-testid="conflict-group-list"]')
-    expect(supersessionEl).not.toBeNull()
-    // ConflictGroupList may not add its testid; we verify SupersessionCandidateList exists
-    // and is rendered before any ConflictGroupList in DOM order.
-    if (conflictEl && supersessionEl) {
-      const pos = supersessionEl.compareDocumentPosition(conflictEl)
-      // DOCUMENT_POSITION_FOLLOWING = 4 — conflictEl comes after supersessionEl.
-      expect(pos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    }
-  })
 
   it('renders SearchPaginatorBar with errored-search placeholder', async () => {
     mountView()

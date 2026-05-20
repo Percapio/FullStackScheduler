@@ -21,8 +21,6 @@ _FAKE_RESULT = IngestResult.processed_or_error(
     rows_errored=1,
     duplicate_of_batch_id=None,
     sheet_kind=SheetKind.live,
-    candidates_opened=0,
-    candidates_auto_returned=0,
 )
 
 

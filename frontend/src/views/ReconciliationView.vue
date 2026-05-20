@@ -2,12 +2,10 @@
 import { onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStagingStore } from '@/stores/staging'
-import { useSupersessionStore } from '@/stores/supersession'
 import { useDebouncedRef } from '@/composables/useDebouncedRef'
 import ReconciliationSidebar from '@/components/ReconciliationSidebar.vue'
 import DiscardedRowsDrawer from '@/components/DiscardedRowsDrawer.vue'
 import ConflictGroupList from '@/components/ConflictGroupList.vue'
-import SupersessionCandidateList from '@/components/SupersessionCandidateList.vue'
 import SearchPaginatorBar from '@/components/SearchPaginatorBar.vue'
 import WarnIcon from '@/components/WarnIcon.vue'
 
@@ -17,13 +15,11 @@ const {
   erroredSearchQuery,
   erroredHasPrev, erroredHasNext, erroredPageStart, erroredPageEnd,
 } = storeToRefs(store)
-const supersessionStore = useSupersessionStore()
 
 onMounted(() => {
   store.loadErrored()
   store.loadDiscarded()
   store.loadConflicts()
-  supersessionStore.loadPending()
 })
 
 // Debounce wiring: the bar emits raw input; we debounce before calling setErroredSearch.
@@ -51,9 +47,6 @@ function truncate(s: string | null, n = 80) {
         <span v-if="discardedTotal > 0" class="ml-1 tabular-nums">({{ discardedTotal }})</span>
       </button>
     </header>
-
-    <!-- Supersession candidates — highest-stakes review; above conflict groups -->
-    <SupersessionCandidateList data-testid="supersession-candidate-list" />
 
     <!-- Conflict group cards — rendered above the errored table (§3.5.5) -->
     <ConflictGroupList />

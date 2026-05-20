@@ -26,8 +26,6 @@ def test_historical_ingest_writes_no_candidates(workbook_factory, session_factor
     result = ingest_workbook(path, session_factory=session_factory)
 
     assert result.sheet_kind is SheetKind.historical
-    assert result.candidates_opened == 0
-    assert result.candidates_auto_returned == 0
 
     with session_factory() as s:
         all_cands = s.scalars(select(JobSupersessionCandidate)).all()
@@ -57,8 +55,6 @@ def test_historical_ingest_writes_no_candidates_when_live_jobs_exist(
     result = ingest_workbook(hist_wb, session_factory=session_factory)
 
     assert result.sheet_kind is SheetKind.historical
-    assert result.candidates_opened == 0
-    assert result.candidates_auto_returned == 0
 
     with session_factory() as s:
         all_cands = s.scalars(select(JobSupersessionCandidate)).all()

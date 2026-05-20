@@ -338,7 +338,6 @@ class TestSupersessionShieldAfterUnship:
         )
         result = ingest_workbook(live_wb2, session_factory=session_factory)
 
-        assert result.candidates_opened == 0
         with session_factory() as s:
             cands = s.scalars(select(JobSupersessionCandidate)).all()
         assert cands == []
@@ -363,7 +362,6 @@ class TestSupersessionShieldAfterUnship:
             filename="unship_b1.xlsx",
         )
         result1 = ingest_workbook(wb_unship, session_factory=session_factory)
-        assert result1.candidates_opened == 0
 
         # Second live batch — 199002 row absent entirely.
         wb_omit = schd_workbook_factory(

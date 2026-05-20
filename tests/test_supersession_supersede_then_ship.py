@@ -11,12 +11,12 @@ Sequence:
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 
 from backend.app.ingest import ingest_workbook
-from backend.app.models import Assembly, Job, JobSupersessionCandidate
+from backend.app.models import Assembly, CandidateReason, Job, JobSupersessionCandidate
 
 
 def test_supersede_then_ship_creates_new_active_job(
@@ -37,7 +37,6 @@ def test_supersede_then_ship_creates_new_active_job(
         filename="live_v1.xlsx",
     )
     r1 = ingest_workbook(wb1, session_factory=session_factory)
-    assert r1.candidates_opened == 0
 
     # Step 2: live v2 — split into -1par + -2par.
     # Phase 18b shape rule: "577700-1par" decomposes to ("577700", "-1par"),
@@ -50,9 +49,9 @@ def test_supersede_then_ship_creates_new_active_job(
         filename="live_v2.xlsx",
     )
     r2 = ingest_workbook(wb2, session_factory=session_factory)
-    assert r2.candidates_opened == 1
 
-    # Locate the pending candidate for the bare 577700 job.
+    # Locate the bare 577700 job and insert a pending candidate directly.
+    # Stage 5b (detect_supersession_candidates) was removed in Phase 20.
     with session_factory() as s:
         asm = s.scalars(
             select(Assembly).where(Assembly.part_number == "577700")
@@ -65,12 +64,16 @@ def test_supersede_then_ship_creates_new_active_job(
         ).one()
         bare_job_id = bare_job.id
 
-        cand = s.scalars(
-            select(JobSupersessionCandidate)
-            .where(JobSupersessionCandidate.job_id == bare_job_id)
-            .where(JobSupersessionCandidate.resolved_at.is_(None))
-        ).one()
+        cand = JobSupersessionCandidate(
+            job_id=bare_job_id,
+            detected_in_batch_id=r2.batch_id,
+            reason=CandidateReason.orphan_after_split,
+            detected_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        s.add(cand)
+        s.flush()
         cand_id = cand.id
+        s.commit()
 
     # Step 3: operator approves via API.
     resp = client.post(f"/api/staging/supersession-candidates/{cand_id}/approve")

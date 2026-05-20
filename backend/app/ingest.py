@@ -19,7 +19,6 @@ from .db import SessionLocal
 from .config import get_settings
 from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
 from .models import Assembly, BuildQualifier, BuildType, ImportBatch, ImportStagingRow, ImportStatus, SheetKind
-from .services.jobs_lifecycle import CandidateDelta, detect_supersession_candidates
 from .services.staging import _rollback_with_error_capture
 from .transform import transform_staging_row, _mark_decompose_error
 
@@ -251,8 +250,6 @@ class IngestResult:
     rows_errored: int | None = None
     duplicate_of_batch_id: int | None = None
     sheet_kind: SheetKind | None = None
-    candidates_opened: int | None = None
-    candidates_auto_returned: int | None = None
 
     # Populated only when kind == "held_for_review"
     new_b_numbers: list[ReviewGroup] | None = None
@@ -272,8 +269,6 @@ class IngestResult:
         rows_errored: int,
         duplicate_of_batch_id: int | None,
         sheet_kind: SheetKind,
-        candidates_opened: int,
-        candidates_auto_returned: int,
     ) -> "IngestResult":
         return cls(
             kind="processed_or_error",
@@ -286,8 +281,6 @@ class IngestResult:
             rows_errored=rows_errored,
             duplicate_of_batch_id=duplicate_of_batch_id,
             sheet_kind=sheet_kind,
-            candidates_opened=candidates_opened,
-            candidates_auto_returned=candidates_auto_returned,
         )
 
     @classmethod
@@ -578,14 +571,6 @@ def run_stages_4_to_6(
                     row.processed_at = datetime.now(timezone.utc).replace(tzinfo=None)
                     counters["errored"] += 1
 
-            # Stage 5b — detect supersession candidates (live batches only).
-            # Runs inside the same outer transaction as Stage 5; failures
-            # propagate to the loop_exc handler and force batch.status = error.
-            delta = CandidateDelta.empty()
-            if sheet_kind == SheetKind.live:
-                live_batch = session.get(ImportBatch, batch_id)
-                delta = detect_supersession_candidates(session, live_batch)
-
         except Exception as exc:
             session.rollback()
             loop_exc = exc
@@ -620,8 +605,6 @@ def run_stages_4_to_6(
         rows_errored=counters["errored"],
         duplicate_of_batch_id=duplicate_of,
         sheet_kind=sheet_kind,
-        candidates_opened=len(delta.new_pending_candidate_ids),
-        candidates_auto_returned=len(delta.auto_returned_candidate_ids),
     )
 
 
