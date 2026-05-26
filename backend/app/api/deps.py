@@ -25,10 +25,18 @@ def get_session_factory() -> Callable[[], Session]:
     return SessionLocal
 
 
+# Contract: PageParams.limit
+#   Invariant: limit <= MAX_PAGE_ROWS.
+#   Rationale: per-request memory budget = MAX_PAGE_ROWS * worst-case
+#              load-option fan-out (currently ~3 for Job list endpoints).
+#              raising MAX_PAGE_ROWS requires re-deriving the budget below.
+MAX_PAGE_ROWS: int = 500
+
+
 class PageParams:
     def __init__(
         self,
-        limit: int = Query(100, ge=1, le=500),
+        limit: int = Query(100, ge=1, le=MAX_PAGE_ROWS),
         offset: int = Query(0, ge=0),
     ):
         self.limit = limit
@@ -38,7 +46,7 @@ class PageParams:
 class HistoryPageParams(PageParams):
     def __init__(
         self,
-        limit: int = Query(50, ge=1, le=500),
+        limit: int = Query(50, ge=1, le=MAX_PAGE_ROWS),
         offset: int = Query(0, ge=0),
         search: str | None = Query(default=None, max_length=128),
     ):
@@ -50,7 +58,7 @@ class HistoryPageParams(PageParams):
 class ErroredPageParams:
     def __init__(
         self,
-        limit: int = Query(50, ge=1, le=500),
+        limit: int = Query(50, ge=1, le=MAX_PAGE_ROWS),
         offset: int = Query(0, ge=0),
         search: str | None = Query(default=None, max_length=128),
     ):

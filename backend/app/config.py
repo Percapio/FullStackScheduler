@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # DELETE this setting and the Stage 4 collision block in the release after
     # Phase 18c confirms no regression.
     intra_file_collision_legacy_error_path: bool = False
+    known_part_numbers_chunk: int = 1000
+    similar_cache_max_entries: int = 2048
+    similar_cache_idle_ttl_seconds: float = 3600.0
+    similar_cache_scan_every_n: int = 256
+    gc_freeze_after_startup: bool = True
     model_config = SettingsConfigDict(env_prefix="SCHEDULER_", env_file=".env", extra="ignore")
 
     def model_post_init(self, __ctx) -> None:

@@ -5,17 +5,18 @@ import hashlib
 import logging
 import re
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Iterator, Literal
 
 from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import reader
-from .db import SessionLocal
+from .db import SessionLocal, scoped_write_session
 from .config import get_settings
 from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
 from .models import Assembly, BuildQualifier, BuildType, ImportBatch, ImportStagingRow, ImportStatus, SheetKind
@@ -23,6 +24,24 @@ from .services.staging import _rollback_with_error_capture
 from .transform import transform_staging_row, _mark_decompose_error
 
 log = logging.getLogger(__name__)
+
+
+@contextmanager
+def _managed_session(factory: Callable[[], Session] | None) -> Iterator[Session]:
+    if factory is None:
+        from .db import scoped_write_session
+        with scoped_write_session() as s:
+            yield s
+    else:
+        s = factory()
+        try:
+            yield s
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
 
 
 class DuplicateBatchError(Exception):
@@ -119,6 +138,20 @@ def matches_b_number_shape(pn: str) -> bool:
     return _B_NUMBER_RE.fullmatch(pn) is not None
 
 
+def iter_known_part_numbers(session: Session) -> Iterator[str]:
+    """Yield every Assembly.part_number without materialising the full catalog.
+
+    Pre:  session is open.
+    Post: yields each part_number exactly once, in unspecified order.
+          caller is responsible for any deduplication structure it builds.
+    Raises: propagates DB errors.
+    """
+    settings = get_settings()
+    return session.scalars(
+        select(Assembly.part_number).execution_options(yield_per=settings.known_part_numbers_chunk)
+    )
+
+
 def load_assembly_part_numbers(session: Session) -> set[str]:
     """Load every Assembly.part_number into a set for O(1) membership tests.
 
@@ -126,7 +159,7 @@ def load_assembly_part_numbers(session: Session) -> set[str]:
     Post: returns every Assembly.part_number string currently in the DB.
     Raises: propagates DB errors.
     """
-    return set(session.scalars(select(Assembly.part_number)).all())
+    return set(iter_known_part_numbers(session))
 
 
 def classify_new_parts_for_review(
@@ -343,18 +376,14 @@ def ingest_workbook(
     *,
     sheet: str = reader.SHEET_NAME,
     force: bool = False,
-    session_factory: Callable[[], Session] = SessionLocal,
+    session_factory: Callable[[], Session] | None = None,
 ) -> IngestResult:
     path = Path(path)
     sha = _sha256(path)
 
     # Stage 1 — duplicate guard.
-    # Abandoned batches are excluded so an operator can re-upload after abandoning
-    # a held batch (§6.6).  Processed/error batches are still guarded; force=True
-    # overrides them as before.
     duplicate_of: int | None = None
-    session = session_factory()
-    try:
+    with _managed_session(session_factory) as session:
         existing_batch_id = session.execute(
             select(ImportBatch.id)
             .where(ImportBatch.source_sha256 == sha)
@@ -364,11 +393,8 @@ def ingest_workbook(
 
         if existing_batch_id is not None:
             if not force:
-                session.close()
                 raise DuplicateBatchError(existing_batch_id, sha)
             duplicate_of = existing_batch_id
-    finally:
-        session.close()
 
     # Stage 2 — read workbook
     try:
@@ -382,8 +408,7 @@ def ingest_workbook(
     rows_total = len(raw_rows)
 
     # Stage 3 — create batch & stage rows
-    session = session_factory()
-    try:
+    with _managed_session(session_factory) as session:
         batch = ImportBatch(
             source_file=path.name,
             source_sha256=sha,
@@ -438,7 +463,6 @@ def ingest_workbook(
         if not classification.is_empty():
             # Hold the batch; Stage 4..6 runs at POST /confirm.
             batch.status = ImportStatus.awaiting_review
-            session.commit()
             return IngestResult.held_for_review(
                 batch_id=batch_id,
                 source_sha256=sha,
@@ -447,13 +471,6 @@ def ingest_workbook(
                 new_non_b_numbers=classification.non_b,
                 intra_file_duplicates=classification.intra_file_duplicates,
             )
-
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
     # Stages 4–6 — collision scan, per-row transform, batch finalization.
     return run_stages_4_to_6(
@@ -474,7 +491,7 @@ def run_stages_4_to_6(
     source_sha256: str,
     filename: str | None,
     duplicate_of: int | None,
-    session_factory: Callable[[], Session],
+    session_factory: Callable[[], Session] | None = None,
 ) -> IngestResult:
     """Run Stage 4 (collision scan), Stage 5 (transform), Stage 5b (supersession),
     and Stage 6 (finalize) for a batch that is already staged.
@@ -488,8 +505,8 @@ def run_stages_4_to_6(
             not catch silently.
     """
     counters = {"inserted": 0, "updated": 0, "errored": 0}
-    session = session_factory()
-    try:
+    loop_exc: Exception | None = None
+    with _managed_session(session_factory) as session:
         # Rows with discarded_at set were hard-deleted during review (D3).
         pending = session.scalars(
             select(ImportStagingRow)
@@ -504,7 +521,6 @@ def run_stages_4_to_6(
         # are visible to the registry-driven parser (§5.4 split-snapshot contract).
         stage5_registry = load_assembly_part_numbers(session)
 
-        loop_exc: Exception | None = None
         try:
             # Stage 4 — intra-file collision scan.
             # When intra_file_collision_legacy_error_path is False (default),
@@ -585,15 +601,8 @@ def run_stages_4_to_6(
             else ImportStatus.processed
         )
 
-        session.commit()
-
-        if loop_exc is not None:
-            raise loop_exc
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    if loop_exc is not None:
+        raise loop_exc
 
     return IngestResult.processed_or_error(
         batch_id=batch_id,

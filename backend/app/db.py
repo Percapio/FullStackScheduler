@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable, Iterator
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine.url import make_url
@@ -51,18 +53,51 @@ def get_engine() -> Engine:
     return engine
 
 
-def _make_session() -> Session:
+@lru_cache(maxsize=1)
+def get_session_factory() -> Callable[[], Session]:
+    """
+    Contract: get_session_factory
+      Intent: a single sessionmaker bound to the singleton engine. The factory
+              itself is invariant for the process lifetime.
+      Pre:    none.
+      Post:   returns the same Callable[[], Session] on every call.
+      Raises: propagates engine creation errors on first call.
+    """
     return sessionmaker(
         bind=get_engine(),
         autoflush=False,
         autocommit=False,
         expire_on_commit=False,
+    )
+
+
+def SessionLocal() -> Session:
+    return get_session_factory()()
+
+
+@contextmanager
+def scoped_write_session() -> Iterator[Session]:
+    """
+    Contract: scoped_write_session
+      Intent: a session for code paths that mutate but do not depend on reading
+              ORM instance attributes between a commit and the session's close.
+      Pre:    no caller of this function reads any mapped attribute on any
+              persistent instance after commit() returns on this session.
+      Post:   on context exit, session is committed-or-rolled-back and closed.
+              identity map is dropped on each commit.
+      Raises: propagates underlying DB errors; rolls back on any exception.
+    """
+    session = sessionmaker(
+        bind=get_engine(),
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=True,
     )()
-
-
-class _LazySessionLocal:
-    def __call__(self) -> Session:
-        return _make_session()
-
-
-SessionLocal = _LazySessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

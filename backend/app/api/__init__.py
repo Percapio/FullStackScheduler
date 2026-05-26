@@ -24,6 +24,19 @@ def _dist_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
 
+def warm_lazy_singletons() -> None:
+    from ..db import get_engine, get_session_factory
+    get_engine()
+    get_session_factory()
+
+
+def freeze_import_time_state() -> None:
+    import gc
+    warm_lazy_singletons()
+    gc.collect()
+    gc.freeze()
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Scheduler API", version="0.4.0")
 
@@ -56,5 +69,9 @@ def create_app() -> FastAPI:
             if candidate.is_file():
                 return FileResponse(candidate)
         return FileResponse(dist / "index.html")
+
+    from ..config import get_settings
+    if get_settings().gc_freeze_after_startup:
+        freeze_import_time_state()
 
     return app

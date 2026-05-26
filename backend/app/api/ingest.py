@@ -5,6 +5,7 @@ import logging
 import shutil
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -77,14 +78,16 @@ def _similar_assemblies_compute(
                  prefilter that drops candidates whose length differs from pn
                  by more than LENGTH_WINDOW.
     """
-    all_pns: list[str] = list(session.scalars(select(Assembly.part_number)).all())
+    from ..ingest import iter_known_part_numbers
+
     pn_len = len(pn)
     LENGTH_WINDOW = 3
-    candidates = [
-        p for p in all_pns
-        if abs(len(p) - pn_len) <= LENGTH_WINDOW and p != pn
-    ]
-    distances = [(_levenshtein(pn, p), p) for p in candidates]
+    distances = []
+    
+    for p in iter_known_part_numbers(session):
+        if p != pn and abs(len(p) - pn_len) <= LENGTH_WINDOW:
+            distances.append((_levenshtein(pn, p), p))
+
     top = heapq.nsmallest(top_n, distances)
     return [{"part_number": p, "edit_distance": d} for d, p in top]
 
@@ -97,7 +100,25 @@ def _similar_assemblies_compute(
 # Keyed by (batch_id, parsed_part_number); evicted on confirm/abandon.
 # ---------------------------------------------------------------------------
 
-_similar_cache: dict[tuple[int, str], list[dict[str, Any]]] = {}
+_similar_cache: OrderedDict[tuple[int, str], dict[str, Any]] = OrderedDict()
+_call_counter_since_last_scan: int = 0
+
+
+def _evict_stale(now_monotonic: float) -> int:
+    from ..config import get_settings
+    settings = get_settings()
+    ttl = settings.similar_cache_idle_ttl_seconds
+    evicted = 0
+    keys_to_drop = []
+    for key, entry in _similar_cache.items():
+        if now_monotonic - entry["last_access_monotonic"] > ttl:
+            keys_to_drop.append(key)
+        else:
+            break
+    for k in keys_to_drop:
+        del _similar_cache[k]
+        evicted += 1
+    return evicted
 
 
 def _similar_assemblies_cached(
@@ -113,12 +134,32 @@ def _similar_assemblies_cached(
           on cache miss, computes via _similar_assemblies_compute, stores, returns.
     Raises: never beyond propagated DB errors.
     """
+    global _call_counter_since_last_scan
+    from ..config import get_settings
+    settings = get_settings()
+    now = time.monotonic()
+    
+    _call_counter_since_last_scan += 1
+    if _call_counter_since_last_scan > settings.similar_cache_scan_every_n:
+        _evict_stale(now)
+        _call_counter_since_last_scan = 0
+
     key = (batch_id, pn)
     cached = _similar_cache.get(key)
     if cached is not None:
-        return cached
+        _similar_cache.move_to_end(key)
+        cached["last_access_monotonic"] = now
+        return cached["value"]
+
     computed = _similar_assemblies_compute(session, pn, top_n)
-    _similar_cache[key] = computed
+    
+    if len(_similar_cache) >= settings.similar_cache_max_entries:
+        _similar_cache.popitem(last=False)
+        
+    _similar_cache[key] = {
+        "value": computed,
+        "last_access_monotonic": now,
+    }
     return computed
 
 
