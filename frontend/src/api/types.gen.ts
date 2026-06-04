@@ -4,74 +4,6 @@
  */
 
 export interface paths {
-    "/api/staging/supersession-candidates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Supersession Candidates */
-        get: operations["list_supersession_candidates_api_staging_supersession_candidates_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/staging/supersession-candidates/bulk-approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Bulk Approve */
-        post: operations["bulk_approve_api_staging_supersession_candidates_bulk_approve_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/staging/supersession-candidates/{candidate_id}/approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Approve */
-        post: operations["approve_api_staging_supersession_candidates__candidate_id__approve_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/staging/supersession-candidates/{candidate_id}/reject": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reject */
-        post: operations["reject_api_staging_supersession_candidates__candidate_id__reject_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/staging/conflicts": {
         parameters: {
             query?: never;
@@ -719,27 +651,6 @@ export interface components {
          * @enum {string}
          */
         BuildType: "new" | "ronc" | "rowc";
-        /** BulkApprovalResultRead */
-        BulkApprovalResultRead: {
-            /** Approved */
-            approved: number[];
-            /** Shield Rejected */
-            shield_rejected: number[];
-            /** Already Closed */
-            already_closed: number[];
-            /** Not Found */
-            not_found: number[];
-        };
-        /**
-         * CandidateReason
-         * @enum {string}
-         */
-        CandidateReason: "orphan_after_split" | "orphan_after_recombine" | "orphan_other";
-        /**
-         * CandidateResolution
-         * @enum {string}
-         */
-        CandidateResolution: "approve" | "reject" | "auto_returned";
         /** ClassificationRead */
         ClassificationRead: {
             /** Code */
@@ -918,10 +829,6 @@ export interface components {
             doc_released_at?: string | null;
             /** Kit Released At */
             kit_released_at?: string | null;
-            /** Wip Status Note */
-            wip_status_note?: string | null;
-            /** Wip Expected Clear Date */
-            wip_expected_clear_date?: string | null;
             /** Notes Clear Date Raw */
             notes_clear_date_raw?: string | null;
             /** Run Cost */
@@ -1011,10 +918,6 @@ export interface components {
             doc_released_at?: string | null;
             /** Kit Released At */
             kit_released_at?: string | null;
-            /** Wip Status Note */
-            wip_status_note?: string | null;
-            /** Wip Expected Clear Date */
-            wip_expected_clear_date?: string | null;
             /** Notes Clear Date Raw */
             notes_clear_date_raw?: string | null;
             /** Run Cost */
@@ -1091,44 +994,7 @@ export interface components {
          * JobStatus
          * @enum {string}
          */
-        JobStatus: "planned" | "wip" | "shipped";
-        /** JobSupersessionCandidatePage */
-        JobSupersessionCandidatePage: {
-            /** Items */
-            items: components["schemas"]["JobSupersessionCandidateRead"][];
-            /** Total */
-            total: number;
-        };
-        /** JobSupersessionCandidateRead */
-        JobSupersessionCandidateRead: {
-            /** Id */
-            id: number;
-            /** Job Id */
-            job_id: number;
-            /** Detected In Batch Id */
-            detected_in_batch_id: number;
-            reason: components["schemas"]["CandidateReason"];
-            /**
-             * Detected At
-             * Format: date-time
-             */
-            detected_at: string;
-            /** Resolved At */
-            resolved_at: string | null;
-            resolution: components["schemas"]["CandidateResolution"] | null;
-            /** Closed By Shield Reason */
-            closed_by_shield_reason: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /**
-             * Updated At
-             * Format: date-time
-             */
-            updated_at: string;
-        };
+        JobStatus: "planned" | "shipped";
         /**
          * RestoreConflictPreview
          * @description Read-only snapshot describing what would collide if a discarded row were restored.
@@ -1318,11 +1184,6 @@ export interface components {
             /** Highlight Fields */
             readonly highlight_fields: string[];
         };
-        /** SupersessionBulkApprovalRequest */
-        SupersessionBulkApprovalRequest: {
-            /** Ids */
-            ids: number[];
-        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1345,135 +1206,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    list_supersession_candidates_api_staging_supersession_candidates_get: {
-        parameters: {
-            query?: {
-                status?: string;
-                resolution?: string | null;
-                limit?: number;
-                offset?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobSupersessionCandidatePage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    bulk_approve_api_staging_supersession_candidates_bulk_approve_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SupersessionBulkApprovalRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BulkApprovalResultRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    approve_api_staging_supersession_candidates__candidate_id__approve_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                candidate_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobSupersessionCandidateRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reject_api_staging_supersession_candidates__candidate_id__reject_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                candidate_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobSupersessionCandidateRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_conflicts_api_staging_conflicts_get: {
         parameters: {
             query?: never;

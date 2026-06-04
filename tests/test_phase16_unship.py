@@ -20,7 +20,6 @@ from backend.app.models import (
     ImportStatus,
     Job,
     JobStatus,
-    JobSupersessionCandidate,
     SheetKind,
 )
 from backend.app.sorting import resolve_ship_date
@@ -281,103 +280,6 @@ class TestReIngestUnshippedJob:
         assert job.status is JobStatus.planned
         assert job.shipped_at is None
         assert job.ever_shipped_at == date(2026, 4, 1)  # preserved
-
-
-# ---------------------------------------------------------------------------
-# §6 test: supersession shield after un-ship (F8 long-tail)
-# ---------------------------------------------------------------------------
-
-class TestSupersessionShieldAfterUnship:
-    def test_supersession_shield_uses_ever_shipped_at_after_unship(
-        self, schd_workbook_factory, workbook_factory, session_factory
-    ):
-        """An un-shipped job is shielded from supersession in future live batches.
-
-        ever_shipped_at IS NOT NULL blocks candidate creation even when
-        shipped_at IS NULL (planned status after un-ship).
-        """
-        from backend.app.ingest import ingest_workbook
-
-        # Step 1: Ship a job via a historical workbook.
-        hist_wb = workbook_factory(
-            [{"JOB": "199001\nNEW", "QTY": "1", "CUSTOMER": "SHIELD-TEST",
-              "SHIPPED": "04/01/2026"}]
-        )
-        ingest_workbook(hist_wb, session_factory=session_factory)
-
-        with session_factory() as s:
-            job = s.scalars(
-                select(Job).join(Assembly).where(Assembly.part_number == "199001")
-            ).one()
-            assert job.status is JobStatus.shipped
-            assert job.ever_shipped_at == date(2026, 4, 1)
-
-        # Step 2: Un-ship via a SCHD workbook (blank raw_shipped).
-        unship_wb = schd_workbook_factory(
-            [{"data": {"JOB": "199001\nNEW", "QTY": "1", "CUSTOMER": "SHIELD-TEST",
-                       "SHIPPED": "", "SHIP DATE": "5/15"}}],
-            filename="schd_unship.xlsx",
-        )
-        ingest_workbook(unship_wb, session_factory=session_factory)
-
-        with session_factory() as s:
-            job = s.scalars(
-                select(Job).join(Assembly).where(Assembly.part_number == "199001")
-                .where(Job.superseded_at.is_(None))
-                .where(Job.discarded_at.is_(None))
-            ).one()
-            assert job.status is JobStatus.planned
-            assert job.shipped_at is None
-            assert job.ever_shipped_at == date(2026, 4, 1)
-
-        # Step 3: A subsequent live batch that does NOT reference 199001 bare.
-        # The un-shipped job must not be opened as a candidate (shield fires).
-        live_wb2 = schd_workbook_factory(
-            [{"data": {"JOB": "199001-1par\nNEW", "QTY": "1", "CUSTOMER": "SHIELD-TEST"}}],
-            filename="schd_omit.xlsx",
-        )
-        result = ingest_workbook(live_wb2, session_factory=session_factory)
-
-        with session_factory() as s:
-            cands = s.scalars(select(JobSupersessionCandidate)).all()
-        assert cands == []
-
-    def test_unship_then_disappear_does_not_open_candidate(
-        self, schd_workbook_factory, workbook_factory, session_factory
-    ):
-        """End-to-end: un-ship then omit from next batch — no candidate opened."""
-        from backend.app.ingest import ingest_workbook
-
-        # Create the job via historical workbook.
-        hist_wb = workbook_factory(
-            [{"JOB": "199002\nNEW", "QTY": "2", "CUSTOMER": "DISAPPEAR-CO",
-              "SHIPPED": "04/10/2026"}]
-        )
-        ingest_workbook(hist_wb, session_factory=session_factory)
-
-        # Un-ship via SCHD.
-        wb_unship = schd_workbook_factory(
-            [{"data": {"JOB": "199002\nNEW", "QTY": "2", "CUSTOMER": "DISAPPEAR-CO",
-                       "SHIPPED": ""}}],
-            filename="unship_b1.xlsx",
-        )
-        result1 = ingest_workbook(wb_unship, session_factory=session_factory)
-
-        # Second live batch — 199002 row absent entirely.
-        wb_omit = schd_workbook_factory(
-            [{"data": {"JOB": "199003\nNEW", "QTY": "1", "CUSTOMER": "DISAPPEAR-CO"}}],
-            filename="omit_b2.xlsx",
-        )
-        result2 = ingest_workbook(wb_omit, session_factory=session_factory)
-
-        # The un-shipped job's ever_shipped_at shields it from candidacy.
-        with session_factory() as s:
-            cands = s.scalars(
-                select(JobSupersessionCandidate)
-                .join(Job).join(Assembly)
-                .where(Assembly.part_number == "199002")
-            ).all()
-        assert cands == []
 
 
 # ---------------------------------------------------------------------------

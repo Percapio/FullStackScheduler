@@ -31,7 +31,6 @@ const sortedRows = computed(() => {
 
 const statusClasses: Record<string, string> = {
   shipped: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
-  wip: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200',
   planned: 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
   on_hold: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
 }

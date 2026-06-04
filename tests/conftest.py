@@ -345,7 +345,7 @@ def seeded_jobs(session):
 @pytest.fixture()
 def seeded_mixed_status_jobs(session):
     jobs = []
-    for i, st in enumerate([JobStatus.planned, JobStatus.wip, JobStatus.shipped]):
+    for i, st in enumerate([JobStatus.planned, JobStatus.shipped]):
         jobs.append(_make_job(
             session,
             part_number=f"STATUS-{i:03d}",
@@ -385,7 +385,7 @@ def seeded_split_jobs_mixed_status(session):
     session.flush()
     for sfx, st in [
         (None, JobStatus.planned),
-        ("-1par", JobStatus.wip),
+        ("-1par", JobStatus.planned),
         ("-2bal", JobStatus.planned),
     ]:
         session.add(Job(

@@ -296,10 +296,10 @@ class TestJobsList:
         assert "customer" in first and "name" in first["customer"]
 
     def test_status_filter_accepts_csv(self, client, seeded_mixed_status_jobs):
-        resp = client.get("/api/jobs?status=planned,wip")
+        resp = client.get("/api/jobs?status=planned")
         assert resp.status_code == status.HTTP_200_OK
         for job in resp.json():
-            assert job["status"] in ("planned", "wip")
+            assert job["status"] == "planned"
 
     def test_assembly_filter_returns_all_splits(self, client, seeded_split_jobs):
         assembly_id = seeded_split_jobs["assembly_id"]
@@ -383,7 +383,7 @@ class TestShippingList:
         resp = client.get("/api/jobs/shipping")
         assert resp.status_code == status.HTTP_200_OK
         body = resp.json()
-        assert len(body) == 2
+        assert len(body) == 1
         for job in body:
             assert job["status"] != "shipped"
 
@@ -457,7 +457,7 @@ class TestJobHistory:
         customer = Customer(name="HistCo")
         session.add(customer)
         session.flush()
-        for i, st in enumerate([JobStatus.shipped, JobStatus.shipped, JobStatus.planned, JobStatus.wip]):
+        for i, st in enumerate([JobStatus.shipped, JobStatus.shipped, JobStatus.planned, JobStatus.planned]):
             asm = Assembly(part_number=f"HIST-{i:03d}")
             session.add(asm)
             session.flush()
@@ -782,7 +782,7 @@ class TestJobLineage:
         session.add(asm)
         session.flush()
         jobs = []
-        for st in [JobStatus.planned, JobStatus.wip, JobStatus.shipped]:
+        for st in [JobStatus.planned, JobStatus.shipped]:
             j = Job(assembly_id=asm.id, customer_id=customer.id, quantity=1,
                     build_type=BuildType.new, status=st,
                     shipped_at=date(2026, 1, 1) if st == JobStatus.shipped else None)
@@ -793,7 +793,7 @@ class TestJobLineage:
         resp = client.get(f"/api/jobs/{jobs[0].id}/lineage")
         body = resp.json()
         statuses = {row["status"] for row in body}
-        assert statuses == {"planned", "wip", "shipped"}
+        assert statuses == {"planned", "shipped"}
 
     def test_chronological_order_uses_coalesce(self, client, session):
         from backend.app.models import Assembly, BuildType, Customer, Job

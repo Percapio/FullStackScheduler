@@ -95,11 +95,6 @@ class TestDiscardJobService:
         assert returned.id == job.id
         assert returned.discarded_at is not None
 
-    def test_discard_wip_job_sets_discarded_at(self, session):
-        job = _make_job(session, status=JobStatus.wip)
-        returned = discard_job(session, job.id, "test reason")
-        assert returned.discarded_at is not None
-
     def test_discard_shipped_job_sets_discarded_at(self, session):
         """Phase 17: shipped jobs are now discardable (guard removed)."""
         job = _make_job(session, status=JobStatus.shipped,

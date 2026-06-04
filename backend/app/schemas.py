@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer, model_validator
 
 from .errors import resolve_highlight_fields
-from .models import BuildType, BuildQualifier, CandidateReason, CandidateResolution, ImportStatus, JobStatus, SheetKind
+from .models import BuildType, BuildQualifier, ImportStatus, JobStatus, SheetKind
 
 
 _MARKDOWN_NOTE = "CommonMark-annotated Markdown. Client must render via a Markdown library (e.g. marked)."
@@ -157,9 +157,6 @@ class JobBase(BaseModel):
 
     doc_released_at: date | None = None
     kit_released_at: date | None = None
-
-    wip_status_note: str | None = None
-    wip_expected_clear_date: date | None = None
 
     notes_clear_date_raw: str | None = Field(default=None, max_length=16)
 
@@ -340,41 +337,7 @@ class JobRestoreRequest(BaseModel):
 # ---- supersession ------------------------------------------------------------
 
 
-class JobSupersessionCandidateRead(_ORMModel):
-    id: int
-    job_id: int
-    detected_in_batch_id: int
-    reason: CandidateReason
-    detected_at: datetime
-    resolved_at: datetime | None
-    resolution: CandidateResolution | None
-    closed_by_shield_reason: str | None
-    created_at: datetime
-    updated_at: datetime
 
-
-class JobSupersessionCandidatePage(BaseModel):
-    items: list[JobSupersessionCandidateRead]
-    total: int
-
-
-class SupersessionApprovalRequest(BaseModel):
-    pass
-
-
-class SupersessionRejectionRequest(BaseModel):
-    pass
-
-
-class SupersessionBulkApprovalRequest(BaseModel):
-    ids: list[int] = Field(min_length=1)
-
-
-class BulkApprovalResultRead(BaseModel):
-    approved: list[int]
-    shield_rejected: list[int]
-    already_closed: list[int]
-    not_found: list[int]
 
 
 # ---- history edit / discard --------------------------------------------------
