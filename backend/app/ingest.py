@@ -12,16 +12,18 @@ from pathlib import Path
 from typing import Callable, Iterator, Literal
 
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session
 
 from . import reader
 from .db import SessionLocal, scoped_write_session
 from .config import get_settings
 from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
-from .models import Assembly, BuildQualifier, BuildType, ImportBatch, ImportStagingRow, ImportStatus, SheetKind
+from .models import Assembly, BuildQualifier, BuildType, ImportBatch, ImportStagingRow, ImportStatus, SheetKind, Job, JobStatus
 from .services.staging import _rollback_with_error_capture
 from .transform import transform_staging_row, _mark_decompose_error
+
+import enum
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +57,128 @@ class DuplicateBatchError(Exception):
 
 class ReaderError(Exception):
     pass
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+class SkipReason(str, enum.Enum):
+    not_live = "not_live"
+    batch_not_clean = "batch_not_clean"
+    empty_resolved_set = "empty_resolved_set"
+    threshold_exceeded = "threshold_exceeded"
+
+@dataclass
+class SweepReport:
+    skipped: SkipReason | None
+    discarded_count: int
+    discarded_job_ids: list[int]
+
+DIGIT_SHAPE_PATTERN = re.compile(r"\b\d{5,6}\b")
+
+def extract_digit_shape_tokens(raw_job: str) -> list[str]:
+    return DIGIT_SHAPE_PATTERN.findall(raw_job)
+
+def collect_protected_part_numbers(session: Session, batch_id: int) -> set[str]:
+    protected: set[str] = set()
+    errored_rows = session.scalars(
+        select(ImportStagingRow)
+        .where(ImportStagingRow.batch_id == batch_id)
+        .where(ImportStagingRow.processing_status == ImportStatus.error)
+    )
+    for row in errored_rows:
+        if not row.raw_job:
+            continue
+        decomp = decompose_job_string_with_diagnostic(row.raw_job)
+        if decomp is not None and not isinstance(decomp, DecomposeError):
+            protected.add(decomp.part_number)
+        else:
+            protected.update(extract_digit_shape_tokens(row.raw_job))
+    return protected
+
+def sweep_missing_planned_jobs(
+    session: Session,
+    batch_id: int,
+    sheet_kind: SheetKind,
+    loop_completed: bool,
+) -> SweepReport:
+    if sheet_kind is not SheetKind.live:
+        return SweepReport(skipped=SkipReason.not_live, discarded_count=0, discarded_job_ids=[])
+
+    if not loop_completed:
+        return SweepReport(skipped=SkipReason.batch_not_clean, discarded_count=0, discarded_job_ids=[])
+
+    session.flush()
+
+    batch_resolved_anything: bool = session.scalar(
+        select(
+            exists().where(
+                ImportStagingRow.batch_id == batch_id,
+                ImportStagingRow.resolved_job_id.is_not(None),
+            )
+        )
+    )
+    if not batch_resolved_anything:
+        return SweepReport(skipped=SkipReason.empty_resolved_set, discarded_count=0, discarded_job_ids=[])
+
+    threshold: int = get_settings().missing_job_sweep_max_discards
+    now: datetime = _now_utc()
+
+    protected_part_numbers: set[str] = collect_protected_part_numbers(session, batch_id)
+
+    nested = session.begin_nested()
+    
+    stmt = (
+        update(Job)
+        .where(Job.status == JobStatus.planned)
+        .where(Job.superseded_at.is_(None))
+        .where(Job.discarded_at.is_(None))
+        .where(
+            ~exists().where(
+                ImportStagingRow.batch_id == batch_id,
+                ImportStagingRow.resolved_job_id == Job.id,
+            )
+        )
+    )
+
+    if protected_part_numbers:
+        stmt = stmt.where(
+            ~exists().where(
+                Assembly.id == Job.assembly_id,
+                Assembly.part_number.in_(protected_part_numbers),
+            )
+        )
+
+    stmt = stmt.values(discarded_at=now).returning(Job.id).execution_options(synchronize_session=False)
+
+    discarded_job_ids: list[int] = list(session.scalars(stmt).all())
+
+    if len(discarded_job_ids) >= threshold:
+        nested.rollback()
+        log.warning("ingest.missing_job_sweep.threshold_exceeded", extra={
+            "batch_id": batch_id,
+            "would_discard_count": len(discarded_job_ids),
+            "would_discard_ids": discarded_job_ids,
+            "threshold": threshold,
+        })
+        return SweepReport(
+            skipped=SkipReason.threshold_exceeded,
+            discarded_count=0,
+            discarded_job_ids=[],
+        )
+
+    nested.commit()
+    log.info("ingest.missing_job_sweep", extra={
+        "batch_id": batch_id,
+        "discarded_count": len(discarded_job_ids),
+        "discarded_ids": discarded_job_ids,
+    })
+
+    return SweepReport(
+        skipped=None,
+        discarded_count=len(discarded_job_ids),
+        discarded_job_ids=discarded_job_ids,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +617,7 @@ def run_stages_4_to_6(
     duplicate_of: int | None,
     session_factory: Callable[[], Session] | None = None,
 ) -> IngestResult:
-    """Run Stage 4 (collision scan), Stage 5 (transform), Stage 5b (supersession),
+    """Run Stage 4 (collision scan), Stage 5 (transform), Stage 6b (missing-job sweep),
     and Stage 6 (finalize) for a batch that is already staged.
 
     Used by both ingest_workbook (immediate path) and POST /confirm (deferred path).
@@ -599,6 +723,13 @@ def run_stages_4_to_6(
             ImportStatus.error
             if loop_exc is not None or counters["errored"] > 0
             else ImportStatus.processed
+        )
+
+        sweep_report: SweepReport = sweep_missing_planned_jobs(
+            session=session,
+            batch_id=batch_id,
+            sheet_kind=sheet_kind,
+            loop_completed=(loop_exc is None),
         )
 
     if loop_exc is not None:

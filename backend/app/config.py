@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     similar_cache_idle_ttl_seconds: float = 3600.0
     similar_cache_scan_every_n: int = 256
     gc_freeze_after_startup: bool = True
+    missing_job_sweep_max_discards: int = 30
     model_config = SettingsConfigDict(env_prefix="SCHEDULER_", env_file=".env", extra="ignore")
 
     def model_post_init(self, __ctx) -> None:

@@ -163,6 +163,11 @@ class Job(Base, TimestampMixin):
             unique=True,
             sqlite_where=text("superseded_at IS NULL AND discarded_at IS NULL"),
         ),
+        Index(
+            "ix_job_active_planned",
+            "status",
+            sqlite_where=text("superseded_at IS NULL AND discarded_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
