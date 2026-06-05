@@ -1,4 +1,3 @@
-import { marked } from 'marked'
 import type { JobReadExpanded } from '@/api/history'
 
 export type CarrierBadge = { text: string; class: string } | null
@@ -35,7 +34,16 @@ export function useJobFormatters() {
 
   function renderNotes(raw: string | null | undefined): string {
     if (!raw) return ''
-    return marked.parse(raw, { async: false, gfm: true, breaks: true }) as string
+
+    let text = raw.replace(/~~[\s\S]*?~~/g, '')
+    text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    text = text.replace(/\*/g, '')
+
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+    if (lines.length === 0) return ''
+
+    const listItems = lines.map(l => `<li>${l}</li>`).join('')
+    return `<div class="font-medium text-slate-800 dark:text-slate-100"><ul class="list-disc pl-5">${listItems}</ul></div>`
   }
 
   /** Compose the operator-visible label for a job.

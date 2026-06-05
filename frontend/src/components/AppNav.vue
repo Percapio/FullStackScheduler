@@ -74,7 +74,7 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
             class="px-4 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring"
             active-class="!bg-slate-900 !text-white dark:!bg-slate-100 dark:!text-slate-900"
           >
-            <template v-if="tab.name === 'uploads-in-flight' && inFlightCount > 0">
+            <template v-if="tab.name === 'reconciliation' && inFlightCount > 0">
               {{ tab.label }} <span class="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-semibold rounded-full bg-amber-400 text-amber-900">{{ inFlightCount }}</span>
             </template>
             <template v-else>{{ tab.label }}</template>

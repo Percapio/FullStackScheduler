@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { onMounted, watch, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import { fetchAwaitingReview, type AwaitingReviewBatch } from '@/api/review'
 import { useStagingStore } from '@/stores/staging'
 import { useDebouncedRef } from '@/composables/useDebouncedRef'
 import ReconciliationSidebar from '@/components/ReconciliationSidebar.vue'
@@ -16,10 +18,28 @@ const {
   erroredHasPrev, erroredHasNext, erroredPageStart, erroredPageEnd,
 } = storeToRefs(store)
 
+const router = useRouter()
+const batches = ref<AwaitingReviewBatch[]>([])
+const batchesLoading = ref(false)
+const batchesError = ref<string | null>(null)
+
+async function loadBatches() {
+  batchesLoading.value = true
+  batchesError.value = null
+  try {
+    batches.value = await fetchAwaitingReview()
+  } catch (err: any) {
+    batchesError.value = err?.response?.data?.detail ?? err?.message ?? 'Failed to load in-flight uploads.'
+  } finally {
+    batchesLoading.value = false
+  }
+}
+
 onMounted(() => {
   store.loadErrored()
   store.loadDiscarded()
   store.loadConflicts()
+  loadBatches()
 })
 
 // Debounce wiring: the bar emits raw input; we debounce before calling setErroredSearch.
@@ -29,6 +49,11 @@ watch(debouncedSearchQuery, (q) => store.setErroredSearch(q))
 function truncate(s: string | null, n = 80) {
   if (!s) return ''
   return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString()
 }
 </script>
 
@@ -47,6 +72,34 @@ function truncate(s: string | null, n = 80) {
         <span v-if="discardedTotal > 0" class="ml-1 tabular-nums">({{ discardedTotal }})</span>
       </button>
     </header>
+
+    <!-- In-Flight Uploads List -->
+    <div v-if="batchesError" class="mb-6 px-4 py-3 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 text-sm">
+      {{ batchesError }}
+    </div>
+    <ul v-else-if="batches.length > 0" class="mb-6 space-y-2">
+      <li v-for="b in batches"
+          :key="b.batch_id"
+          class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer transition-colors duration-75 shadow-sm"
+          @click="router.push({ name: 'batch-review', params: { batchId: b.batch_id } })">
+        <div>
+          <p class="font-semibold text-slate-800 dark:text-slate-100 text-sm">
+            Batch #{{ b.batch_id }}
+            <span v-if="b.source_file" class="ml-2 font-normal text-slate-500 dark:text-slate-400">
+              {{ b.source_file }}
+            </span>
+          </p>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            {{ formatDate(b.created_at) }}
+            &middot; {{ b.new_b_count }} new B# part(s)
+            &middot; {{ b.pending_row_count }} pending row(s)
+          </p>
+        </div>
+        <span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-800/30 dark:text-amber-200 font-medium shrink-0">
+          awaiting review
+        </span>
+      </li>
+    </ul>
 
     <!-- Conflict group cards — rendered above the errored table (§3.5.5) -->
     <ConflictGroupList />

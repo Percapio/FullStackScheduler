@@ -8,7 +8,6 @@ import { useHistoryStore } from '@/stores/history'
 const routes = [
   { path: '/reconciliation', name: 'reconciliation', component: { template: '<div />' }, meta: { label: 'Reconciliation' } },
   { path: '/history',        name: 'history',        component: { template: '<div />' }, meta: { label: 'History' } },
-  { path: '/uploads/in-flight', name: 'uploads-in-flight', component: { template: '<div />' }, meta: { label: 'In-flight uploads' } },
 ]
 
 function makeRouter() {
@@ -135,23 +134,15 @@ describe('AppNav', () => {
     expect(w.text()).toContain('Showing 1–5 of 42')
   })
 
-  it('renders an In-flight uploads nav link pointing to /uploads/in-flight', async () => {
-    const w = await mountNav('/reconciliation')
-    const links = w.findAll('a')
-    const inFlight = links.find(l => l.text().includes('In-flight'))
-    expect(inFlight).toBeDefined()
-    expect(inFlight!.attributes('href')).toContain('/uploads/in-flight')
-  })
-
-  it('shows the in-flight badge count when fetchAwaitingReview returns batches', async () => {
+  it('shows the in-flight badge count on Reconciliation when fetchAwaitingReview returns batches', async () => {
     const { fetchAwaitingReview } = await import('@/api/review')
     ;(fetchAwaitingReview as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       { batch_id: 1, source_file: 'a.xlsx', created_at: null, new_b_count: 1, new_non_b_count: 0, pending_row_count: 2 },
     ])
-    const w = await mountNav('/reconciliation')
+    const w = await mountNav('/history') // Mount on a different route so we can see the tabs clearly
     await flushPromises()
     expect(w.text()).toContain('1')   // badge value present in rendered text
-    const inFlight = w.findAll('a').find(l => l.text().includes('In-flight'))
-    expect(inFlight!.text()).toContain('1')
+    const reconLink = w.findAll('a').find(l => l.text().includes('Reconciliation'))
+    expect(reconLink!.text()).toContain('1')
   })
 })

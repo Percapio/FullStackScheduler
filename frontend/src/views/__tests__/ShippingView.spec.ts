@@ -138,6 +138,7 @@ describe('ShippingView', () => {
     const w = mountView()
     await flushPromises()
     expect(w.html()).toContain('<strong>bold text</strong>')
+    expect(w.html()).toContain('<li><strong>bold text</strong></li>')
   })
 
   it('renders strikethrough in MFG NOTES', async () => {
@@ -151,7 +152,7 @@ describe('ShippingView', () => {
     })
     const w = mountView()
     await flushPromises()
-    expect(w.html()).toContain('<del>removed</del>')
+    expect(w.html()).not.toContain('removed')
   })
 
   it('renders newlines in MFG NOTES as <br>', async () => {
@@ -165,7 +166,8 @@ describe('ShippingView', () => {
     })
     const w = mountView()
     await flushPromises()
-    expect(w.html()).toContain('<br>')
+    expect(w.html()).toContain('<li>line one</li>')
+    expect(w.html()).toContain('<li>line two</li>')
   })
 
   it('displays build_type uppercased, blanks for new', async () => {

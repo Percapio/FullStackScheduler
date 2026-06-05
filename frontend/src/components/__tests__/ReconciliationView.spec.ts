@@ -10,6 +10,14 @@ const mockFetchConflicts = vi.fn()
 const mockDeleteStagingRow = vi.fn()
 const mockPostRestoreStagingRow = vi.fn()
 
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}))
+
+vi.mock('@/api/review', () => ({
+  fetchAwaitingReview: vi.fn(() => Promise.resolve([])),
+}))
+
 vi.mock('@/api/staging', () => ({
   fetchErrored:           (...a: unknown[]) => mockFetchErrored(...a),
   fetchDetail:            (...a: unknown[]) => mockFetchDetail(...a),
