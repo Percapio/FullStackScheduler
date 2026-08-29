@@ -34,25 +34,27 @@ const emit = defineEmits<{
 
 const state = computed(() => props.summary?.state ?? null)
 
-/**
- * True when the cell holds less than the record does. The note check is not
- * redundant: has_unexpected_inclusions is a BOOLEAN on the summary, so an
- * operator's note is undisplayable from the cell no matter how few lines exist.
- */
-const hasMoreThanPreview = computed(() => {
+const hasUnshownLines = computed(() => {
   const summary = props.summary
   if (summary === null) return false
-  return (
-    summary.line_count > (summary.preview ?? []).length ||
-    summary.has_unexpected_inclusions
-  )
+  return summary.line_count > (summary.preview ?? []).length && summary.line_count > 0
+})
+
+const hasUnexpectedInclusions = computed(() => {
+  const summary = props.summary
+  if (summary === null) return false
+  return summary.has_unexpected_inclusions
 })
 
 function previewLabel(line: SecondOpsLine): string {
-  return [line.find_number, line.description, line.quantity_needed]
-    .map((value) => (value ?? '').trim())
-    .filter((value) => value.length > 0)
-    .join(' · ')
+  const f = (line.find_number ?? '').trim()
+  return f ? '#' + f : '—'
+}
+
+type Absent = undefined
+function previewTooltip(line: SecondOpsLine): string | Absent {
+  const d = (line.description ?? '').trim()
+  return d ? d : undefined
 }
 </script>
 
@@ -93,6 +95,7 @@ function previewLabel(line: SecondOpsLine): string {
         <li v-for="line in (summary.preview ?? [])" :key="line.id">
           <button
             type="button"
+            :title="previewTooltip(line)"
             data-testid="second-ops-preview-line"
             class="text-left text-slate-700 dark:text-slate-300 hover:underline focus-visible:outline-none
                    focus-visible:ring-2 focus-visible:ring-blue-500/70 rounded"
@@ -102,13 +105,22 @@ function previewLabel(line: SecondOpsLine): string {
       </ul>
       <div class="flex items-center gap-2">
         <button
-          v-if="hasMoreThanPreview"
+          v-if="hasUnshownLines"
           type="button"
           data-testid="second-ops-view-all-btn"
           class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
           @click.stop="emit('viewAll')"
         >
           View all ({{ summary.line_count }})
+        </button>
+        <button
+          v-if="hasUnexpectedInclusions"
+          type="button"
+          data-testid="second-ops-adds-btn"
+          class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+          @click.stop="emit('viewAll')"
+        >
+          adds
         </button>
         <button
           v-if="!readonly"

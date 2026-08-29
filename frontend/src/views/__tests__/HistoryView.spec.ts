@@ -337,6 +337,6 @@ describe('HistoryView — 2nd OPS column', () => {
     await flushPromises()
 
     expect(w.element.querySelector('script')).toBeNull()
-    expect(w.text()).toContain('<script>alert(1)</script>')
+    expect(w.html()).toContain('<script>alert(1)</script>')
   })
 })

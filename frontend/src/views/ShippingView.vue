@@ -20,7 +20,7 @@ const {
   secondOpsJob, secondOpsOpen, secondOpsFetch,
   secondOpsRecordJob, secondOpsRecordFetch, secondOpsItem,
 } = storeToRefs(store)
-const { formatDate, buildLabel, renderNotes } = useJobFormatters()
+const { formatShortDate, buildLabel, identitySuffix, renderNotes } = useJobFormatters()
 
 const sort = ref<SortState>({ key: 'resolved_ship_date', direction: 'asc' })
 const { sorted } = useShippingSort(jobs, sort)
@@ -80,10 +80,10 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
       <table class="w-full">
         <thead class="bg-slate-100 dark:bg-slate-700 text-left text-xs uppercase tracking-wide text-slate-600 dark:text-slate-300">
           <tr>
-            <SortHeader label="Ship Date"    sort-key="resolved_ship_date" :current="sort" @sort="cycleSort" />
+            <SortHeader label="SHIP"         sort-key="resolved_ship_date" :current="sort" @sort="cycleSort" />
             <SortHeader label="Job"          sort-key="part_number"        :current="sort" @sort="cycleSort" />
             <SortHeader label="Qty"          sort-key="quantity"           :current="sort" @sort="cycleSort" />
-            <SortHeader label="ROWC/RONC"    sort-key="build_type"        :current="sort" @sort="cycleSort" />
+            <SortHeader label="REPEAT"       sort-key="build_type"        :current="sort" @sort="cycleSort" />
             <SortHeader label="Mfg Notes"    sort-key="base_mfg_notes"    :current="sort" @sort="cycleSort" />
             <SortHeader label="Customer"     sort-key="customer_name"     :current="sort" @sort="cycleSort" />
             <!-- Plain <th>, not a SortHeader: the column is deliberately not
@@ -101,20 +101,21 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
                      dark:odd:hover:bg-slate-700 dark:even:hover:bg-slate-840">
             <td class="px-3 py-2 tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300"
                 :title="job.ship_date_text ?? undefined">
-              {{ formatDate(job.resolved_ship_date) }}
+              {{ formatShortDate(job.resolved_ship_date) }}
             </td>
             <td class="px-3 py-2 font-semibold text-slate-800 dark:text-slate-100">
-              {{ job.assembly.part_number }}
+              {{ job.assembly.part_number }}<span v-if="identitySuffix(job)" class="text-xs text-slate-500 font-normal ml-1">{{ identitySuffix(job) }}</span>
             </td>
             <td class="px-3 py-2 tabular-nums text-right text-slate-700 dark:text-slate-300">
               {{ job.quantity }}
             </td>
             <td class="px-3 py-2 font-medium tracking-wider text-slate-700 dark:text-slate-300">
-              {{ buildLabel(job.build_type) }}
+              <div v-if="buildLabel(job.build_type)">{{ buildLabel(job.build_type) }}</div>
+              <div v-if="job.repeat_reference?.trim()">{{ job.repeat_reference }}</div>
             </td>
             <td class="px-3 py-2 whitespace-normal text-slate-500 dark:text-slate-400 prose prose-sm dark:prose-invert max-w-none"
                 v-html="renderNotes(job.assembly.base_mfg_notes)"></td>
-            <td class="px-3 py-2 text-slate-700 dark:text-slate-300">
+            <td class="px-3 py-2 text-[0.85em] text-slate-700 dark:text-slate-300">
               {{ job.customer.name }}
             </td>
             <td class="px-3 py-2 align-top">

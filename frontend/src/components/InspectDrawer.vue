@@ -208,6 +208,71 @@ function flatten(value: unknown, prefix = ''): Array<[string, string]> {
 const flatEntries = computed<Array<[string, string]>>(() =>
   props.row ? flatten(props.row) : [],
 )
+
+// ── read-mode curated rendering ──────────────────────────────────────────────
+import { useInspectVerbosity } from '@/composables/useInspectVerbosity'
+import { useJobFormatters } from '@/composables/useJobFormatters'
+
+const { showAllData, toggle: toggleShowAllData } = useInspectVerbosity()
+const { identitySuffix, buildLabel } = useJobFormatters()
+
+interface CuratedField {
+  label: string
+  value: string
+}
+
+function salespersonLabel(job: JobReadExpanded): string {
+  if (!job.salesperson) return '—'
+  const name = (job.salesperson.name ?? '').trim()
+  return name ? `${job.salesperson.code} — ${name}` : job.salesperson.code
+}
+
+function classificationLabel(assembly: any): string {
+  if (!assembly.classifications || assembly.classifications.length === 0) return '—'
+  return assembly.classifications.map((c: any) => c.code).join(', ')
+}
+
+function buildTypeLabel(job: JobReadExpanded): string {
+  const bt = buildLabel(job.build_type)
+  const rr = (job.repeat_reference ?? '').trim()
+  if (bt && rr) return `${bt} · RONC ${rr}`
+  if (bt) return bt
+  if (rr) return `RONC ${rr}`
+  return '—'
+}
+
+function lineAssignmentLabel(job: JobReadExpanded): string {
+  const flags = []
+  if (job.line_1) flags.push('1')
+  if (job.line_2) flags.push('2')
+  if (job.line_3) flags.push('3')
+  if (flags.length === 0) return '—'
+  return `Line: ${flags.join(', ')}`
+}
+
+function shipDateField(job: JobReadExpanded): CuratedField {
+  if (job.status === 'planned') {
+    return { label: 'Ship date (planned)', value: job.resolved_ship_date ?? '—' }
+  }
+  return { label: 'Shipped', value: job.shipped_at ?? '—' }
+}
+
+const curated = computed<CuratedField[]>(() => {
+  const job = props.row
+  if (!job) return []
+  return [
+    { label: 'Part number', value: job.assembly.part_number + identitySuffix(job) },
+    { label: 'Customer', value: job.customer.name },
+    { label: 'Salesperson', value: salespersonLabel(job) },
+    { label: 'Classification', value: classificationLabel(job.assembly) },
+    { label: 'Build type', value: buildTypeLabel(job) },
+    { label: 'Quantity', value: String(job.quantity) },
+    shipDateField(job),
+    { label: 'Ship lead time', value: job.ship_lead_time_raw ?? '—' },
+    { label: 'Ship method', value: job.ship_method ?? '—' },
+    { label: 'Line', value: lineAssignmentLabel(job) },
+  ]
+})
 </script>
 
 <template>
@@ -244,7 +309,30 @@ const flatEntries = computed<Array<[string, string]>>(() =>
                 class="shrink-0 text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-200">✕</button>
       </div>
 
-      <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
+      <div class="mb-4 flex items-center justify-end">
+        <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400 cursor-pointer">
+          <input
+            type="checkbox"
+            :checked="showAllData"
+            @change="toggleShowAllData"
+            data-testid="inspect-show-all-toggle"
+            class="rounded border-slate-300 text-blue-600 focus:ring-blue-500/60"
+          />
+          Show All Data
+        </label>
+      </div>
+
+      <dl v-if="!showAllData" class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
+        <template v-for="(field, i) in curated" :key="i">
+          <dt class="font-medium text-slate-500 dark:text-slate-400
+                     whitespace-nowrap">{{ field.label }}</dt>
+          <dd class="text-slate-800 dark:text-slate-200 break-words">
+            {{ field.value }}
+          </dd>
+        </template>
+      </dl>
+
+      <dl v-else class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
         <template v-for="[key, value] in flatEntries" :key="key">
           <dt class="font-mono text-xs text-slate-500 dark:text-slate-400
                      pt-1 whitespace-nowrap">{{ key }}</dt>

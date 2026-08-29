@@ -49,6 +49,12 @@ const emit = defineEmits<{
   inspect: [fields: AuditBomFields]
 }>()
 
+type GridRowKey = number
+interface GridRow {
+  key: GridRowKey
+  fields: AuditBomFields
+}
+
 const COLUMNS: { key: keyof AuditBomFields; label: string }[] = [
   { key: 'find_number', label: 'Find #' },
   { key: 'component_part_number', label: 'Component P/N' },
@@ -60,7 +66,12 @@ const COLUMNS: { key: keyof AuditBomFields; label: string }[] = [
   { key: 'quantity_on_hand', label: 'Qty on hand' },
 ]
 
-const rows = ref<AuditBomFields[]>([emptyAuditBomFields()])
+let rowKeyCounter = 0
+function nextGridRowKey(): GridRowKey {
+  return rowKeyCounter++
+}
+
+const rows = ref<GridRow[]>([{ key: nextGridRowKey(), fields: emptyAuditBomFields() }])
 const note = ref('')
 const pasteText = ref('')
 const banner = ref<{ tone: 'error' | 'warn'; message: string } | null>(null)
@@ -86,16 +97,19 @@ const acceptDisabled = computed(
 function seedFromRecord(record: SecondOpsRecord): void {
   rows.value = [
     ...(record.lines ?? []).map((line) => ({
-      find_number: line.find_number,
-      component_part_number: line.component_part_number,
-      per_board_count: line.per_board_count,
-      ref_des: line.ref_des,
-      description: line.description,
-      mount_type: line.mount_type,
-      quantity_needed: line.quantity_needed,
-      quantity_on_hand: line.quantity_on_hand,
+      key: nextGridRowKey(),
+      fields: {
+        find_number: line.find_number,
+        component_part_number: line.component_part_number,
+        per_board_count: line.per_board_count,
+        ref_des: line.ref_des,
+        description: line.description,
+        mount_type: line.mount_type,
+        quantity_needed: line.quantity_needed,
+        quantity_on_hand: line.quantity_on_hand,
+      }
     })),
-    emptyAuditBomFields(),
+    { key: nextGridRowKey(), fields: emptyAuditBomFields() },
   ]
   note.value = record.unexpected_inclusions ?? ''
 }
@@ -132,8 +146,12 @@ function handlePaste(): void {
     return
   }
   banner.value = null
-  const kept = rows.value.filter((row) => !isBlankAuditBomLine(row))
-  rows.value = [...kept, ...result.lines, emptyAuditBomFields()]
+  const kept = rows.value.filter((row) => !isBlankAuditBomLine(row.fields))
+  rows.value = [
+    ...kept,
+    ...result.lines.map(fields => ({ key: nextGridRowKey(), fields })),
+    { key: nextGridRowKey(), fields: emptyAuditBomFields() }
+  ]
   pasteText.value = ''
 }
 
@@ -148,16 +166,21 @@ function handlePasteEvent(): void {
 
 function ensureTrailingBlankRow(): void {
   const last = rows.value[rows.value.length - 1]
-  if (last === undefined || !isBlankAuditBomLine(last)) {
-    rows.value = [...rows.value, emptyAuditBomFields()]
+  if (last === undefined || !isBlankAuditBomLine(last.fields)) {
+    rows.value = [...rows.value, { key: nextGridRowKey(), fields: emptyAuditBomFields() }]
   }
+}
+
+function removeGridRow(index: number): void {
+  rows.value.splice(index, 1)
+  ensureTrailingBlankRow()
 }
 
 async function accept(): Promise<void> {
   const job = props.job
   if (job === null || acceptDisabled.value) return
 
-  const lines = rows.value.filter((row) => !isBlankAuditBomLine(row))
+  const lines = rows.value.map(r => r.fields).filter((fields) => !isBlankAuditBomLine(fields))
   const trimmedNote = note.value.trim()
   saving.value = true
   banner.value = null
@@ -276,31 +299,40 @@ async function accept(): Promise<void> {
                     <th v-for="column in COLUMNS" :key="column.key" class="px-2 py-1">
                       {{ column.label }}
                     </th>
-                    <th class="px-2 py-1 w-8"></th>
+                    <th class="px-2 py-1 w-20"></th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
-                  <tr v-for="(row, index) in rows" :key="index" data-testid="second-ops-grid-row">
+                  <tr v-for="(row, index) in rows" :key="row.key" data-testid="second-ops-grid-row">
                     <td v-for="column in COLUMNS" :key="column.key" class="px-1 py-0.5">
                       <input
-                        :value="row[column.key] ?? ''"
+                        :value="row.fields[column.key] ?? ''"
                         :data-testid="`second-ops-grid-${column.key}`"
                         class="w-full min-w-24 rounded border border-transparent hover:border-slate-300 dark:hover:border-slate-600
                                bg-transparent text-slate-800 dark:text-slate-200 px-1 py-0.5
                                focus:outline-none focus:ring-2 focus:ring-blue-500/60"
                         @input="(event) => {
                           const value = (event.target as HTMLInputElement).value
-                          row[column.key] = value === '' ? null : value
+                          row.fields[column.key] = value === '' ? null : value
                           ensureTrailingBlankRow()
                         }"
                       />
                     </td>
-                    <td class="px-1 py-0.5 text-right">
+                    <td class="px-1 py-0.5 text-right whitespace-nowrap">
+                      <button
+                        v-if="index !== rows.length - 1"
+                        type="button"
+                        data-testid="second-ops-grid-remove-btn"
+                        class="px-1 text-xs text-red-600 dark:text-red-400 hover:underline mr-2"
+                        @click.stop="removeGridRow(index)"
+                      >
+                        Remove
+                      </button>
                       <button
                         type="button"
                         data-testid="second-ops-grid-inspect-btn"
                         class="px-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
-                        @click.stop="emit('inspect', row)"
+                        @click.stop="emit('inspect', row.fields)"
                       >
                         View
                       </button>
@@ -312,7 +344,7 @@ async function accept(): Promise<void> {
 
             <label class="block mb-4">
               <span class="text-sm font-medium text-slate-700 dark:text-slate-300">
-                Unexpected inclusions
+                Unexpected Inclusions
               </span>
               <textarea
                 v-model="note"

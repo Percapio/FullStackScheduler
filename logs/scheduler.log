@@ -28,3 +28,14 @@
 2026-06-03 23:27:55,996 INFO uvicorn.error: Waiting for application startup.
 2026-06-03 23:27:55,997 INFO uvicorn.error: Application startup complete.
 2026-06-03 23:27:55,997 INFO uvicorn.error: Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-08-29 09:26:54,894 INFO scheduler.bootstrap: Running Alembic upgrade head against sqlite:///D:/Dev/Scheduler/Schedule/backend/outputs/db/schedule.db (scripts=D:\Dev\Scheduler\Schedule\backend\alembic)
+2026-08-29 09:26:55,047 INFO alembic.runtime.migration: Context impl SQLiteImpl.
+2026-08-29 09:26:55,047 INFO alembic.runtime.migration: Will assume non-transactional DDL.
+2026-08-29 09:26:55,591 INFO uvicorn.error: Started server process [37212]
+2026-08-29 09:26:55,591 INFO uvicorn.error: Waiting for application startup.
+2026-08-29 09:26:55,591 INFO uvicorn.error: Application startup complete.
+2026-08-29 09:26:55,592 INFO uvicorn.error: Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-08-29 11:21:21,729 INFO uvicorn.error: Shutting down
+2026-08-29 11:21:21,837 INFO uvicorn.error: Waiting for application shutdown.
+2026-08-29 11:21:21,838 INFO uvicorn.error: Application shutdown complete.
+2026-08-29 11:21:21,838 INFO uvicorn.error: Finished server process [37212]

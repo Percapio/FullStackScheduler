@@ -1,9 +1,26 @@
 import type { JobReadExpanded } from '@/api/history'
 
-export function useJobFormatters() {
+export interface Clock {
+  currentYear(): number
+}
+
+export const systemClock: Clock = {
+  currentYear: () => (new Date).getFullYear()
+}
+
+export function useJobFormatters(clock: Clock = systemClock) {
   function formatDate(iso: string | null | undefined): string {
     if (!iso) return '—'
     return iso.slice(0, 10)
+  }
+
+  function formatShortDate(iso: string | null | undefined): string {
+    if (!iso) return '—'
+    const dateYear = iso.slice(0, 4)
+    if (dateYear === String(clock.currentYear())) {
+      return iso.slice(5, 10)
+    }
+    return `${iso.slice(5, 10)}-${iso.slice(2, 4)}`
   }
 
   function buildLabel(bt: string | null | undefined): string {
@@ -12,10 +29,7 @@ export function useJobFormatters() {
   }
 
   function identitySuffix(job: JobReadExpanded): string {
-    const parts: string[] = []
-    if (job.split_suffix) parts.push(job.split_suffix)
-    if (job.repeat_reference) parts.push(`RONC ${job.repeat_reference}`)
-    return parts.length ? ' ' + parts.join(' · ') : ''
+    return job.split_suffix ? ' ' + job.split_suffix : ''
   }
 
   function renderNotes(raw: string | null | undefined): string {
@@ -38,10 +52,13 @@ export function useJobFormatters() {
    * Matches what operators read in the workbook (audit #16).
    */
   function jobLabel(partNumber: string, job: JobReadExpanded): string {
-    const suffix = identitySuffix(job)
+    const parts: string[] = []
+    if (job.split_suffix) parts.push(job.split_suffix)
+    if (job.repeat_reference) parts.push(`RONC ${job.repeat_reference}`)
+    const suffix = parts.length ? ' ' + parts.join(' · ') : ''
     const build  = buildLabel(job.build_type)
     return `${partNumber}${suffix}${build ? ' ' + build : ''}`
   }
 
-  return { formatDate, buildLabel, identitySuffix, jobLabel, renderNotes }
+  return { formatDate, formatShortDate, buildLabel, identitySuffix, jobLabel, renderNotes }
 }

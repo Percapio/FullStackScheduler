@@ -128,7 +128,7 @@ const COLUMNS: { key: keyof AuditBomFields; label: string }[] = [
 
             <section class="mb-6">
               <h4 class="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Unexpected inclusions
+                Unexpected Inclusions
               </h4>
               <p
                 data-testid="second-ops-record-note"

@@ -63,7 +63,7 @@ onMounted(() => store.load())
             <th class="px-3 py-2">Ship Date</th>
             <th class="px-3 py-2">Job</th>
             <th class="px-3 py-2 text-right">Qty</th>
-            <th class="px-3 py-2">ROWC/RONC</th>
+            <th class="px-3 py-2">REPEAT</th>
             <th class="px-3 py-2">Mfg Notes</th>
             <th class="px-3 py-2">Customer</th>
             <th class="px-3 py-2">2nd OPS</th>
@@ -92,11 +92,12 @@ onMounted(() => store.load())
                 {{ job.quantity }}
               </td>
               <td class="px-3 py-2 font-medium tracking-wider text-slate-700 dark:text-slate-300">
-                {{ buildLabel(job.build_type) }}
+                <div v-if="buildLabel(job.build_type)">{{ buildLabel(job.build_type) }}</div>
+                <div v-if="job.repeat_reference?.trim()">{{ job.repeat_reference }}</div>
               </td>
               <td class="px-3 py-2 whitespace-normal text-slate-500 dark:text-slate-400 prose prose-sm dark:prose-invert max-w-none"
                   v-html="renderNotes(job.assembly.base_mfg_notes)" />
-              <td class="px-3 py-2 text-slate-700 dark:text-slate-300">
+              <td class="px-3 py-2 text-[0.85em] text-slate-700 dark:text-slate-300">
                 {{ job.customer.name }}
               </td>
               <td class="px-3 py-2 align-top">

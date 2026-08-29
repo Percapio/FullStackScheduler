@@ -81,13 +81,24 @@ describe('SecondOpsCell', () => {
     expect(wrapper.find('[data-testid="second-ops-edit-btn"]').exists()).toBe(false)
   })
 
-  it('renders find number, description and quantity for each preview line', () => {
+  it('renders find number for each preview line and places description in title', () => {
     const wrapper = mountCell({ summary: makeSummary() })
 
     const line = wrapper.find('[data-testid="second-ops-preview-line"]')
-    expect(line.text()).toContain('1')
-    expect(line.text()).toContain('CAP 0.1uF')
-    expect(line.text()).toContain('40')
+    expect(line.text()).toBe('#1')
+    expect(line.attributes('title')).toBe('CAP 0.1uF')
+  })
+
+  it('renders an em-dash and no title attribute when line fields are null', () => {
+    const wrapper = mountCell({
+      summary: makeSummary({
+        preview: [makeLine({ find_number: null, description: null })],
+      }),
+    })
+
+    const line = wrapper.find('[data-testid="second-ops-preview-line"]')
+    expect(line.text()).toBe('—')
+    expect(line.attributes('title')).toBeUndefined()
   })
 
   it('emits inspect with the whole line, not a three-field projection', () => {
@@ -109,17 +120,25 @@ describe('SecondOpsCell', () => {
     const viewAll = wrapper.find('[data-testid="second-ops-view-all-btn"]')
     expect(viewAll.exists()).toBe(true)
     expect(viewAll.text()).toContain('56')
+    expect(wrapper.find('[data-testid="second-ops-adds-btn"]').exists()).toBe(false)
   })
 
-  it('offers View all for a note with no extra lines', () => {
-    // has_unexpected_inclusions is a boolean on the summary, so the note is
-    // otherwise unreachable from the cell.
+  it('offers adds for a note with no extra lines', () => {
     const wrapper = mountCell({
       summary: makeSummary({ line_count: 1, preview: [makeLine()], has_unexpected_inclusions: true }),
       readonly: true,
     })
 
+    expect(wrapper.find('[data-testid="second-ops-view-all-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="second-ops-adds-btn"]').exists()).toBe(true)
+  })
+
+  it('renders both View all and adds when both conditions are met', () => {
+    const wrapper = mountCell({
+      summary: makeSummary({ line_count: 56, preview: [makeLine()], has_unexpected_inclusions: true }),
+    })
     expect(wrapper.find('[data-testid="second-ops-view-all-btn"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="second-ops-adds-btn"]').exists()).toBe(true)
   })
 
   it('omits View all when the preview already holds everything', () => {
@@ -146,7 +165,8 @@ describe('SecondOpsCell', () => {
     })
 
     expect(wrapper.element.querySelector('script')).toBeNull()
-    expect(wrapper.text()).toContain('<script>alert(1)</script>')
+    expect(wrapper.attributes('title')).toBeUndefined() // it's on the button
+    expect(wrapper.find('[data-testid="second-ops-preview-line"]').attributes('title')).toBe('<script>alert(1)</script>')
   })
 
   it('stops click propagation so a History row does not also toggle lineage', async () => {

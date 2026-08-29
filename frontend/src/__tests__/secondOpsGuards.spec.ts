@@ -146,3 +146,47 @@ describe('Phase 22 pre-flight greps', () => {
     expect(recordModal).not.toContain('accept')
   })
 })
+
+describe('Phase 23 pre-flight greps', () => {
+  it('new Date( in composables/useJobFormatters.ts', () => {
+    const formatters = readRaw(join(SRC, 'composables', 'useJobFormatters.ts'))
+    expect(formatters).not.toContain('new Date(')
+  })
+
+  it('toISOString in composables/useJobFormatters.ts', () => {
+    const formatters = readRaw(join(SRC, 'composables', 'useJobFormatters.ts'))
+    expect(formatters).not.toContain('toISOString')
+  })
+
+  it('v-html in the REPEAT <td> of either grid', () => {
+    const shipping = readRaw(join(SRC, 'views', 'ShippingView.vue'))
+    const history = readRaw(join(SRC, 'views', 'HistoryView.vue'))
+    const shippingVHtml = (shipping.match(/v-html/g) ?? []).length
+    expect(shippingVHtml).toBe(1)
+    const historyVHtml = (history.match(/v-html/g) ?? []).length
+    expect(historyVHtml).toBe(1)
+  })
+
+  it('text-xs on a customer <td>', () => {
+    const shipping = readRaw(join(SRC, 'views', 'ShippingView.vue'))
+    const history = readRaw(join(SRC, 'views', 'HistoryView.vue'))
+    expect(shipping).not.toMatch(/text-xs[^>]*>[^<]*{{\s*job\.customer\.name\s*}}/)
+    expect(history).not.toMatch(/text-xs[^>]*>[^<]*{{\s*job\.customer\.name\s*}}/)
+  })
+
+  it('RONC in composables/useJobFormatters.ts', () => {
+    const formatters = readRaw(join(SRC, 'composables', 'useJobFormatters.ts'))
+    const hits = (formatters.match(/RONC/g) ?? []).length
+    expect(hits).toBe(1)
+  })
+
+  it(':key="index" in SecondOpsEntryModal.vue', () => {
+    const modal = readRaw(join(SRC, 'components', 'SecondOpsEntryModal.vue'))
+    expect(modal).not.toContain(':key="index"')
+  })
+
+  it('salesperson_id in InspectDrawer.vue', () => {
+    const drawer = readRaw(join(SRC, 'components', 'InspectDrawer.vue'))
+    expect(drawer).not.toContain('salesperson_id')
+  })
+})

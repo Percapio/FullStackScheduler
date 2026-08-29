@@ -60,33 +60,41 @@ describe('InspectDrawer', () => {
     expect(bodyHtml()).not.toContain('drawer-overlay')
   })
 
-  it('flattens nested objects with dotted keys (Q4)', () => {
+  it('flattens nested objects with dotted keys (Q4)', async () => {
+    window.localStorage.setItem('inspect-drawer-show-all', 'true')
     mountDrawer(makeJob())
     const html = bodyHtml()
     expect(html).toContain('assembly.part_number')
     expect(html).toContain('customer.name')
     expect(html).toContain('Acme Corp')
+    window.localStorage.clear()
   })
 
-  it('joins all-scalar arrays into comma-separated strings', () => {
+  it('joins all-scalar arrays into comma-separated strings', async () => {
+    window.localStorage.setItem('inspect-drawer-show-all', 'true')
     const job = makeJob()
     ;(job as Record<string, unknown>).tags = ['fast', 'urgent']
     mountDrawer(job)
     expect(bodyHtml()).toContain('fast, urgent')
+    window.localStorage.clear()
   })
 
-  it('recurses into object arrays with bracket indices', () => {
+  it('recurses into object arrays with bracket indices', async () => {
+    window.localStorage.setItem('inspect-drawer-show-all', 'true')
     mountDrawer(makeJob())
     const html = bodyHtml()
     expect(html).toContain('assembly.classifications[0].code')
     expect(html).toContain('AS9100')
+    window.localStorage.clear()
   })
 
-  it('renders "—" for null values', () => {
+  it('renders "—" for null values', async () => {
+    window.localStorage.setItem('inspect-drawer-show-all', 'true')
     mountDrawer(makeJob({ salesperson: null }))
     const html = bodyHtml()
     expect(html).toContain('salesperson')
     expect(html).toContain('—')
+    window.localStorage.clear()
   })
 
   it('emits close on X button click', async () => {
