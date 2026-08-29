@@ -1,12 +1,8 @@
 import { defineStore } from 'pinia'
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref } from 'vue'
 import {
-  discardHistoryJob,
-  editHistoryJob,
   fetchJobHistory,
-  fetchJobLineage,
   type JobReadExpanded,
-  type HistoryEditDraft,
 } from '@/api/history'
 // Read-only by construction: fetchSecondOps ONLY. putSecondOps is deliberately
 // absent from this module and from HistoryView's import graph — a write action
@@ -14,7 +10,6 @@ import {
 // now. History is the audit trail; a shipped record does not change after the
 // fact (Decision 10).
 import { fetchSecondOps, type AuditBomFields, type SecondOpsFetch } from '@/api/secondOps'
-import { useToast } from '@/composables/useToast'
 
 export type { HistoryEditError, HistoryEditDraft } from '@/api/history'
 
@@ -22,11 +17,6 @@ const PAGE_SIZE = 50
 
 const SECOND_OPS_FETCH_FAILED =
   'Could not load the 2nd OPS record. Check that the backend is running and retry.'
-
-export type LineageState =
-  | { status: 'loading' }
-  | { status: 'ready'; rows: JobReadExpanded[] }
-  | { status: 'error'; message: string }
 
 export const useHistoryStore = defineStore('history', () => {
   const rows        = ref<JobReadExpanded[]>([])
@@ -37,8 +27,6 @@ export const useHistoryStore = defineStore('history', () => {
   const error       = ref<string | null>(null)
   const searchQuery = ref('')
 
-  const lineage   = shallowRef<Map<number, LineageState>>(new Map())
-  const expanded  = shallowRef<Set<number>>(new Set())
   const inspected = ref<JobReadExpanded | null>(null)
 
   // ---- 2nd OPS (Phase 22) — read-only ---------------------------------------
@@ -66,8 +54,6 @@ export const useHistoryStore = defineStore('history', () => {
       )
       rows.value  = res.rows
       total.value = res.total
-      expanded.value  = new Set()
-      lineage.value   = new Map()
       inspected.value = null
     } catch {
       error.value = 'Could not load shipped jobs. Check that the backend is running and retry.'
@@ -96,70 +82,27 @@ export const useHistoryStore = defineStore('history', () => {
     await load()
   }
 
-  async function toggleExpand(jobId: number) {
-    if (expanded.value.has(jobId)) {
-      expanded.value.delete(jobId)
-      expanded.value = new Set(expanded.value)
-      return
-    }
-    expanded.value.add(jobId)
-    expanded.value = new Set(expanded.value)
-
-    if (lineage.value.get(jobId)?.status === 'ready') return
-
-    lineage.value.set(jobId, { status: 'loading' })
-    lineage.value = new Map(lineage.value)
-    try {
-      const lineageRows = await fetchJobLineage(jobId)
-      lineage.value.set(jobId, { status: 'ready', rows: lineageRows })
-    } catch {
-      lineage.value.set(jobId, {
-        status: 'error',
-        message: 'Could not load lineage for this job.',
-      })
-      useToast().show('Lineage request failed. Try reopening the row.', 'error', 6000)
-    } finally {
-      lineage.value = new Map(lineage.value)
-    }
-  }
-
   function inspect(row: JobReadExpanded) { inspected.value = row }
   function closeInspect() { inspected.value = null }
 
-  /**
-   * Edit reconciliation-style fields of a shipped job.
-   *
-   * Pre:  jobId is open in the inspector; reason non-empty; edit has ≥1 non-null raw_* field.
-   * Post: on success, rows[i] and inspected are both replaced with the refreshed row.
-   *       On failure, state is untouched and the HistoryEditError is re-thrown.
-   */
-  async function editJob(jobId: number, edit: HistoryEditDraft, reason: string): Promise<void> {
-    const refreshed = await editHistoryJob(jobId, edit, reason)
-    const idx = rows.value.findIndex(r => r.id === jobId)
+  function applyEdited(job: JobReadExpanded): void {
+    const idx = rows.value.findIndex(r => r.id === job.id)
     if (idx >= 0) {
       const updated = [...rows.value]
-      updated[idx] = refreshed
+      updated[idx] = job
       rows.value = updated
     }
-    if (inspected.value !== null && inspected.value.id === jobId) {
-      inspected.value = refreshed
+    if (inspected.value !== null && inspected.value.id === job.id) {
+      inspected.value = job
     }
   }
 
-  /**
-   * Soft-delete a shipped job from History.
-   *
-   * Pre:  jobId is open in the inspector; reason non-empty.
-   * Post: on success, the row is removed from rows[], total decremented, inspected
-   *       cleared, and a success toast shown.
-   *       On failure, state is untouched and the error is re-thrown.
-   */
-  async function discardJob(jobId: number, reason: string): Promise<void> {
-    await discardHistoryJob(jobId, reason)
-    rows.value = rows.value.filter(r => r.id !== jobId)
-    total.value = Math.max(0, total.value - 1)
-    inspected.value = null
-    useToast().show(`Job #${jobId} discarded.`, 'success', 4000)
+  function applyDiscarded(job_id: number): void {
+    const idx = rows.value.findIndex(r => r.id === job_id)
+    if (idx >= 0) {
+      rows.value = rows.value.filter(r => r.id !== job_id)
+      total.value = Math.max(0, total.value - 1)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -215,9 +158,9 @@ export const useHistoryStore = defineStore('history', () => {
     secondOpsRecordJob, secondOpsRecordFetch, secondOpsItem,
     openSecondOpsRecord, closeSecondOpsRecord, retrySecondOpsRecord,
     openSecondOpsItem, closeSecondOpsItem,
-    lineage, expanded, inspected,
+    inspected,
     hasPrev, hasNext, pageStart, pageEnd,
-    load, next, prev, setSearch, toggleExpand, inspect, closeInspect,
-    editJob, discardJob,
+    load, next, prev, setSearch, inspect, closeInspect,
+    applyEdited, applyDiscarded,
   }
 })

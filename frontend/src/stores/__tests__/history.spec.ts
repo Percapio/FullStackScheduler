@@ -52,8 +52,6 @@ describe('useHistoryStore', () => {
 
     expect(store.rows).toHaveLength(2)
     expect(store.total).toBe(2)
-    expect(store.expanded.size).toBe(0)
-    expect(store.lineage.size).toBe(0)
   })
 
   it('next() increments offset by limit and reloads', async () => {
@@ -77,54 +75,32 @@ describe('useHistoryStore', () => {
     expect(store.offset).toBe(0)
   })
 
-  it('page change wipes expanded set, lineage cache, AND inspected drawer (Q7 + V1)', async () => {
-    const jobs = Array.from({ length: 50 }, (_, i) => makeJob({ id: i + 1 }))
-    mockFetchHistory.mockResolvedValue({ rows: jobs, total: 100 })
-    mockFetchLineage.mockResolvedValue([makeJob({ id: 99 })])
-
+  it('applyEdited updates rows and inspected', async () => {
+    const job = makeJob({ id: 1, quantity: 10 })
+    mockFetchHistory.mockResolvedValue({ rows: [job], total: 1 })
     const store = useHistoryStore()
     await store.load()
+    store.inspect(job)
 
-    await store.toggleExpand(1)
-    store.inspect(jobs[0])
-    expect(store.expanded.has(1)).toBe(true)
-    expect(store.lineage.has(1)).toBe(true)
+    const updated = makeJob({ id: 1, quantity: 20 })
+    store.applyEdited(updated)
+
+    expect(store.rows[0].quantity).toBe(20)
+    expect(store.inspected?.quantity).toBe(20)
+  })
+
+  it('applyDiscarded removes from rows and decrements total, but leaves inspected', async () => {
+    const job = makeJob({ id: 1 })
+    mockFetchHistory.mockResolvedValue({ rows: [job], total: 1 })
+    const store = useHistoryStore()
+    await store.load()
+    store.inspect(job)
+
+    store.applyDiscarded(1)
+
+    expect(store.rows).toHaveLength(0)
+    expect(store.total).toBe(0)
     expect(store.inspected).not.toBeNull()
-
-    await store.next()
-    expect(store.expanded.size).toBe(0)
-    expect(store.lineage.size).toBe(0)
-    expect(store.inspected).toBeNull()
-  })
-
-  it('toggleExpand triggers fetchJobLineage on first expand only (cache hit on reopen)', async () => {
-    mockFetchHistory.mockResolvedValue({ rows: [makeJob({ id: 5 })], total: 1 })
-    mockFetchLineage.mockResolvedValue([makeJob({ id: 5 }), makeJob({ id: 6 })])
-
-    const store = useHistoryStore()
-    await store.load()
-
-    await store.toggleExpand(5)
-    expect(mockFetchLineage).toHaveBeenCalledTimes(1)
-    expect(store.expanded.has(5)).toBe(true)
-
-    await store.toggleExpand(5)
-    expect(store.expanded.has(5)).toBe(false)
-
-    await store.toggleExpand(5)
-    expect(mockFetchLineage).toHaveBeenCalledTimes(1)
-  })
-
-  it('toggleExpand handles fetch rejection by storing {status:"error"} in cache', async () => {
-    mockFetchHistory.mockResolvedValue({ rows: [makeJob({ id: 7 })], total: 1 })
-    mockFetchLineage.mockRejectedValue(new Error('Network'))
-
-    const store = useHistoryStore()
-    await store.load()
-    await store.toggleExpand(7)
-
-    const state = store.lineage.get(7)
-    expect(state?.status).toBe('error')
   })
 
   it('inspect/closeInspect drive inspected ref', async () => {

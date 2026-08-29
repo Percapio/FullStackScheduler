@@ -38,6 +38,10 @@ pip install -r requirements.txt   # if a requirements file is present
 python run.py
 ```
 
+```
+uvicorn backend.app.main:app --reload
+```
+
 The API will listen on `http://localhost:8000`. Open
 `http://localhost:8000/docs` in a browser to poke at the endpoints.
 

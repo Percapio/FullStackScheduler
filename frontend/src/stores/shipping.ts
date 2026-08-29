@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
-  discardShippingJob,
   fetchDiscardedJobs,
   fetchJobRestorePreview,
   fetchShippingJobs,
@@ -19,12 +18,6 @@ import {
 } from '@/api/secondOps'
 import { isApiError } from '@/api/client'
 import { useToast } from '@/composables/useToast'
-
-export type ShippingDiscardOutcome =
-  | { kind: 'ok' }
-  | { kind: 'stale' }
-  | { kind: 'conflict'; message: string }
-  | { kind: 'network'; message: string }
 
 type RestoreOutcome =
   | { kind: 'ok'; job: JobReadExpanded }
@@ -100,46 +93,23 @@ export const useShippingStore = defineStore('shipping', () => {
     }
   }
 
-  /**
-   * Optimistic soft-delete: splices jobId from jobs[] immediately, rolls back
-   * on rejection. Mirrors useStagingStore.discardRow.
-   *
-   * Pre:  jobId is rendered in jobs[]; reason is non-empty.
-   * Post: kind='ok'       — job spliced from jobs[]; success toast shown.
-   *       kind='stale'    — jobId was not in jobs[] on entry; no-op.
-   *       kind='conflict' — already discarded; toast shown; list reloaded.
-   *       kind='network'  — non-409 transport error; error toast shown.
-   */
-  async function discardJob(jobId: number, reason: string): Promise<ShippingDiscardOutcome> {
-    const idx = jobs.value.findIndex(j => j.id === jobId)
-    if (idx === -1) return { kind: 'stale' }
+  function applyEdited(job: JobReadExpanded): void {
+    const idx = jobs.value.findIndex(j => j.id === job.id)
+    if (idx >= 0) {
+      const updated = [...jobs.value]
+      updated[idx] = job
+      jobs.value = updated
+    }
+    if (inspected.value !== null && inspected.value.id === job.id) {
+      inspected.value = job
+    }
+  }
 
-    const snapshot = jobs.value[idx]
-    jobs.value = jobs.value.filter(j => j.id !== jobId)
-
-    try {
-      await discardShippingJob(jobId, reason)
-      useToast().show('Job discarded.', 'success', 4000)
-      // Update discarded count for the pill without reloading the full list.
+  function applyDiscarded(job_id: number): void {
+    const idx = jobs.value.findIndex(j => j.id === job_id)
+    if (idx >= 0) {
+      jobs.value = jobs.value.filter(j => j.id !== job_id)
       discardedTotal.value += 1
-      return { kind: 'ok' }
-    } catch (err: unknown) {
-      // Roll back optimistic splice.
-      jobs.value = [...jobs.value.slice(0, idx), snapshot, ...jobs.value.slice(idx)]
-
-      const status = (err as { response?: { status?: number; data?: { detail?: string } } })
-        ?.response?.status
-      if (status === 409) {
-        const detail =
-          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-          'Cannot discard this job.'
-        useToast().show(typeof detail === 'string' ? detail : 'Cannot discard this job.', 'error', 6000)
-        await load()
-        return { kind: 'conflict', message: typeof detail === 'string' ? detail : 'Cannot discard this job.' }
-      }
-      const msg = 'Could not discard job. Check that the backend is running and retry.'
-      useToast().show(msg, 'error', 6000)
-      return { kind: 'network', message: msg }
     }
   }
 
@@ -394,7 +364,7 @@ export const useShippingStore = defineStore('shipping', () => {
     discardedJobs, discardedTotal, discardedLoading, discardedDrawerOpen,
     discardedOffset, discardedLimit, discardedSearchQuery,
     discardedHasPrev, discardedHasNext, discardedPageStart, discardedPageEnd,
-    load, discardJob, inspect, closeInspect,
+    load, applyEdited, applyDiscarded, inspect, closeInspect,
     loadDiscardedJobs, nextDiscardedJobsPage, prevDiscardedJobsPage,
     setDiscardedJobsSearch, openDiscardedJobsDrawer, closeDiscardedJobsDrawer,
     beginJobRestore, commitJobRestore,

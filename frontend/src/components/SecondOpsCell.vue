@@ -11,8 +11,8 @@
  *     would make every pasted BOM an injection vector. The rule is enforced in
  *     src/__tests__/secondOpsGuards.spec.ts, not just asserted here.
  *  2. @click.stop ON EVERY INTERACTIVE ELEMENT. HistoryView's <tr> carries
- *     @click="toggleExpand", so without .stop every item click also toggles the
- *     lineage accordion.
+ *     @click="store.inspect", so without .stop every item click also opens the
+ *     inspector drawer.
  *  3. summary === null RENDERS NOTHING AT ALL, not `unaudited`. Only the two
  *     grid endpoints populate it; treating null as "never audited" would assert
  *     it about jobs from every other endpoint.
@@ -75,13 +75,13 @@ function previewTooltip(line: SecondOpsLine): string | Absent {
     </template>
 
     <template v-else-if="state === 'not_applicable'">
-      <div class="flex items-center gap-2">
+      <div class="flex flex-col gap-1">
         <span class="text-slate-500 dark:text-slate-400" data-testid="second-ops-na">N/A</span>
         <button
           v-if="!readonly"
           type="button"
           data-testid="second-ops-edit-btn"
-          class="rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600
+          class="self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600
                  text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
           @click.stop="emit('audit')"
         >
@@ -103,7 +103,7 @@ function previewTooltip(line: SecondOpsLine): string | Absent {
           >{{ previewLabel(line) }}</button>
         </li>
       </ul>
-      <div class="flex items-center gap-2">
+      <div v-if="hasUnshownLines || hasUnexpectedInclusions" class="flex items-center gap-2">
         <button
           v-if="hasUnshownLines"
           type="button"
@@ -122,17 +122,17 @@ function previewTooltip(line: SecondOpsLine): string | Absent {
         >
           adds
         </button>
-        <button
-          v-if="!readonly"
-          type="button"
-          data-testid="second-ops-edit-btn"
-          class="rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600
-                 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-          @click.stop="emit('audit')"
-        >
-          EDIT
-        </button>
       </div>
+      <button
+        v-if="!readonly"
+        type="button"
+        data-testid="second-ops-edit-btn"
+        class="self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600
+               text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+        @click.stop="emit('audit')"
+      >
+        EDIT
+      </button>
     </template>
   </div>
 </template>

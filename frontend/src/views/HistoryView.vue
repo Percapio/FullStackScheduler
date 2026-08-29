@@ -5,7 +5,6 @@ import { useHistoryStore } from '@/stores/history'
 import { useJobFormatters } from '@/composables/useJobFormatters'
 import { useFontSize } from '@/composables/useFontSize'
 import EyeIcon from '@/components/EyeIcon.vue'
-import LineageAccordion from '@/components/LineageAccordion.vue'
 import InspectDrawer from '@/components/InspectDrawer.vue'
 // SecondOpsEntryModal is deliberately NOT imported here. History is read-only
 // (Decision 10): no Audit button, no EDIT button, and no PUT anywhere in this
@@ -16,7 +15,7 @@ import SecondOpsItemModal from '@/components/SecondOpsItemModal.vue'
 
 const store = useHistoryStore()
 const {
-  rows, total, loading, error, expanded, lineage, inspected, searchQuery,
+  rows, total, loading, error, inspected, searchQuery,
   secondOpsRecordJob, secondOpsRecordFetch, secondOpsItem,
 } = storeToRefs(store)
 const { formatDate, buildLabel, identitySuffix, renderNotes } = useJobFormatters()
@@ -79,8 +78,8 @@ onMounted(() => store.load())
                     : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-820 dark:hover:bg-slate-840'
                 ]"
                 tabindex="0"
-                @click="store.toggleExpand(job.id)"
-                @keydown.enter.space.prevent="store.toggleExpand(job.id)">
+                @click="store.inspect(job)"
+                @keydown.enter.space.prevent="store.inspect(job)">
               <td class="px-3 py-2 tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300"
                   :title="job.ship_date_text ?? undefined">
                 {{ formatDate(job.shipped_at) }}
@@ -116,24 +115,13 @@ onMounted(() => store.load())
                 </button>
               </td>
             </tr>
-            <tr v-if="expanded.has(job.id)" :key="`lineage-${job.id}`">
-              <td :colspan="8" class="p-0 border-b border-slate-200 dark:border-slate-700">
-                <LineageAccordion :job-id="job.id" :state="lineage.get(job.id)"
-                                  @retry="store.toggleExpand(job.id); store.toggleExpand(job.id)"
-                                  @inspect="store.inspect" />
-              </td>
-            </tr>
           </template>
         </tbody>
       </table>
     </div>
 
     <InspectDrawer
-      :row="inspected"
-      :can-edit="true"
-      :can-discard="true"
-      :edit-impl="store.editJob"
-      :discard-impl="store.discardJob"
+      :anchor="inspected"
       @close="store.closeInspect()"
     />
 

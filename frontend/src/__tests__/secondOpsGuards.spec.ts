@@ -87,12 +87,9 @@ describe('Phase 22 pre-flight greps', () => {
     expect(hits).toEqual([])
   })
 
-  it('carries colspan only in HistoryView, at the rendered th count', () => {
+  it('carries no colspan in any component', () => {
     const hits = filesContaining('colspan').filter((path) => !path.includes('__tests__'))
-    expect(hits.filter((path) => path.includes('LineageAccordion'))).toEqual([])
-    const historyView = readRaw(join(SRC, 'views', 'HistoryView.vue'))
-    const thCount = (historyView.match(/<th\b/g) ?? []).length
-    expect(historyView).toContain(`:colspan="${thCount}"`)
+    expect(hits).toEqual([])
   })
 
   it('treats a null summary as absent, never as unaudited', () => {

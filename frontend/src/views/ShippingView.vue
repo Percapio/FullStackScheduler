@@ -16,7 +16,7 @@ import SecondOpsItemModal from '@/components/SecondOpsItemModal.vue'
 
 const store = useShippingStore()
 const {
-  jobs, loading, error, inspected, discardedTotal,
+  jobs, loading, error, discardedTotal,
   secondOpsJob, secondOpsOpen, secondOpsFetch,
   secondOpsRecordJob, secondOpsRecordFetch, secondOpsItem,
 } = storeToRefs(store)
@@ -38,10 +38,6 @@ onMounted(() => {
   store.load()
   store.loadDiscardedJobs()
 })
-
-async function discardJob(jobId: number, reason: string): Promise<void> {
-  await store.discardJob(jobId, reason)
-}
 </script>
 
 <template>
@@ -141,9 +137,7 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
     </div>
 
     <InspectDrawer
-      :row="inspected"
-      :can-discard="true"
-      :discard-impl="discardJob"
+      :anchor="store.inspected"
       @close="store.closeInspect()"
     />
     <DiscardedJobsDrawer />

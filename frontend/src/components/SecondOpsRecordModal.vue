@@ -113,17 +113,13 @@ const COLUMNS: { key: keyof AuditBomFields; label: string }[] = [
                       class="px-2 py-1 text-slate-700 dark:text-slate-300 break-words"
                     >{{ line[column.key] ?? '—' }}</td>
                   </tr>
-                  <tr v-if="(fetch.record.lines ?? []).length === 0">
-                    <td
-                      :colspan="COLUMNS.length"
-                      class="px-2 py-4 text-center text-slate-500 dark:text-slate-400"
-                      data-testid="second-ops-record-empty"
-                    >
-                      No Audit BOM lines recorded.
-                    </td>
-                  </tr>
                 </tbody>
               </table>
+              <div v-if="(fetch.record.lines ?? []).length === 0"
+                   class="px-2 py-4 text-center text-slate-500 dark:text-slate-400"
+                   data-testid="second-ops-record-empty">
+                No Audit BOM lines recorded.
+              </div>
             </div>
 
             <section class="mb-6">

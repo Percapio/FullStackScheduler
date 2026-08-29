@@ -49,11 +49,10 @@ vi.mock('@/composables/useFontSize', () => ({
   }),
 }))
 
-function mountView(opts: { stubDrawer?: boolean; stubLineage?: boolean } = {}) {
-  const { stubDrawer = true, stubLineage = false } = opts
+function mountView(opts: { stubDrawer?: boolean } = {}) {
+  const { stubDrawer = true } = opts
   const stubs: Record<string, boolean> = {}
   if (stubDrawer) stubs.InspectDrawer = true
-  if (stubLineage) stubs.LineageAccordion = true
   return mount(HistoryView, {
     global: {
       plugins: [createPinia()],
@@ -84,22 +83,23 @@ describe('HistoryView', () => {
     expect(rows.length).toBe(3)
   })
 
-  it('clicking a row toggles the accordion', async () => {
+  it('clicking a row opens the drawer', async () => {
     mockFetchHistory.mockResolvedValue({
       rows: [makeJob({ id: 10 })],
       total: 1,
     })
-    mockFetchLineage.mockResolvedValue([makeJob({ id: 10 })])
     const w = mountView()
     await flushPromises()
 
     const row = w.find('tbody tr')
     await row.trigger('click')
     await flushPromises()
-    expect(w.findComponent({ name: 'LineageAccordion' }).exists()).toBe(true)
+    
+    const store = useHistoryStore()
+    expect(store.inspected?.id).toBe(10)
   })
 
-  it('clicking the eye icon opens the drawer but does not toggle the accordion (Q5)', async () => {
+  it('clicking the eye icon opens the drawer', async () => {
     mockFetchHistory.mockResolvedValue({
       rows: [makeJob({ id: 20 })],
       total: 1,
@@ -111,7 +111,8 @@ describe('HistoryView', () => {
     await eyeBtn.trigger('click')
     await flushPromises()
 
-    expect(w.findComponent({ name: 'LineageAccordion' }).exists()).toBe(false)
+    const store = useHistoryStore()
+    expect(store.inspected?.id).toBe(20)
   })
 
   it('empty state card renders "No shipped jobs" when total=0 and no active search', async () => {
@@ -152,27 +153,6 @@ describe('HistoryView', () => {
     expect(w.text()).not.toContain('Showing 1–1 of 1')
   })
 
-  it('@inspect from a LineageAccordion Eye button forwards to store.inspect', async () => {
-    mockFetchHistory.mockResolvedValue({
-      rows: [makeJob({ id: 100, _pn: 'PARENT' })],
-      total: 1,
-    })
-    mockFetchLineage.mockResolvedValue([
-      makeJob({ id: 100, _pn: 'PARENT' }),
-      makeJob({ id: 201, _pn: 'CHILD-A' }),
-    ])
-    const w = mountView()
-    await flushPromises()
-
-    await w.find('tbody tr').trigger('click')
-    await flushPromises()
-
-    await w.find('button[aria-label="Inspect job 201"]').trigger('click')
-    await flushPromises()
-
-    const store = useHistoryStore()
-    expect(store.inspected?.id).toBe(201)
-  })
 
   it('un-shipped job is no longer rendered after a re-fetch', async () => {
     // Regression for Phase 16 un-ship: HistoryView must reflect the re-fetched
@@ -251,20 +231,6 @@ describe('HistoryView — 2nd OPS column', () => {
     expect(w.findAll('thead th').map((th) => th.text())).toContain('2nd OPS')
   })
 
-  it('gives the lineage row a colspan equal to the rendered th count', async () => {
-    mockFetchHistory.mockResolvedValue({ rows: [withSecondOps(10)], total: 1 })
-    mockFetchLineage.mockResolvedValue([makeJob({ id: 10 })])
-    const w = mountView({ stubLineage: true })
-    await flushPromises()
-
-    const thCount = w.findAll('thead th').length
-    await w.find('tbody tr').trigger('click')
-    await flushPromises()
-
-    const lineageCell = w.findAll('tbody td').find((td) => td.attributes('colspan'))
-    expect(thCount).toBe(8)
-    expect(lineageCell?.attributes('colspan')).toBe(String(thCount))
-  })
 
   it('renders no Audit and no EDIT — History is read-only', async () => {
     mockFetchHistory.mockResolvedValue({
@@ -303,16 +269,17 @@ describe('HistoryView — 2nd OPS column', () => {
     w.unmount()
   })
 
-  it('opens the item modal on a preview click without toggling the accordion', async () => {
+  it('opens the item modal on a preview click without opening the drawer', async () => {
     mockFetchHistory.mockResolvedValue({ rows: [withSecondOps(30)], total: 1 })
-    const w = mountView({ stubLineage: true })
+    const w = mountView()
     await flushPromises()
 
     await w.find('[data-testid="second-ops-preview-line"]').trigger('click')
     await flushPromises()
 
     expect(document.body.querySelector('[data-testid="second-ops-item-modal"]')).not.toBeNull()
-    expect(w.findComponent({ name: 'LineageAccordion' }).exists()).toBe(false)
+    const store = useHistoryStore()
+    expect(store.inspected).toBeNull()
     w.unmount()
   })
 
