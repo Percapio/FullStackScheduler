@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, create_model, field_serializer, model_validator
 
@@ -191,11 +191,113 @@ class JobRead(_ORMModel, JobBase):
         return float(v) if v is not None else None
 
 
+# ---- 2nd OPS (Phase 22) ------------------------------------------------------
+
+
+SecondOpsState = Literal["unaudited", "not_applicable", "recorded"]
+
+
+class AuditBomFields(BaseModel):
+    """The eight retained Audit BOM fields, and nothing else.
+
+    Shared by saved rows, unsaved parsed rows and the read-only detail modal, so
+    a row does not have to be persisted to be displayable.
+
+    The max_lengths ARE the §2.2 column widths — one declaration, not two.
+    Declaring them here is what makes the write path's per-field enforcement
+    automatic: SecondOpsWriteRequest carries these same models.
+
+    Values are stored verbatim — no trim, no case change, no numeric coercion.
+    Leading spaces in a pasted description are part of what the operator
+    transcribed.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    find_number: str | None = Field(default=None, max_length=32)
+    component_part_number: str | None = Field(default=None, max_length=128)
+    per_board_count: str | None = Field(default=None, max_length=32)
+    ref_des: str | None = Field(default=None, max_length=2048)
+    description: str | None = Field(default=None, max_length=255)
+    mount_type: str | None = Field(default=None, max_length=16)
+    quantity_needed: str | None = Field(default=None, max_length=32)
+    quantity_on_hand: str | None = Field(default=None, max_length=32)
+
+
+class SecondOpsLine(AuditBomFields):
+    """A persisted line: the eight fields plus its identity and position."""
+
+    id: int
+    line_order: int
+
+
+class SecondOpsLimits(BaseModel):
+    """Server-owned input bounds, echoed to the client so it never hardcodes one.
+
+    Delivered on the record read rather than a separate settings endpoint: the
+    entry modal already fetches the record on open and has nowhere else to learn
+    the caps. A client-side constant drifts the moment an operator changes
+    second_ops_max_lines — pastes between the two numbers would pass the local
+    guard and come back 422 with no line number.
+    """
+
+    max_lines: int
+    note_max_chars: int
+
+
+class SecondOpsSummary(BaseModel):
+    """Bounded per-job summary carried by the two grid endpoints.
+
+    preview carries WHOLE lines, not a narrowed projection: the item modal
+    renders all eight fields and opening it from a grid cell must not need a
+    second fetch. The cell still renders only three of them.
+    """
+
+    state: SecondOpsState
+    line_count: int
+    reviewed_at: datetime | None = None
+    has_unexpected_inclusions: bool = False
+    preview: list[SecondOpsLine] = Field(default_factory=list)
+
+
+class SecondOpsRecord(BaseModel):
+    """The complete 2nd OPS record for one job, unbounded by the preview cap."""
+
+    job_id: int
+    state: SecondOpsState
+    reviewed_at: datetime | None = None
+    unexpected_inclusions: str | None = None
+    lines: list[SecondOpsLine] = Field(default_factory=list)
+    limits: SecondOpsLimits
+
+
+class SecondOpsWriteRequest(BaseModel):
+    """Whole-set replace payload for PUT /api/jobs/{job_id}/second-ops.
+
+    The client parses the paste and maps the columns; the server trusts neither.
+    Per-field widths are enforced here by AuditBomFields. The line count and the
+    note length are bounded by Settings and checked in
+    validate_second_ops_payload, because both are operator-configurable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lines: list[AuditBomFields] = Field(default_factory=list)
+    unexpected_inclusions: str | None = None
+
+
 class JobReadExpanded(JobRead):
     assembly: AssemblyRead
     customer: CustomerRead
     salesperson: SalespersonRead | None = None
     build_qualifier: BuildQualifier | None = None
+
+    # `= None` is mandatory, not stylistic. The summary is attached as a
+    # non-mapped transient attribute by the two grid endpoints only; without the
+    # default, Pydantic treats it as required and model_validate raises on every
+    # ORM instance produced by the other seven JobReadExpanded endpoints.
+    # None means "this endpoint does not carry it", NOT "unaudited".
+    second_ops: SecondOpsSummary | None = None
 
 
 # ---- import models -----------------------------------------------------------

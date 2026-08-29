@@ -486,6 +486,12 @@ _COLUMN_MAP: dict[str, str] = {
     "BOM COMPARE / PHOTOS": "raw_bom_compare_photos",
 }
 
+# Import-time drift guard (Phase 22 §1.1). _COLUMN_MAP keys are compared against
+# normalized sheet headers, so a stray space in one of them re-opens the silent
+# column-drop this phase closed. reader owns KNOWN_HEADERS and checks it itself;
+# the keys travel here because reader must not import ingest.
+reader.assert_constants_are_normal(_COLUMN_MAP.keys())
+
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()

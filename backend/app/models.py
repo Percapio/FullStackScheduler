@@ -20,7 +20,15 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, deferred, mapped_column, relationship
+from sqlalchemy import select
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    column_property,
+    deferred,
+    mapped_column,
+    relationship,
+)
 
 
 class Base(DeclarativeBase):
@@ -215,9 +223,84 @@ class Job(Base, TimestampMixin):
 
     discarded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # ---- 2nd OPS (Phase 22) --------------------------------------------------
+    # There is no stored status. NULL reviewed_at means never audited; the
+    # not_applicable / recorded split derives from the line count and this note,
+    # so no invariant binds two tables together.
+    second_ops_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    second_ops_unexpected_inclusions: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+
     assembly: Mapped[Assembly] = relationship(back_populates="jobs")
     customer: Mapped[Customer] = relationship(back_populates="jobs")
     salesperson: Mapped[Salesperson | None] = relationship(back_populates="jobs")
+    second_ops_lines: Mapped[list[JobSecondOpsLine]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="JobSecondOpsLine.line_order",
+    )
+
+
+class JobSecondOpsLine(Base, TimestampMixin):
+    """Component-level Audit BOM transcription for one job. One row per BOM line.
+
+    All eight source fields are stored verbatim as text: nothing sums, sorts or
+    compares them, and operators type values like '40 ea' by hand, so a numeric
+    parse would add a failure path and buy no capability.
+
+    find_number is a source-sheet ordinal, not an identity — it repeats across
+    jobs and can repeat within one paste. The surrogate PK plus line_order is
+    what orders and identifies rows.
+
+    component_part_number is deliberately not named part_number:
+    Assembly.part_number is the assembled board, this is a component on it.
+
+    Every column is bounded, ref_des included. ref_des holds a comma-joined
+    designator list and is the one field with a plausible case for Text — which
+    is exactly what would make the per-field width enforcement in
+    validate_second_ops_payload vacuous for the field most likely to carry a
+    large paste. The longest Ref_Des observed in B142006 AUDIT BOM.xlsx is 131
+    characters; 2048 is ~15x that.
+    """
+
+    __tablename__ = "job_second_ops_lines"
+    __table_args__ = (
+        Index("ix_second_ops_job_order", "job_id", "line_order"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    line_order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    find_number: Mapped[str | None] = mapped_column(String(32))
+    component_part_number: Mapped[str | None] = mapped_column(String(128))
+    per_board_count: Mapped[str | None] = mapped_column(String(32))
+    ref_des: Mapped[str | None] = mapped_column(String(2048))
+    description: Mapped[str | None] = mapped_column(String(255))
+    mount_type: Mapped[str | None] = mapped_column(String(16))
+    quantity_needed: Mapped[str | None] = mapped_column(String(32))
+    quantity_on_hand: Mapped[str | None] = mapped_column(String(32))
+
+    job: Mapped[Job] = relationship(back_populates="second_ops_lines")
+
+
+# Correlated scalar COUNT over job_second_ops_lines, deferred so it is absent
+# from the ~500-row grid loads and every other Job select. Undeferred explicitly
+# by the export stream, which yields single rows and has no page to batch; the
+# summary assembler counts in its own GROUP BY instead, so a caller who forgets
+# the undefer cannot silently produce an N+1 there.
+Job.second_ops_line_count = column_property(
+    select(func.count(JobSecondOpsLine.id))
+    .where(JobSecondOpsLine.job_id == Job.id)
+    .correlate_except(JobSecondOpsLine)
+    .scalar_subquery(),
+    deferred=True,
+)
 
 
 class ImportBatch(Base, TimestampMixin):

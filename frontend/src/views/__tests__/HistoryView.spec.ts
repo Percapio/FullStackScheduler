@@ -194,3 +194,149 @@ describe('HistoryView', () => {
     expect(w.findAll('tbody tr').length).toBe(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// 2nd OPS column (Phase 22)
+// ---------------------------------------------------------------------------
+
+const mockFetchSecondOps = vi.fn()
+
+vi.mock('@/api/secondOps', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/secondOps')>()),
+  fetchSecondOps: (...args: unknown[]) => mockFetchSecondOps(...args),
+  putSecondOps: vi.fn(),
+}))
+
+function makeSecondOpsLine(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    line_order: 0,
+    find_number: '1',
+    component_part_number: 'CMP-1',
+    per_board_count: '2',
+    ref_des: 'C1, C2',
+    description: 'CAP 0.1uF',
+    mount_type: 'SMT',
+    quantity_needed: '40',
+    quantity_on_hand: '500',
+    ...overrides,
+  }
+}
+
+function withSecondOps(id: number, overrides: Record<string, unknown> = {}) {
+  return makeJob({
+    id,
+    second_ops: {
+      state: 'recorded',
+      line_count: 56,
+      reviewed_at: '2026-08-28T10:00:00',
+      has_unexpected_inclusions: true,
+      preview: [makeSecondOpsLine()],
+      ...overrides,
+    },
+  } as never)
+}
+
+describe('HistoryView — 2nd OPS column', () => {
+  beforeEach(() => {
+    mockFetchSecondOps.mockReset()
+    document.body.innerHTML = ''
+  })
+
+  it('renders a 2nd OPS header', async () => {
+    mockFetchHistory.mockResolvedValue({ rows: [withSecondOps(1)], total: 1 })
+    const w = mountView()
+    await flushPromises()
+
+    expect(w.findAll('thead th').map((th) => th.text())).toContain('2nd OPS')
+  })
+
+  it('gives the lineage row a colspan equal to the rendered th count', async () => {
+    mockFetchHistory.mockResolvedValue({ rows: [withSecondOps(10)], total: 1 })
+    mockFetchLineage.mockResolvedValue([makeJob({ id: 10 })])
+    const w = mountView({ stubLineage: true })
+    await flushPromises()
+
+    const thCount = w.findAll('thead th').length
+    await w.find('tbody tr').trigger('click')
+    await flushPromises()
+
+    const lineageCell = w.findAll('tbody td').find((td) => td.attributes('colspan'))
+    expect(thCount).toBe(8)
+    expect(lineageCell?.attributes('colspan')).toBe(String(thCount))
+  })
+
+  it('renders no Audit and no EDIT — History is read-only', async () => {
+    mockFetchHistory.mockResolvedValue({
+      rows: [withSecondOps(1, { state: 'unaudited', line_count: 0, preview: [], reviewed_at: null })],
+      total: 1,
+    })
+    const w = mountView()
+    await flushPromises()
+
+    expect(w.find('[data-testid="second-ops-audit-btn"]').exists()).toBe(false)
+    expect(w.find('[data-testid="second-ops-edit-btn"]').exists()).toBe(false)
+  })
+
+  it('offers View all (56) and opens the read-only record modal', async () => {
+    mockFetchHistory.mockResolvedValue({ rows: [withSecondOps(1)], total: 1 })
+    mockFetchSecondOps.mockResolvedValue({
+      job_id: 1,
+      state: 'recorded',
+      reviewed_at: '2026-08-28T10:00:00',
+      unexpected_inclusions: 'extra washer in kit',
+      lines: [makeSecondOpsLine()],
+      limits: { max_lines: 500, note_max_chars: 4000 },
+    })
+    const w = mountView()
+    await flushPromises()
+
+    const viewAll = w.find('[data-testid="second-ops-view-all-btn"]')
+    expect(viewAll.text()).toContain('56')
+    await viewAll.trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="second-ops-record-modal"]')).not.toBeNull()
+    expect(
+      document.body.querySelector('[data-testid="second-ops-record-note"]')?.textContent,
+    ).toContain('extra washer in kit')
+    w.unmount()
+  })
+
+  it('opens the item modal on a preview click without toggling the accordion', async () => {
+    mockFetchHistory.mockResolvedValue({ rows: [withSecondOps(30)], total: 1 })
+    const w = mountView({ stubLineage: true })
+    await flushPromises()
+
+    await w.find('[data-testid="second-ops-preview-line"]').trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="second-ops-item-modal"]')).not.toBeNull()
+    expect(w.findComponent({ name: 'LineageAccordion' }).exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('renders nothing in the cell when second_ops is null', async () => {
+    mockFetchHistory.mockResolvedValue({ rows: [makeJob({ id: 1 })], total: 1 })
+    const w = mountView()
+    await flushPromises()
+
+    expect(w.find('[data-testid="second-ops-cell"]').exists()).toBe(false)
+  })
+
+  it('renders a script tag in a description as literal text', async () => {
+    mockFetchHistory.mockResolvedValue({
+      rows: [
+        withSecondOps(1, {
+          preview: [makeSecondOpsLine({ description: '<script>alert(1)</script>' })],
+        }),
+      ],
+      total: 1,
+    })
+    const w = mountView()
+    await flushPromises()
+
+    expect(w.element.querySelector('script')).toBeNull()
+    expect(w.text()).toContain('<script>alert(1)</script>')
+  })
+})

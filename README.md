@@ -59,7 +59,7 @@ somewhere else.
 ### Ingesting your first workbook
 
 Once both are running and you have placed a workbook under `backend/data/`
-(see Section 3), import it from the command line:
+(see Section 4), import it from the command line:
 
 ```powershell
 python -m backend.app.ingest "backend/data/YOUR_WORKBOOK.xlsx"
@@ -75,14 +75,28 @@ pytest                # backend tests
 cd frontend && npm test    # frontend tests
 ```
 
-## 3. What the end-user must provide before ingestion works
+## 3. Modifying the Database Schema
+
+If you make changes to the SQLAlchemy models in `backend/app/models.py`, you must create a new Alembic migration script and apply it:
+
+1. Generate the migration script:
+   ```powershell
+   alembic revision --autogenerate -m "Describe your changes here"
+   ```
+2. Review the generated file in `backend/alembic/versions/` to ensure it captures the intended changes correctly.
+3. Apply the migration to your local database:
+   ```powershell
+   alembic upgrade head
+   ```
+
+## 4. What the end-user must provide before ingestion works
 
 The repository ships **without** the production data — `*.xlsx` files are
 listed in [.gitignore](.gitignore) and are never committed. Before the
 ingestion pipeline can do anything useful you have to supply your own
 workbook and make sure its shape matches what the reader expects.
 
-### 3a. Drop your workbook here
+### 4a. Drop your workbook here
 
 Place your `.xlsx` file under [backend/data/](backend/data/). Any filename is
 fine; you pass the path explicitly when you run the importer. For reference,
@@ -92,7 +106,7 @@ the workbooks the project was built around look like:
 - `ADV ALL IN ONE SCHEDULE (2023) - HISTORY.xlsx`
 - `Schedule Shipped History 2024+.xlsx`
 
-### 3b. The workbook must contain a sheet named `SCHD`
+### 4b. The workbook must contain a sheet named `SCHD`
 
 The sheet name is hard-coded as the default in
 [backend/app/reader.py](backend/app/reader.py#L9). If your workbook uses a
@@ -102,7 +116,7 @@ different name, either:
 - pass `--sheet "Your Sheet Name"` to the ingest command, **or**
 - change the `SHEET_NAME` constant in [backend/app/reader.py](backend/app/reader.py#L9).
 
-### 3c. The header row must use these exact column names
+### 4c. The header row must use these exact column names
 
 Row 1 of the sheet must contain headers from the set defined in
 [backend/app/reader.py](backend/app/reader.py#L11-L17) and mapped in
@@ -122,7 +136,7 @@ The `JOB` column is the most opinionated: each cell needs to decompose into a
 part number plus a build type (e.g. `128764 NEW` or `128764\nRONC 123456`).
 The decomposition rules live in [backend/app/extractors.py](backend/app/extractors.py).
 
-### 3d. Files you may need to touch before ingestion
+### 4d. Files you may need to touch before ingestion
 
 | File | Why you might edit it |
 | --- | --- |
@@ -132,7 +146,7 @@ The decomposition rules live in [backend/app/extractors.py](backend/app/extracto
 | [backend/app/config.py](backend/app/config.py) | Override `SCHEDULER_DATABASE_URL` (or set it in a `.env` file at the repo root) to point at a database location other than `backend/outputs/db/schedule.db`. |
 | [frontend/.env.development](frontend/.env.development) | Point `VITE_API_BASE` at the backend if it is not running on `http://localhost:8000`. |
 
-### 3e. Optional: a `.env` file at the repo root
+### 4e. Optional: a `.env` file at the repo root
 
 Settings are read with the prefix `SCHEDULER_` (see
 [backend/app/config.py](backend/app/config.py#L28)). Create a `.env` next to
@@ -143,7 +157,7 @@ SCHEDULER_DATABASE_URL=sqlite:///C:/path/to/schedule.db
 SCHEDULER_PORT=8001
 ```
 
-## 4. Building the Executable
+## 5. Building the Executable
 
 To build the standalone Windows executable for production, follow these steps:
 

@@ -222,3 +222,130 @@ describe('ShippingView', () => {
     expect(w.findAll('tbody tr').length).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// 2nd OPS column (Phase 22)
+// ---------------------------------------------------------------------------
+
+const mockFetchSecondOps = vi.fn()
+const mockPutSecondOps = vi.fn()
+
+vi.mock('@/api/secondOps', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/secondOps')>()),
+  fetchSecondOps: (...args: unknown[]) => mockFetchSecondOps(...args),
+  putSecondOps: (...args: unknown[]) => mockPutSecondOps(...args),
+}))
+
+function makeSecondOpsLine(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    line_order: 0,
+    find_number: '1',
+    component_part_number: 'CMP-1',
+    per_board_count: '2',
+    ref_des: 'C1, C2',
+    description: 'CAP 0.1uF',
+    mount_type: 'SMT',
+    quantity_needed: '40',
+    quantity_on_hand: '500',
+    ...overrides,
+  }
+}
+
+function unauditedRecord(jobId: number) {
+  return {
+    job_id: jobId,
+    state: 'unaudited',
+    reviewed_at: null,
+    unexpected_inclusions: null,
+    lines: [],
+    limits: { max_lines: 500, note_max_chars: 4000 },
+  }
+}
+
+describe('ShippingView — 2nd OPS column', () => {
+  beforeEach(() => {
+    mockFetchSecondOps.mockReset()
+    mockPutSecondOps.mockReset()
+    document.body.innerHTML = ''
+  })
+
+  it('renders a plain 2nd OPS header that is not a SortHeader', async () => {
+    mockFetch.mockResolvedValue({ rows: [makeJob({ id: 1 })], total: 1 })
+    const w = mountView()
+    await flushPromises()
+
+    const headers = w.findAll('thead th').map((th) => th.text())
+    expect(headers).toContain('2nd OPS')
+    const sortHeaders = w.findAllComponents({ name: 'SortHeader' }).map((c) => c.props('label'))
+    expect(sortHeaders).not.toContain('2nd OPS')
+  })
+
+  it('opens the entry modal from the Audit button on an unaudited job', async () => {
+    mockFetch.mockResolvedValue({
+      rows: [
+        makeJob({
+          id: 7,
+          second_ops: {
+            state: 'unaudited',
+            line_count: 0,
+            reviewed_at: null,
+            has_unexpected_inclusions: false,
+            preview: [],
+          },
+        } as never),
+      ],
+      total: 1,
+    })
+    mockFetchSecondOps.mockResolvedValue(unauditedRecord(7))
+    const w = mountView()
+    await flushPromises()
+
+    await w.find('[data-testid="second-ops-audit-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="second-ops-entry-modal"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="second-ops-paste-area"]')).not.toBeNull()
+    expect(mockFetchSecondOps).toHaveBeenCalledWith(7)
+    w.unmount()
+  })
+
+  it('opens the item modal from a preview line with no network request', async () => {
+    mockFetch.mockResolvedValue({
+      rows: [
+        makeJob({
+          id: 8,
+          second_ops: {
+            state: 'recorded',
+            line_count: 1,
+            reviewed_at: '2026-08-28T10:00:00',
+            has_unexpected_inclusions: false,
+            preview: [makeSecondOpsLine()],
+          },
+        } as never),
+      ],
+      total: 1,
+    })
+    const w = mountView()
+    await flushPromises()
+
+    await w.find('[data-testid="second-ops-preview-line"]').trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="second-ops-item-modal"]')).not.toBeNull()
+    expect(
+      document.body.querySelector('[data-testid="second-ops-item-ref_des"]')?.textContent,
+    ).toBe('C1, C2')
+    expect(mockFetchSecondOps).not.toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it('renders nothing in the cell when second_ops is null', async () => {
+    mockFetch.mockResolvedValue({ rows: [makeJob({ id: 1 })], total: 1 })
+    const w = mountView()
+    await flushPromises()
+
+    expect(w.find('[data-testid="second-ops-cell"]').exists()).toBe(false)
+    expect(w.find('[data-testid="second-ops-audit-btn"]').exists()).toBe(false)
+  })
+})

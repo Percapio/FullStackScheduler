@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 import logging
@@ -40,6 +40,191 @@ DATA_BEARING_HEADERS: frozenset[str] = KNOWN_HEADERS - MARKDOWN_HEADERS
 _BOLD = "**"
 _ITALIC = "*"
 _STRIKE = "~~"
+
+
+# ---------------------------------------------------------------------------
+# Header normalization (Phase 22 Part 1)
+# ---------------------------------------------------------------------------
+
+# 0-based position of a column within a sheet row, as produced by enumerate()
+# over the header cells. A plain alias, not a newtype: it indexes openpyxl row
+# tuples directly and gains nothing from wrapping.
+ColumnIndex = int
+
+
+def normalize_header(raw_cell_value: object) -> str | None:
+    """Return the canonical form of a worksheet header cell value.
+
+    Pre:   raw_cell_value is an openpyxl cell value of any type, including None.
+    Post:  str inputs return stripped, or None when stripping empties them.
+           Every non-str input returns None.  Pure; total.
+           Mapping non-str to None is behaviour-preserving: a non-str header can
+           satisfy neither `in KNOWN_HEADERS` nor `== divider_header` today.
+    Raises: never.
+    """
+    if not isinstance(raw_cell_value, str):
+        return None
+    stripped = raw_cell_value.strip()
+    return stripped if stripped else None
+
+
+@dataclass(frozen=True)
+class HeaderCollision:
+    """One ignored duplicate occurrence of an already-bound header.
+
+    Pre:  header is a normalized KNOWN_HEADERS member already bound to
+          kept_index by resolve_column_indices.
+    Post: immutable; ignored_index names the occurrence whose data is discarded.
+    """
+
+    header: str
+    kept_index: ColumnIndex
+    ignored_index: ColumnIndex
+
+
+@dataclass(frozen=True)
+class HeaderReconciliation:
+    """How one sheet's header row lines up with KNOWN_HEADERS.
+
+    Pre:  built by reconcile_headers from a normalized header row.
+    Post: immutable; the four fields partition the comparison completely, so a
+          consumer never has to re-derive one from the others.
+    """
+
+    sheet_name: str
+    matched: frozenset[str]
+    missing: frozenset[str]
+    unrecognised: tuple[str, ...]
+    collisions: tuple[HeaderCollision, ...]
+
+
+def resolve_column_indices(
+    normalized_headers: list[str | None],
+    divider_header: str | None,
+) -> Mapping[str, ColumnIndex]:
+    """Map each recognised header to the 0-based column index carrying it.
+
+    Pre:   normalized_headers is the output of normalize_header over the
+           sheet's header row.  divider_header is layout.divider_header or None.
+    Post:  returns one entry per KNOWN_HEADERS member present in the sheet,
+           bound to its FIRST occurrence.  Later occurrences are reported in
+           HeaderReconciliation.collisions and are never read.
+           divider_header is excluded from the mapping — it is a sentinel, not
+           a data column, and must not reach the extracted cell dict.
+           Insertion order is sheet order.
+    Raises: never.
+    """
+    column_indices: dict[str, ColumnIndex] = {}
+    for index, header in enumerate(normalized_headers):
+        if header is None or header == divider_header:
+            continue
+        if header not in KNOWN_HEADERS:
+            continue
+        if header in column_indices:
+            continue
+        column_indices[header] = index
+    return column_indices
+
+
+def reconcile_headers(
+    normalized_headers: list[str | None],
+    divider_header: str | None,
+    sheet_name: str,
+) -> HeaderReconciliation:
+    """Report how the sheet's header row lines up with KNOWN_HEADERS.
+
+    Pre:   normalized_headers is the output of normalize_header over the header
+           row.  divider_header is layout.divider_header or None.
+    Post:  pure; reads no module state beyond KNOWN_HEADERS.
+           matched | missing == KNOWN_HEADERS and matched & missing == empty.
+           unrecognised excludes divider_header and every None cell, and
+           preserves sheet order.
+           collisions carries one HeaderCollision per extra occurrence of an
+           already-bound header — two extra occurrences yield two entries.
+    Raises: never.
+    """
+    bound: dict[str, ColumnIndex] = {}
+    unrecognised: list[str] = []
+    collisions: list[HeaderCollision] = []
+
+    for index, header in enumerate(normalized_headers):
+        if header is None or header == divider_header:
+            continue
+        if header not in KNOWN_HEADERS:
+            unrecognised.append(header)
+            continue
+        kept_index = bound.get(header)
+        if kept_index is None:
+            bound[header] = index
+        else:
+            collisions.append(
+                HeaderCollision(
+                    header=header, kept_index=kept_index, ignored_index=index
+                )
+            )
+
+    matched = frozenset(bound)
+    return HeaderReconciliation(
+        sheet_name=sheet_name,
+        matched=matched,
+        missing=KNOWN_HEADERS - matched,
+        unrecognised=tuple(unrecognised),
+        collisions=tuple(collisions),
+    )
+
+
+def assert_constants_are_normal(extra_headers: Iterable[str] = ()) -> None:
+    """Guard the header constants against drifting out of normal form.
+
+    Pre:   extra_headers carries header constants declared in other modules
+           that are compared against sheet headers — ingest._COLUMN_MAP keys.
+           The parameter exists so the check runs without reader importing
+           ingest; the caller owns the reverse direction, which already exists.
+    Post:  returns normally iff every KNOWN_HEADERS member and every member of
+           extra_headers equals its own normalize_header output.
+           SheetLayout.divider_header is NOT checked here — it is covered at
+           construction, which is strictly broader.
+    Raises: AssertionError
+    """
+    for header in KNOWN_HEADERS:
+        assert normalize_header(header) == header, (
+            f"KNOWN_HEADERS member {header!r} is not in normal form"
+        )
+    for header in extra_headers:
+        assert normalize_header(header) == header, (
+            f"Header constant {header!r} is not in normal form"
+        )
+
+
+def _log_reconciliation(reconciliation: HeaderReconciliation) -> None:
+    """Emit the per-read_rows header reconciliation at the levels of §1.4.
+
+    Pre:   reconciliation was built for the sheet read_rows is about to iterate.
+    Post:  missing and collisions log at WARNING, unrecognised at INFO, matched
+           is not logged.  Emitted once per read_rows call, never per row.
+    Raises: never.
+    """
+    if reconciliation.missing:
+        log.warning(
+            "reader.headers.missing sheet=%r headers=%s",
+            reconciliation.sheet_name,
+            sorted(reconciliation.missing),
+        )
+    for collision in reconciliation.collisions:
+        log.warning(
+            "reader.headers.collision sheet=%r header=%r kept_index=%d "
+            "ignored_index=%d",
+            reconciliation.sheet_name,
+            collision.header,
+            collision.kept_index,
+            collision.ignored_index,
+        )
+    if reconciliation.unrecognised:
+        log.info(
+            "reader.headers.unrecognised sheet=%r headers=%s",
+            reconciliation.sheet_name,
+            list(reconciliation.unrecognised),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +346,23 @@ class SheetLayout:
     header_row: int
     divider_header: str | None  # None = no divider filtering for this shape
 
+    def __post_init__(self) -> None:
+        """Reject a SheetLayout whose divider_header is not in normal form.
+
+        Pre:   invoked by the dataclass machinery on every SheetLayout
+               construction.
+        Post:  returns normally iff divider_header is None or equals
+               normalize_header(divider_header).  Applies to EVERY instance,
+               whether or not it is registered in _LAYOUTS — a collection walk
+               would miss a layout constructed elsewhere and silently re-open
+               the two-vocabulary failure class.
+        Raises: AssertionError
+        """
+        assert (
+            self.divider_header is None
+            or normalize_header(self.divider_header) == self.divider_header
+        ), f"SheetLayout.divider_header {self.divider_header!r} is not in normal form"
+
 
 class _LayoutEntry(NamedTuple):
     """Pairs the structural layout rules with the semantic kind for a sheet."""
@@ -267,6 +469,9 @@ def read_rows(
           rows are skipped when the layout declares a divider_header.
           All-empty rows (including whitespace-only) and rows carrying only
           notes columns are skipped. DIVIDER is never included in cells.
+          Header cells are normalized (stripped; non-str and empty-after-strip
+          become None) before both divider and column resolution, and a header
+          reconciliation is logged once per call — never per row.
     Raises (on CALL, not on first next()):
           KeyError                  — no acceptable sheet found.
           MissingDividerColumnError — layout requires DIVIDER column not present.
@@ -285,19 +490,29 @@ def read_rows(
     header_cells = next(
         ws.iter_rows(min_row=layout.header_row, max_row=layout.header_row)
     )
-    headers = [c.value for c in header_cells]
-    divider_index = _resolve_divider_index(layout, headers, sheet_name)
+    # Normalization precedes BOTH divider resolution and column resolution.
+    # Normalizing only inside the row loop would leave the divider lookup
+    # matching raw text and the column lookup matching normalized text — two
+    # vocabularies in one reader.
+    normalized_headers = [normalize_header(c.value) for c in header_cells]
+    _log_reconciliation(
+        reconcile_headers(normalized_headers, layout.divider_header, sheet_name)
+    )
+    divider_index = _resolve_divider_index(layout, normalized_headers, sheet_name)
+    column_indices = resolve_column_indices(normalized_headers, layout.divider_header)
 
-    return _iter_data_rows(ws, headers, layout, divider_index)
+    return _iter_data_rows(ws, column_indices, layout, divider_index)
 
 
 def _resolve_divider_index(
-    layout: SheetLayout, headers: list, sheet_name: str
-) -> int | None:
+    layout: SheetLayout, normalized_headers: list[str | None], sheet_name: str
+) -> ColumnIndex | None:
     """Return the 0-based column index of the divider column, or None.
 
-    Pre:  headers is the list of header values from the resolved sheet
-          (may contain None entries for blank columns).
+    Pre:  normalized_headers is the output of normalize_header over the resolved
+          sheet's header row (may contain None entries for blank columns).
+          layout.divider_header is already in normal form — SheetLayout asserts
+          it at construction — so the comparison is normal-form on both sides.
     Post: returns the index when the layout requires divider filtering and
           the column is present. Returns None when the layout does not
           declare divider filtering.
@@ -307,21 +522,27 @@ def _resolve_divider_index(
     if layout.divider_header is None:
         return None
     try:
-        return headers.index(layout.divider_header)
+        return normalized_headers.index(layout.divider_header)
     except ValueError:
         raise MissingDividerColumnError(sheet_name, layout.divider_header)
 
 
 def _iter_data_rows(
-    ws, headers: list, layout: SheetLayout, divider_index: int | None
+    ws,
+    column_indices: Mapping[str, ColumnIndex],
+    layout: SheetLayout,
+    divider_index: ColumnIndex | None,
 ) -> Iterator[tuple[int, dict[str, str | None]]]:
     """Yield (row_number, cells) for each non-divider, non-empty data row.
 
-    Pre:  ws is the resolved openpyxl Worksheet. headers is the list of
-          header values (may contain None). layout is the resolved SheetLayout.
-          divider_index is None or a valid 0-based index into headers.
-    Post: yields (row_number, cells) per row. Divider rows and all-empty
-          rows are skipped.
+    Pre:  ws is the resolved openpyxl Worksheet. column_indices is the output of
+          resolve_column_indices — already filtered to KNOWN_HEADERS, already
+          collision-resolved, divider column already excluded. layout is the
+          resolved SheetLayout. divider_index is None or a valid 0-based index.
+    Post: yields (row_number, cells) per row. Divider rows and all-empty rows
+          are skipped. A recognised header whose index exceeds the row's width
+          yields no key — classify_row reads an absent key as blank, identical
+          to the pre-normalization behaviour for short rows.
     """
     for row_number, row in enumerate(
         ws.iter_rows(min_row=layout.header_row + 1, values_only=False),
@@ -331,14 +552,11 @@ def _iter_data_rows(
             log.info(f"Row {row_number} skipped: disposition={RowDisposition.divider_marked.value}")
             continue
         cells: dict[str, str | None] = {}
-        for i, cell in enumerate(row):
-            if i >= len(headers):
-                break
-            header = headers[i]
-            if header is None or header not in KNOWN_HEADERS:
+        for header, index in column_indices.items():
+            if index >= len(row):
                 continue
             extract = cell_to_markdown if header in MARKDOWN_HEADERS else cell_to_text
-            cells[header] = extract(cell.value)
+            cells[header] = extract(row[index].value)
         
         disposition = classify_row(cells)
         if disposition == RowDisposition.blank:

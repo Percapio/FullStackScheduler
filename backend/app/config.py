@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     gc_freeze_after_startup: bool = True
     missing_job_sweep_max_discards: int = 30
     export_chunk_rows: int = 500
+    # 2nd OPS bounds (Phase 22). Server-owned: the record read echoes the first
+    # two to the client so no frontend constant can disagree with them.
+    second_ops_max_lines: int = 500          # lines per job; B142006 AUDIT BOM has 56
+    second_ops_note_max_chars: int = 4000    # the unexpected-inclusions note
+    second_ops_preview_lines: int = 3        # lines rendered in the grid cell
     model_config = SettingsConfigDict(env_prefix="SCHEDULER_", env_file=".env", extra="ignore")
 
     def model_post_init(self, __ctx) -> None:

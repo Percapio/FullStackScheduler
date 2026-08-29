@@ -64,6 +64,34 @@ def _render_build_type(job: Job) -> str:
         return ""
     return job.build_type.value.upper()
 
+def _render_second_ops(job: Job) -> str:
+    """Render the 2nd OPS status for one exported job.
+
+    Pre:   job.second_ops_line_count is loaded — stream_history_for_export
+           undefers it. Reading it off an unloaded instance would fire a
+           correlated subquery per row, which is an N+1 across the export.
+    Post:  "" for unaudited, "N/A" for not_applicable, "Audited (N)" for
+           recorded. Status only (Decision 16): grid parity is preserved in
+           structure, not in cell contents — a CSV cell holding 56 transcribed
+           BOM lines is not readable.
+           None of the three can begin with =, +, - or @, so
+           neutralise_formula_prefix has nothing to do here.
+    Raises: never.
+    """
+    from .second_ops import derive_second_ops_state
+
+    note = job.second_ops_unexpected_inclusions
+    state = derive_second_ops_state(
+        job.second_ops_reviewed_at,
+        job.second_ops_line_count,
+        bool(note and note.strip()),
+    )
+    if state == "unaudited":
+        return ""
+    if state == "not_applicable":
+        return "N/A"
+    return f"Audited ({job.second_ops_line_count})"
+
 HISTORY_EXPORT_COLUMNS: tuple[HistoryExportColumn, ...] = (
     HistoryExportColumn(
         key="ship_date",
@@ -94,6 +122,11 @@ HISTORY_EXPORT_COLUMNS: tuple[HistoryExportColumn, ...] = (
         key="customer",
         header="Customer",
         render=lambda job: job.customer.name if job.customer else "",
+    ),
+    HistoryExportColumn(
+        key="second_ops",
+        header="2nd OPS",
+        render=_render_second_ops,
     ),
 )
 

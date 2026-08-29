@@ -3,9 +3,19 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
+from ..config import Settings, get_settings
 from ..models import BuildType, JobStatus
-from ..schemas import HistoryJobEditRequest, JobDiscardRequest, JobReadExpanded, JobRestoreRequest, RestoreConflictPreview
+from ..schemas import (
+    HistoryJobEditRequest,
+    JobDiscardRequest,
+    JobReadExpanded,
+    JobRestoreRequest,
+    RestoreConflictPreview,
+    SecondOpsRecord,
+    SecondOpsWriteRequest,
+)
 from ..services import jobs as jobs_service
+from ..services import second_ops as second_ops_service
 from .deps import HistoryPageParams, PageParams, get_pagination, get_session, ErroredPageParams, HistoryExportParams, get_session_factory
 
 router = APIRouter()
@@ -116,6 +126,80 @@ def list_discarded_jobs(
     )
     response.headers["X-Total-Count"] = str(total)
     return rows
+
+
+# NOTE: the /{job_id}/second-ops routes are declared before /{job_id} for the
+# same reason /discarded is — path declaration order is the only thing keeping
+# literal segments out of the integer converter as this router grows.
+@router.get("/{job_id}/second-ops", response_model=SecondOpsRecord)
+def get_job_second_ops(
+    job_id: int,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Return the complete 2nd OPS record for a job.
+
+    200 with the full line set ordered by line_order, plus the limits block.
+    200 with state "unaudited" and empty lines for a job never audited —
+        absence of a record is not 404.
+    200 for discarded, superseded and shipped jobs: reads are not guarded by
+        status, only writes are.
+    404 only when the job itself does not exist.
+    """
+    record = second_ops_service.get_second_ops_record(session, job_id, settings)
+    if isinstance(record, second_ops_service.SecondOpsNotFound):
+        raise HTTPException(status_code=404, detail="Job not found")
+    return record
+
+
+@router.put("/{job_id}/second-ops", response_model=SecondOpsRecord)
+def put_job_second_ops(
+    job_id: int,
+    body: SecondOpsWriteRequest,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    """Replace the entire 2nd OPS record for a job. Whole-set replace, not a merge.
+
+    PUT rather than POST: this is an idempotent whole-set replace of a
+    sub-resource.
+
+    Writes are restricted to planned, non-discarded, non-superseded jobs.
+    Concurrency is last-write-wins — there is no version token.
+
+    200 with the refreshed record.
+    404 if the job does not exist.
+    409 { kind } if the job is discarded, superseded or shipped.
+    422 { field, message } if a Settings-derived bound is exceeded.
+    422 (Pydantic) if a line field exceeds its column width.
+    500 { kind: "storage" } if the delete or insert raised a database error;
+        nothing is written and the prior line set survives.
+    """
+    validated = second_ops_service.validate_second_ops_payload(body, settings)
+    if isinstance(validated, second_ops_service.SecondOpsRejection):
+        raise HTTPException(
+            status_code=422,
+            detail={"field": validated.field, "message": validated.message},
+        )
+
+    outcome = second_ops_service.replace_second_ops(
+        session, job_id, validated, settings
+    )
+    if isinstance(outcome, second_ops_service.SecondOpsWriteFailure):
+        if outcome.kind == "not_found":
+            raise HTTPException(status_code=404, detail="Job not found")
+        if outcome.kind == "storage":
+            raise HTTPException(
+                status_code=500,
+                detail={"kind": outcome.kind, "message": outcome.message},
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={"kind": outcome.kind, "message": outcome.message},
+        )
+
+    session.commit()
+    return outcome
 
 
 @router.get("/{job_id}", response_model=JobReadExpanded)

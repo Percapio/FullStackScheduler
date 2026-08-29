@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -27,6 +28,7 @@ from .models import (
     ImportStagingRow,
     ImportStatus,
     Job,
+    JobSecondOpsLine,
     JobStatus,
     Salesperson,
     SheetKind,
@@ -376,6 +378,161 @@ def effective_decomposition(
     )
 
 
+# ---------------------------------------------------------------------------
+# 2nd OPS carry-forward (Phase 22 2.3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class JobIdentity:
+    """The five-field tuple that identifies a Job independently of its row id.
+
+    Pre:  the fields are the decomposition outputs the active-job lookup used.
+    Post: immutable; equality is structural.
+    """
+
+    assembly_id: int
+    build_type: BuildType | None
+    split_suffix: str | None
+    repeat_reference: str | None
+    build_qualifier: BuildQualifier | None
+
+
+class CarryForwardKind(str, enum.Enum):
+    """Outcome vocabulary for carry_forward_second_ops.
+
+      copied                     - a donor was found and its record transferred.
+      skipped_already_populated  - new_job already carried a record. The arm
+                                   that makes a second call safe.
+      skipped_no_donor           - no qualifying donor. The common case.
+    """
+
+    copied = "copied"
+    skipped_already_populated = "skipped_already_populated"
+    skipped_no_donor = "skipped_no_donor"
+
+
+@dataclass(frozen=True)
+class CarryForwardOutcome:
+    donor_job_id: int | None
+    line_count: int
+    kind: CarryForwardKind
+
+
+def carry_forward_second_ops(
+    session: Session,
+    new_job: Job,
+    identity: JobIdentity,
+) -> CarryForwardOutcome:
+    """Copy the 2nd OPS record of the most recently discarded job sharing
+    new_job identity onto new_job.
+
+    The failure this closes: sweep_missing_planned_jobs discards a planned job
+    absent from a day SCHD, the identity lookup excludes discarded rows, and
+    the same job reappearing tomorrow inserts a NEW Job with a new id - leaving
+    the audit data stranded on a row the grid can never show.
+
+    Pre:  new_job is flushed and carries an id.
+          identity is the five-field tuple that just failed the active lookup.
+          new_job audit state is NOT a pre-condition - it is tested below. The
+          call site sits inside Stage 5 per-row SAVEPOINT loop, where an
+          unenforced pre-condition is a liability and a checked branch is not.
+    Post: returns exactly one of:
+            skipped_already_populated - new_job.second_ops_reviewed_at was
+                already set. Nothing read, nothing written.
+            skipped_no_donor          - no qualifying donor. Nothing written.
+            copied                    - a donor was found: identical identity,
+                discarded_at IS NOT NULL, second_ops_reviewed_at IS NOT NULL,
+                chosen by (discarded_at DESC, id DESC). Its lines are copied
+                preserving line_order, and both
+                second_ops_unexpected_inclusions and second_ops_reviewed_at are
+                copied VERBATIM - reviewed_at is not restamped, the audit
+                happened when it happened. The donor is not mutated.
+          Idempotent by construction: the already_populated arm makes the second
+          and every later call a no-op, so no caller has to guarantee single
+          invocation.
+          Cause of discard is not considered: a job listed as scheduled again is
+          legitimately live, and its prior physical-inspection record being
+          attached is useful.
+    Donor visibility: sweep_missing_planned_jobs is Stage 6b and runs AFTER the
+          Stage 5 transform loop, so a donor discarded_at is always written by
+          a prior, committed batch. There is no intra-batch flush ordering to
+          arrange. Recorded because the reverse ordering is the intuitive guess
+          and the failure it would cause is silent.
+    Raises: never.
+    """
+    if new_job.second_ops_reviewed_at is not None:
+        log.warning(
+            "transform.second_ops.carry_forward.already_populated",
+            extra={"new_job_id": new_job.id, "job_identity": repr(identity)},
+        )
+        return CarryForwardOutcome(
+            donor_job_id=None,
+            line_count=0,
+            kind=CarryForwardKind.skipped_already_populated,
+        )
+
+    donor = session.execute(
+        select(Job)
+        .where(Job.assembly_id == identity.assembly_id)
+        .where(Job.build_type == identity.build_type)
+        .where(Job.split_suffix.is_not_distinct_from(identity.split_suffix))
+        .where(Job.repeat_reference.is_not_distinct_from(identity.repeat_reference))
+        .where(Job.build_qualifier.is_not_distinct_from(identity.build_qualifier))
+        .where(Job.discarded_at.is_not(None))
+        .where(Job.second_ops_reviewed_at.is_not(None))
+        .where(Job.id != new_job.id)
+        .order_by(Job.discarded_at.desc(), Job.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if donor is None:
+        return CarryForwardOutcome(
+            donor_job_id=None, line_count=0, kind=CarryForwardKind.skipped_no_donor
+        )
+
+    donor_lines = session.scalars(
+        select(JobSecondOpsLine)
+        .where(JobSecondOpsLine.job_id == donor.id)
+        .order_by(JobSecondOpsLine.line_order)
+    ).all()
+
+    for donor_line in donor_lines:
+        session.add(
+            JobSecondOpsLine(
+                job_id=new_job.id,
+                line_order=donor_line.line_order,
+                find_number=donor_line.find_number,
+                component_part_number=donor_line.component_part_number,
+                per_board_count=donor_line.per_board_count,
+                ref_des=donor_line.ref_des,
+                description=donor_line.description,
+                mount_type=donor_line.mount_type,
+                quantity_needed=donor_line.quantity_needed,
+                quantity_on_hand=donor_line.quantity_on_hand,
+            )
+        )
+
+    new_job.second_ops_unexpected_inclusions = donor.second_ops_unexpected_inclusions
+    new_job.second_ops_reviewed_at = donor.second_ops_reviewed_at
+    session.flush()
+
+    log.info(
+        "transform.second_ops.carry_forward.copied",
+        extra={
+            "donor_job_id": donor.id,
+            "new_job_id": new_job.id,
+            "line_count": len(donor_lines),
+            "job_identity": repr(identity),
+        },
+    )
+    return CarryForwardOutcome(
+        donor_job_id=donor.id,
+        line_count=len(donor_lines),
+        kind=CarryForwardKind.copied,
+    )
+
+
 def transform_staging_row(
     session: Session,
     row: ImportStagingRow,
@@ -494,6 +651,17 @@ def transform_staging_row(
 
     if action == "inserted":
         session.flush()
+        carry_forward_second_ops(
+            session,
+            job,
+            JobIdentity(
+                assembly_id=assembly.id,
+                build_type=decomp.build_type,
+                split_suffix=decomp.split_suffix,
+                repeat_reference=decomp.repeat_reference,
+                build_qualifier=decomp.build_qualifier,
+            ),
+        )
 
     _apply_lines(row, job)
 

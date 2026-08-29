@@ -175,6 +175,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/history/export-columns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List History Export Columns */
+        get: operations["list_history_export_columns_api_jobs_history_export_columns_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/history/export.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export History Csv */
+        get: operations["export_history_csv_api_jobs_history_export_csv_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/discarded": {
         parameters: {
             query?: never;
@@ -185,6 +219,51 @@ export interface paths {
         /** List Discarded Jobs */
         get: operations["list_discarded_jobs_api_jobs_discarded_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/second-ops": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job Second Ops
+         * @description Return the complete 2nd OPS record for a job.
+         *
+         *     200 with the full line set ordered by line_order, plus the limits block.
+         *     200 with state "unaudited" and empty lines for a job never audited —
+         *         absence of a record is not 404.
+         *     200 for discarded, superseded and shipped jobs: reads are not guarded by
+         *         status, only writes are.
+         *     404 only when the job itself does not exist.
+         */
+        get: operations["get_job_second_ops_api_jobs__job_id__second_ops_get"];
+        /**
+         * Put Job Second Ops
+         * @description Replace the entire 2nd OPS record for a job. Whole-set replace, not a merge.
+         *
+         *     PUT rather than POST: this is an idempotent whole-set replace of a
+         *     sub-resource.
+         *
+         *     Writes are restricted to planned, non-discarded, non-superseded jobs.
+         *     Concurrency is last-write-wins — there is no version token.
+         *
+         *     200 with the refreshed record.
+         *     404 if the job does not exist.
+         *     409 { kind } if the job is discarded, superseded or shipped.
+         *     422 { field, message } if a Settings-derived bound is exceeded.
+         *     422 (Pydantic) if a line field exceeds its column width.
+         *     500 { kind: "storage" } if the delete or insert raised a database error;
+         *         nothing is written and the prior line set survives.
+         */
+        put: operations["put_job_second_ops_api_jobs__job_id__second_ops_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -628,6 +707,39 @@ export interface components {
             /** Jobs */
             jobs?: components["schemas"]["JobRead"][];
         };
+        /**
+         * AuditBomFields
+         * @description The eight retained Audit BOM fields, and nothing else.
+         *
+         *     Shared by saved rows, unsaved parsed rows and the read-only detail modal, so
+         *     a row does not have to be persisted to be displayable.
+         *
+         *     The max_lengths ARE the §2.2 column widths — one declaration, not two.
+         *     Declaring them here is what makes the write path's per-field enforcement
+         *     automatic: SecondOpsWriteRequest carries these same models.
+         *
+         *     Values are stored verbatim — no trim, no case change, no numeric coercion.
+         *     Leading spaces in a pasted description are part of what the operator
+         *     transcribed.
+         */
+        AuditBomFields: {
+            /** Find Number */
+            find_number?: string | null;
+            /** Component Part Number */
+            component_part_number?: string | null;
+            /** Per Board Count */
+            per_board_count?: string | null;
+            /** Ref Des */
+            ref_des?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Mount Type */
+            mount_type?: string | null;
+            /** Quantity Needed */
+            quantity_needed?: string | null;
+            /** Quantity On Hand */
+            quantity_on_hand?: string | null;
+        };
         /** Body_ingest_upload_api_ingest_post */
         Body_ingest_upload_api_ingest_post: {
             /**
@@ -977,6 +1089,7 @@ export interface components {
             customer: components["schemas"]["CustomerRead"];
             salesperson?: components["schemas"]["SalespersonRead"] | null;
             build_qualifier?: components["schemas"]["BuildQualifier"] | null;
+            second_ops?: components["schemas"]["SecondOpsSummary"] | null;
         };
         /**
          * JobRestoreRequest
@@ -1037,6 +1150,109 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * SecondOpsLimits
+         * @description Server-owned input bounds, echoed to the client so it never hardcodes one.
+         *
+         *     Delivered on the record read rather than a separate settings endpoint: the
+         *     entry modal already fetches the record on open and has nowhere else to learn
+         *     the caps. A client-side constant drifts the moment an operator changes
+         *     second_ops_max_lines — pastes between the two numbers would pass the local
+         *     guard and come back 422 with no line number.
+         */
+        SecondOpsLimits: {
+            /** Max Lines */
+            max_lines: number;
+            /** Note Max Chars */
+            note_max_chars: number;
+        };
+        /**
+         * SecondOpsLine
+         * @description A persisted line: the eight fields plus its identity and position.
+         */
+        SecondOpsLine: {
+            /** Find Number */
+            find_number?: string | null;
+            /** Component Part Number */
+            component_part_number?: string | null;
+            /** Per Board Count */
+            per_board_count?: string | null;
+            /** Ref Des */
+            ref_des?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Mount Type */
+            mount_type?: string | null;
+            /** Quantity Needed */
+            quantity_needed?: string | null;
+            /** Quantity On Hand */
+            quantity_on_hand?: string | null;
+            /** Id */
+            id: number;
+            /** Line Order */
+            line_order: number;
+        };
+        /**
+         * SecondOpsRecord
+         * @description The complete 2nd OPS record for one job, unbounded by the preview cap.
+         */
+        SecondOpsRecord: {
+            /** Job Id */
+            job_id: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "unaudited" | "not_applicable" | "recorded";
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Unexpected Inclusions */
+            unexpected_inclusions?: string | null;
+            /** Lines */
+            lines?: components["schemas"]["SecondOpsLine"][];
+            limits: components["schemas"]["SecondOpsLimits"];
+        };
+        /**
+         * SecondOpsSummary
+         * @description Bounded per-job summary carried by the two grid endpoints.
+         *
+         *     preview carries WHOLE lines, not a narrowed projection: the item modal
+         *     renders all eight fields and opening it from a grid cell must not need a
+         *     second fetch. The cell still renders only three of them.
+         */
+        SecondOpsSummary: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "unaudited" | "not_applicable" | "recorded";
+            /** Line Count */
+            line_count: number;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /**
+             * Has Unexpected Inclusions
+             * @default false
+             */
+            has_unexpected_inclusions: boolean;
+            /** Preview */
+            preview?: components["schemas"]["SecondOpsLine"][];
+        };
+        /**
+         * SecondOpsWriteRequest
+         * @description Whole-set replace payload for PUT /api/jobs/{job_id}/second-ops.
+         *
+         *     The client parses the paste and maps the columns; the server trusts neither.
+         *     Per-field widths are enforced here by AuditBomFields. The line count and the
+         *     note length are bounded by Settings and checked in
+         *     validate_second_ops_payload, because both are operator-configurable.
+         */
+        SecondOpsWriteRequest: {
+            /** Lines */
+            lines?: components["schemas"]["AuditBomFields"][];
+            /** Unexpected Inclusions */
+            unexpected_inclusions?: string | null;
         };
         /**
          * StagingRestoreAction
@@ -1554,6 +1770,59 @@ export interface operations {
             };
         };
     };
+    list_history_export_columns_api_jobs_history_export_columns_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    export_history_csv_api_jobs_history_export_csv_get: {
+        parameters: {
+            query: {
+                column: string[];
+                delimiter: string;
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_discarded_jobs_api_jobs_discarded_get: {
         parameters: {
             query?: {
@@ -1574,6 +1843,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobReadExpanded"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_second_ops_api_jobs__job_id__second_ops_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecondOpsRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_job_second_ops_api_jobs__job_id__second_ops_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecondOpsWriteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecondOpsRecord"];
                 };
             };
             /** @description Validation Error */

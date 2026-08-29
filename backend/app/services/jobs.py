@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import Select, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, undefer
 
+from ..config import get_settings
 from ..models import Assembly, BuildQualifier, BuildType, Customer, ImportStagingRow, ImportStatus, Job, JobStatus
 
 if TYPE_CHECKING:
@@ -29,6 +30,28 @@ EXPORT_LOAD_OPTIONS = (
 
 def _count(session: Session, base) -> int:
     return session.scalar(select(func.count()).select_from(base.subquery()))
+
+
+def _attach_second_ops(session: Session, page_jobs: list[Job]) -> None:
+    """Attach the bounded 2nd OPS summary to each Job on the page.
+
+    Pre:   page_jobs are materialised Job instances attached to session.
+    Post:  every instance carries a non-mapped `second_ops` attribute the schema
+           reads. Applied by list_shipping and list_history ONLY — the other
+           seven JobReadExpanded producers leave the attribute unset, and
+           JobReadExpanded.second_ops defaults to None there.
+           Deliberately NOT achieved by adding selectinload(Job.second_ops_lines)
+           to JOB_EXPAND_OPTIONS: that would materialise every line of every job
+           on every list page — MAX_PAGE_ROWS is 500 and audits run to ~50 lines.
+    Raises: never.
+    """
+    from .second_ops import load_second_ops_summaries
+
+    summaries = load_second_ops_summaries(
+        session, page_jobs, get_settings().second_ops_preview_lines
+    )
+    for job in page_jobs:
+        job.second_ops = summaries[job.id]
 
 
 def _active_jobs_base() -> select:
@@ -83,7 +106,9 @@ def list_shipping(
         .limit(limit)
         .offset(offset)
     ).unique().all()
-    return list(rows), total
+    page_jobs = list(rows)
+    _attach_second_ops(session, page_jobs)
+    return page_jobs, total
 
 
 def build_history_query(
@@ -138,7 +163,9 @@ def list_history(
         .limit(limit)
         .offset(offset)
     ).unique().all()
-    return list(rows), total
+    page_jobs = list(rows)
+    _attach_second_ops(session, page_jobs)
+    return page_jobs, total
 
 
 def stream_history_for_export(
@@ -152,14 +179,20 @@ def stream_history_for_export(
     Post:  yields every matching Job exactly once, ordered
            shipped_at DESC NULLS LAST, id DESC. Resident rows never exceed
            chunk_rows. Does not mutate the session.
+           second_ops_line_count is undeferred — one extra column on the
+           existing select, no extra rows. Computing it inside the column
+           renderer would be an N+1 across the entire export.
     Raises: propagates database errors to the caller.
     """
     base = build_history_query(search=search)
     query = (
-        base.options(*EXPORT_LOAD_OPTIONS)
+        base.options(*EXPORT_LOAD_OPTIONS, undefer(Job.second_ops_line_count))
         .order_by(Job.shipped_at.desc().nullslast(), Job.id.desc())
     )
-    for row in session.scalars(query.yield_per(chunk_rows)):
+    # execution_options(yield_per=...), not Select.yield_per(): the latter is a
+    # Query-era method and does not exist on Select under SQLAlchemy 2.x, which
+    # made every export request raise AttributeError before this was fixed.
+    for row in session.scalars(query.execution_options(yield_per=chunk_rows)):
         yield row
 
 

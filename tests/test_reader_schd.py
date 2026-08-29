@@ -305,3 +305,187 @@ def test_ingest_workbook_falls_back_to_shipped(workbook_factory, session_factory
     result = ingest_workbook(str(path), session_factory=session_factory)
 
     assert result.rows_inserted == 1
+
+
+# ---------------------------------------------------------------------------
+# Header normalization through read_rows (Phase 22 Part 1)
+# ---------------------------------------------------------------------------
+
+import logging
+
+from backend.app.reader import KNOWN_HEADERS
+
+
+def _schd_with_headers(tmp_path, headers, data_rows, filename="schd_headers.xlsx"):
+    """Build a SCHD workbook whose header row is exactly `headers`.
+
+    Pre:  headers is the literal row-2 sequence, de-normalized entries included.
+          data_rows is a list of sequences aligned positionally with headers.
+    Post: returns the path to the saved workbook.
+    """
+    from openpyxl import Workbook as OxWorkbook
+
+    wb = OxWorkbook()
+    ws = wb.active
+    ws.title = "SCHD"
+    ws.append(["Production Schedule"])
+    ws.append(list(headers))
+    for values in data_rows:
+        ws.append(list(values))
+    path = tmp_path / filename
+    wb.save(path)
+    return path
+
+
+def test_read_rows_matches_kit_rel_with_trailing_space(tmp_path):
+    """The Phase 22 bug: 'KIT REL ' is bound and its data survives."""
+    headers = ["JOB", "KIT REL ", "DIVIDER"]
+    path = _schd_with_headers(tmp_path, headers, [["100001\nNEW", "4/17", None]])
+
+    rows = list(read_rows(str(path), sheet="SCHD"))
+
+    assert len(rows) == 1
+    _, cells = rows[0]
+    assert cells["KIT REL"] == "4/17"
+
+
+def test_read_rows_tolerates_none_header_cells(tmp_path):
+    """ADV ALL IN ONE SCHEDULE carries None at header indices 26 and 29."""
+    headers = ["JOB", None, "QTY", None, "DIVIDER"]
+    path = _schd_with_headers(tmp_path, headers, [["100001\nNEW", "x", "10", "y", None]])
+
+    rows = list(read_rows(str(path), sheet="SCHD"))
+
+    assert len(rows) == 1
+    _, cells = rows[0]
+    assert cells == {"JOB": "100001\nNEW", "QTY": "10"}
+
+
+def test_read_rows_tolerates_non_string_header_cells(tmp_path):
+    """int / datetime header cells normalize to None; behaviour is pre-patch."""
+    from datetime import datetime as _dt
+
+    headers = ["JOB", 4, _dt(2026, 8, 28), "DIVIDER"]
+    path = _schd_with_headers(tmp_path, headers, [["100001\nNEW", "a", "b", None]])
+
+    rows = list(read_rows(str(path), sheet="SCHD"))
+
+    _, cells = rows[0]
+    assert cells == {"JOB": "100001\nNEW"}
+
+
+def test_read_rows_whitespace_only_header_contributes_nothing(tmp_path):
+    """A '   ' header cell becomes None — never an empty-string key."""
+    headers = ["JOB", "   ", "DIVIDER"]
+    path = _schd_with_headers(tmp_path, headers, [["100001\nNEW", "orphan", None]])
+
+    rows = list(read_rows(str(path), sheet="SCHD"))
+
+    _, cells = rows[0]
+    assert "" not in cells
+    assert cells == {"JOB": "100001\nNEW"}
+
+
+def test_read_rows_divider_header_with_trailing_space_still_detected(tmp_path):
+    """Normalization precedes _resolve_divider_index, so 'DIVIDER ' still resolves."""
+    headers = ["JOB", "DIVIDER "]
+    path = _schd_with_headers(
+        tmp_path, headers, [["100001\nNEW", None], ["100002\nNEW", "X"]]
+    )
+
+    rows = list(read_rows(str(path), sheet="SCHD"))
+
+    assert [r[0] for r in rows] == [3]
+
+
+def test_read_rows_divider_never_reaches_extracted_cells(tmp_path):
+    headers = ["JOB", "DIVIDER"]
+    path = _schd_with_headers(tmp_path, headers, [["100001\nNEW", None]])
+
+    _, cells = list(read_rows(str(path), sheet="SCHD"))[0]
+
+    assert "DIVIDER" not in cells
+
+
+def test_read_rows_warns_on_missing_known_header(tmp_path, caplog):
+    headers = ["JOB", "DIVIDER"]
+    path = _schd_with_headers(tmp_path, headers, [["100001\nNEW", None]])
+
+    with caplog.at_level(logging.WARNING, logger="backend.app.reader"):
+        rows = list(read_rows(str(path), sheet="SCHD"))
+
+    assert len(rows) == 1  # the iterator still yields
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("reader.headers.missing" in r.getMessage() for r in warnings)
+    assert any("KIT REL" in r.getMessage() for r in warnings)
+
+
+def test_read_rows_collision_first_index_wins_and_warns(tmp_path, caplog):
+    """Two source columns normalizing onto one header: first wins, WARNING logged."""
+    headers = ["JOB", "KIT REL", "KIT REL ", "DIVIDER"]
+    path = _schd_with_headers(
+        tmp_path, headers, [["100001\nNEW", "kept", "ignored", None]]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="backend.app.reader"):
+        rows = list(read_rows(str(path), sheet="SCHD"))
+
+    _, cells = rows[0]
+    assert cells["KIT REL"] == "kept"
+    collision_messages = [
+        r.getMessage() for r in caplog.records
+        if "reader.headers.collision" in r.getMessage()
+    ]
+    assert len(collision_messages) == 1
+    assert "kept_index=1" in collision_messages[0]
+    assert "ignored_index=2" in collision_messages[0]
+
+
+def test_read_rows_logs_unrecognised_once_per_call_not_per_row(tmp_path, caplog):
+    headers = sorted(KNOWN_HEADERS) + ["FEEDER S/U", "DIVIDER"]
+    data_rows = [
+        [None] * len(headers) for _ in range(3)
+    ]
+    job_index = headers.index("JOB")
+    for index, values in enumerate(data_rows):
+        values[job_index] = f"10000{index}\nNEW"
+    path = _schd_with_headers(tmp_path, headers, data_rows)
+
+    with caplog.at_level(logging.INFO, logger="backend.app.reader"):
+        rows = list(read_rows(str(path), sheet="SCHD"))
+
+    assert len(rows) == 3
+    unrecognised_records = [
+        r for r in caplog.records if "reader.headers.unrecognised" in r.getMessage()
+    ]
+    assert len(unrecognised_records) == 1
+    assert "FEEDER S/U" in unrecognised_records[0].getMessage()
+    assert "DIVIDER" not in unrecognised_records[0].getMessage()
+
+
+def test_ingest_persists_kit_rel_from_denormalized_header(tmp_path, session_factory):
+    """End-to-end: 'KIT REL ' reaches ImportStagingRow.raw_kit_rel."""
+    from sqlalchemy import select as _select
+
+    from backend.app.ingest import ingest_workbook
+    from backend.app.models import Assembly, ImportStagingRow
+
+    with session_factory() as seed:
+        seed.add(Assembly(part_number="100001"))
+        seed.commit()
+
+    headers = sorted(KNOWN_HEADERS) + ["DIVIDER"]
+    headers[headers.index("KIT REL")] = "KIT REL "
+    values = [None] * len(headers)
+    values[headers.index("JOB")] = "100001\nNEW"
+    values[headers.index("QTY")] = "10"
+    values[headers.index("CUSTOMER")] = "ACME"
+    values[headers.index("KIT REL ")] = "4/17"
+    path = _schd_with_headers(tmp_path, headers, [values], filename="kit_rel.xlsx")
+
+    ingest_workbook(path, session_factory=session_factory)
+
+    with session_factory() as check:
+        staged = check.scalars(_select(ImportStagingRow)).all()
+        assert len(staged) == 1
+        assert staged[0].raw_kit_rel == "4/17"

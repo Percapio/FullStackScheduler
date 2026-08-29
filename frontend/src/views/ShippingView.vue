@@ -9,9 +9,17 @@ import SortHeader from '@/components/SortHeader.vue'
 import EyeIcon from '@/components/EyeIcon.vue'
 import InspectDrawer from '@/components/InspectDrawer.vue'
 import DiscardedJobsDrawer from '@/components/DiscardedJobsDrawer.vue'
+import SecondOpsCell from '@/components/SecondOpsCell.vue'
+import SecondOpsEntryModal from '@/components/SecondOpsEntryModal.vue'
+import SecondOpsRecordModal from '@/components/SecondOpsRecordModal.vue'
+import SecondOpsItemModal from '@/components/SecondOpsItemModal.vue'
 
 const store = useShippingStore()
-const { jobs, loading, error, inspected, discardedTotal } = storeToRefs(store)
+const {
+  jobs, loading, error, inspected, discardedTotal,
+  secondOpsJob, secondOpsOpen, secondOpsFetch,
+  secondOpsRecordJob, secondOpsRecordFetch, secondOpsItem,
+} = storeToRefs(store)
 const { formatDate, buildLabel, renderNotes } = useJobFormatters()
 
 const sort = ref<SortState>({ key: 'resolved_ship_date', direction: 'asc' })
@@ -78,6 +86,9 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
             <SortHeader label="ROWC/RONC"    sort-key="build_type"        :current="sort" @sort="cycleSort" />
             <SortHeader label="Mfg Notes"    sort-key="base_mfg_notes"    :current="sort" @sort="cycleSort" />
             <SortHeader label="Customer"     sort-key="customer_name"     :current="sort" @sort="cycleSort" />
+            <!-- Plain <th>, not a SortHeader: the column is deliberately not
+                 sortable (Assumption 7) and FlatSortKey gains nothing. -->
+            <th class="px-3 py-2">2nd OPS</th>
             <th class="px-3 py-2 w-10"></th>
           </tr>
         </thead>
@@ -106,6 +117,14 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
             <td class="px-3 py-2 text-slate-700 dark:text-slate-300">
               {{ job.customer.name }}
             </td>
+            <td class="px-3 py-2 align-top">
+              <SecondOpsCell
+                :summary="job.second_ops ?? null"
+                @audit="store.openSecondOps(job)"
+                @inspect="store.openSecondOpsItem($event)"
+                @view-all="store.openSecondOpsRecord(job)"
+              />
+            </td>
             <td class="px-3 py-2 text-right">
               <button
                 :aria-label="`Inspect job ${job.id}`"
@@ -127,5 +146,26 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
       @close="store.closeInspect()"
     />
     <DiscardedJobsDrawer />
+
+    <SecondOpsEntryModal
+      :job="secondOpsJob"
+      :fetch="secondOpsFetch"
+      :is-open="secondOpsOpen"
+      :save-impl="store.saveSecondOps"
+      @close="store.closeSecondOps()"
+      @retry="store.retrySecondOps()"
+      @inspect="store.openSecondOpsItem($event)"
+    />
+    <SecondOpsRecordModal
+      :job="secondOpsRecordJob"
+      :fetch="secondOpsRecordFetch"
+      @close="store.closeSecondOpsRecord()"
+      @retry="store.retrySecondOpsRecord()"
+      @inspect="store.openSecondOpsItem($event)"
+    />
+    <SecondOpsItemModal
+      :fields="secondOpsItem"
+      @close="store.closeSecondOpsItem()"
+    />
   </section>
 </template>

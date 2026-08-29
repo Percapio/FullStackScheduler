@@ -8,11 +8,20 @@ import {
   type JobReadExpanded,
   type HistoryEditDraft,
 } from '@/api/history'
+// Read-only by construction: fetchSecondOps ONLY. putSecondOps is deliberately
+// absent from this module and from HistoryView's import graph — a write action
+// sitting unused here is how the write guard gets circumvented six months from
+// now. History is the audit trail; a shipped record does not change after the
+// fact (Decision 10).
+import { fetchSecondOps, type AuditBomFields, type SecondOpsFetch } from '@/api/secondOps'
 import { useToast } from '@/composables/useToast'
 
 export type { HistoryEditError, HistoryEditDraft } from '@/api/history'
 
 const PAGE_SIZE = 50
+
+const SECOND_OPS_FETCH_FAILED =
+  'Could not load the 2nd OPS record. Check that the backend is running and retry.'
 
 export type LineageState =
   | { status: 'loading' }
@@ -31,6 +40,15 @@ export const useHistoryStore = defineStore('history', () => {
   const lineage   = shallowRef<Map<number, LineageState>>(new Map())
   const expanded  = shallowRef<Set<number>>(new Set())
   const inspected = ref<JobReadExpanded | null>(null)
+
+  // ---- 2nd OPS (Phase 22) — read-only ---------------------------------------
+  const secondOpsRecordJob   = ref<JobReadExpanded | null>(null)
+  const secondOpsRecordFetch = ref<SecondOpsFetch>({ status: 'loading' })
+  const secondOpsItem        = ref<AuditBomFields | null>(null)
+
+  // Monotonic request sequence; see the shipping store for why clearing on close
+  // alone does not close the concurrent case.
+  let secondOpsRequestSeq = 0
 
   const hasPrev   = computed(() => offset.value > 0)
   const hasNext   = computed(() => offset.value + rows.value.length < total.value)
@@ -144,8 +162,59 @@ export const useHistoryStore = defineStore('history', () => {
     useToast().show(`Job #${jobId} discarded.`, 'success', 4000)
   }
 
+  // ---------------------------------------------------------------------------
+  // 2nd OPS (Phase 22) — read-only record and item views
+  // ---------------------------------------------------------------------------
+
+  async function _loadRecord(jobId: number): Promise<void> {
+    const seq = ++secondOpsRequestSeq
+    secondOpsRecordFetch.value = { status: 'loading' }
+    try {
+      const record = await fetchSecondOps(jobId)
+      if (seq !== secondOpsRequestSeq) return
+      secondOpsRecordFetch.value = { status: 'loaded', record }
+    } catch {
+      if (seq !== secondOpsRequestSeq) return
+      secondOpsRecordFetch.value = { status: 'failed', message: SECOND_OPS_FETCH_FAILED }
+    }
+  }
+
+  /**
+   * Open the read-only whole-record view for `job`.
+   *
+   * Post: secondOpsRecordFetch reflects the MOST RECENTLY REQUESTED job and no
+   *       other; a stale resolution is discarded without touching state.
+   */
+  async function openSecondOpsRecord(job: JobReadExpanded): Promise<void> {
+    secondOpsRecordJob.value = job
+    await _loadRecord(job.id)
+  }
+
+  function closeSecondOpsRecord(): void {
+    secondOpsRequestSeq += 1
+    secondOpsRecordJob.value = null
+    secondOpsRecordFetch.value = { status: 'loading' }
+  }
+
+  async function retrySecondOpsRecord(): Promise<void> {
+    const job = secondOpsRecordJob.value
+    if (job === null) return
+    await _loadRecord(job.id)
+  }
+
+  function openSecondOpsItem(fields: AuditBomFields): void {
+    secondOpsItem.value = fields
+  }
+
+  function closeSecondOpsItem(): void {
+    secondOpsItem.value = null
+  }
+
   return {
     rows, total, offset, limit, loading, error, searchQuery,
+    secondOpsRecordJob, secondOpsRecordFetch, secondOpsItem,
+    openSecondOpsRecord, closeSecondOpsRecord, retrySecondOpsRecord,
+    openSecondOpsItem, closeSecondOpsItem,
     lineage, expanded, inspected,
     hasPrev, hasNext, pageStart, pageEnd,
     load, next, prev, setSearch, toggleExpand, inspect, closeInspect,
