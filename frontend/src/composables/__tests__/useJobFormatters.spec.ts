@@ -1,55 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { useJobFormatters } from '../useJobFormatters'
 
-const { carrierBadge, formatDate } = useJobFormatters()
-
-describe('useJobFormatters.carrierBadge', () => {
-  it('returns null for null, undefined, empty, or whitespace-only input', () => {
-    expect(carrierBadge(null)).toBeNull()
-    expect(carrierBadge(undefined)).toBeNull()
-    expect(carrierBadge('')).toBeNull()
-    expect(carrierBadge('   ')).toBeNull()
-  })
-
-  it('matches FedEx variants (case / whitespace / dash tolerant)', () => {
-    const variants = ['FedEx', 'FEDEX', 'fedex', 'Fed Ex', 'fedex-ground', 'FedEx_Express']
-    for (const v of variants) {
-      const badge = carrierBadge(v)
-      expect(badge, v).not.toBeNull()
-      expect(badge!.class).toContain('bg-purple-100')
-      expect(badge!.text).toBe(v)
-    }
-  })
-
-  it('matches UPS variants', () => {
-    const variants = ['UPS', 'ups', 'UPS Ground', 'ups-next-day']
-    for (const v of variants) {
-      const badge = carrierBadge(v)
-      expect(badge, v).not.toBeNull()
-      expect(badge!.class).toContain('bg-amber-100')
-      expect(badge!.text).toBe(v)
-    }
-  })
-
-  it('returns neutral slate class for unknown carriers (USPS, DHL, LTL, Will Call)', () => {
-    const variants = ['USPS', 'DHL', 'LTL', 'Will Call', 'Customer Pickup', 'Freight']
-    for (const v of variants) {
-      const badge = carrierBadge(v)
-      expect(badge, v).not.toBeNull()
-      expect(badge!.class).toContain('bg-slate-100')
-      expect(badge!.text).toBe(v)
-    }
-  })
-
-  it('collapses embedded newlines in carrier display text', () => {
-    expect(carrierBadge('FedEx\n')!.text).toBe('FedEx')
-    expect(carrierBadge('FedEx\r\nGround')!.text).toBe('FedEx Ground')
-  })
-
-  it('collapses multi-space and tab runs', () => {
-    expect(carrierBadge('UPS   Next\tDay')!.text).toBe('UPS Next Day')
-  })
-})
+const { formatDate } = useJobFormatters()
 
 describe('useJobFormatters.formatDate', () => {
   it('returns "\u2014" for null / undefined / empty', () => {

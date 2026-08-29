@@ -142,3 +142,32 @@ Settings are read with the prefix `SCHEDULER_` (see
 SCHEDULER_DATABASE_URL=sqlite:///C:/path/to/schedule.db
 SCHEDULER_PORT=8001
 ```
+
+## 4. Building the Executable
+
+To build the standalone Windows executable for production, follow these steps:
+
+1. Build the frontend for production:
+   ```powershell
+   cd frontend
+   npm install
+   npm run build
+   cd ..
+   ```
+
+2. Build the backend executable using PyInstaller:
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   pip install pyinstaller
+   python -m PyInstaller Scheduler.spec
+   ```
+
+3. The built executable and its associated files will be located in the `dist\Scheduler` directory (this directory replaces the old `build\Scheduler` version).
+
+### Updating Production
+If you are dragging and dropping this project onto production to update it, you can simply replace the existing `dist\Scheduler` (or `build\Scheduler` depending on where you run it) folder with your newly built version. 
+
+**Will the application still work without overwriting the production database?**
+Yes, absolutely! The application is designed to be completely safely upgraded. As long as you do not overwrite or delete the production database (typically located in the `backend/outputs/db/schedule.db` folder or another path you specified in `SCHEDULER_DATABASE_URL`), the application will continue to work seamlessly with the existing database. The built executable contains Alembic migrations and will automatically run them on startup to upgrade the database schema if necessary.

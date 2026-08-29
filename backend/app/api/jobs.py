@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from ..models import BuildType, JobStatus
 from ..schemas import HistoryJobEditRequest, JobDiscardRequest, JobReadExpanded, JobRestoreRequest, RestoreConflictPreview
 from ..services import jobs as jobs_service
-from .deps import HistoryPageParams, PageParams, get_pagination, get_session, ErroredPageParams
+from .deps import HistoryPageParams, PageParams, get_pagination, get_session, ErroredPageParams, HistoryExportParams, get_session_factory
 
 router = APIRouter()
 
@@ -59,6 +59,48 @@ def list_job_history(
     )
     response.headers["X-Total-Count"] = str(total)
     return rows
+
+
+@router.get("/history/export-columns")
+def list_history_export_columns():
+    from ..services.history_export import HISTORY_EXPORT_COLUMNS
+    return [{"key": col.key, "header": col.header} for col in HISTORY_EXPORT_COLUMNS]
+
+
+@router.get("/history/export.csv")
+def export_history_csv(
+    params: HistoryExportParams = Depends(),
+    session_factory=Depends(get_session_factory),
+):
+    from fastapi.responses import StreamingResponse
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from ..services.history_export import generate_csv_rows, HISTORY_EXPORT_COLUMNS_BY_KEY, DELIMITER_CHARACTERS
+    from ..config import get_settings
+
+    def _stream():
+        session = session_factory()
+        try:
+            chunk_rows = get_settings().export_chunk_rows
+            job_iterator = jobs_service.stream_history_for_export(
+                session, search=params.search, chunk_rows=chunk_rows
+            )
+            columns = [HISTORY_EXPORT_COLUMNS_BY_KEY[k] for k in params.column_keys]
+            delimiter = DELIMITER_CHARACTERS[params.delimiter_token]
+            for chunk in generate_csv_rows(job_iterator, columns, delimiter):
+                yield chunk
+        finally:
+            session.close()
+
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    filename = f"history-export-{now.strftime('%Y%m%d-%H%M%S')}.csv"
+    return StreamingResponse(
+        _stream(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
 
 
 # NOTE: /discarded MUST be declared before /{job_id} to avoid FastAPI

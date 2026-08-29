@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import Assembly, BuildQualifier, BuildType, Customer, ImportStagingRow, ImportStatus, Job, JobStatus
@@ -18,6 +19,11 @@ JOB_EXPAND_OPTIONS = (
     selectinload(Job.assembly).selectinload(Assembly.classifications),
     selectinload(Job.customer),
     selectinload(Job.salesperson),
+)
+
+EXPORT_LOAD_OPTIONS = (
+    selectinload(Job.assembly),
+    selectinload(Job.customer),
 )
 
 
@@ -80,16 +86,21 @@ def list_shipping(
     return list(rows), total
 
 
-def list_history(
-    session: Session,
-    *,
+def build_history_query(
     search: str | None,
-    limit: int,
-    offset: int,
     include_superseded: bool = True,
-) -> tuple[list[Job], int]:
-    # History is the audit trail; superseded rows belong here by default (TDD §1 Epoch 1).
-    # Discarded jobs are excluded from History — a discarded planned job was never shipped.
+) -> Select:
+    """Build the SELECT that defines the History population.
+
+    Pre:   search is a trimmed non-empty string or null.
+    Post:  returns a Select over Job filtered to status == shipped,
+           discarded_at IS NULL, superseded rows included, and — when search
+           is present — the same five-field ILIKE disjunction over
+           Assembly.part_number, Job.split_suffix, Job.repeat_reference,
+           Customer.name and Assembly.base_mfg_notes.
+           Carries no ordering, limit, offset or load options.
+    Raises: never.
+    """
     base = select(Job).where(Job.status == JobStatus.shipped, Job.discarded_at.is_(None))
     if not include_superseded:
         base = base.where(Job.superseded_at.is_(None))
@@ -108,6 +119,18 @@ def list_history(
                 )
             )
         )
+    return base
+
+
+def list_history(
+    session: Session,
+    *,
+    search: str | None,
+    limit: int,
+    offset: int,
+    include_superseded: bool = True,
+) -> tuple[list[Job], int]:
+    base = build_history_query(search=search, include_superseded=include_superseded)
     total = _count(session, base)
     rows = session.scalars(
         base.options(*JOB_EXPAND_OPTIONS)
@@ -116,6 +139,28 @@ def list_history(
         .offset(offset)
     ).unique().all()
     return list(rows), total
+
+
+def stream_history_for_export(
+    session: Session,
+    search: str | None,
+    chunk_rows: int,
+) -> Iterator[Job]:
+    """Yield shipped Jobs matching the History filter, in grid order.
+
+    Pre:   session is open and remains open for the life of the iterator.
+    Post:  yields every matching Job exactly once, ordered
+           shipped_at DESC NULLS LAST, id DESC. Resident rows never exceed
+           chunk_rows. Does not mutate the session.
+    Raises: propagates database errors to the caller.
+    """
+    base = build_history_query(search=search)
+    query = (
+        base.options(*EXPORT_LOAD_OPTIONS)
+        .order_by(Job.shipped_at.desc().nullslast(), Job.id.desc())
+    )
+    for row in session.scalars(query.yield_per(chunk_rows)):
+        yield row
 
 
 def get_job(session: Session, job_id: int) -> Job | None:

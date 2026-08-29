@@ -117,3 +117,29 @@ export async function discardHistoryJob(
   const resp = await apiClient.post<JobReadExpanded>(`/api/jobs/${jobId}/discard`, { reason })
   return resp.data
 }
+
+export interface HistoryExportColumn {
+  key: string
+  header: string
+}
+
+export async function fetchHistoryExportColumns(): Promise<HistoryExportColumn[]> {
+  const resp = await apiClient.get<HistoryExportColumn[]>('/api/jobs/history/export-columns')
+  return resp.data
+}
+
+export function buildHistoryExportUrl(
+  search: string | null,
+  columnKeys: string[],
+  delimiterToken: string,
+): string {
+  const params = new URLSearchParams()
+  if (search) {
+    params.set('search', search)
+  }
+  for (const key of columnKeys) {
+    params.append('column', key)
+  }
+  params.set('delimiter', delimiterToken)
+  return `/api/jobs/history/export.csv?${params.toString()}`
+}

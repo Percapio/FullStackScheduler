@@ -10,7 +10,7 @@ import InspectDrawer from '@/components/InspectDrawer.vue'
 
 const store = useHistoryStore()
 const { rows, total, loading, error, expanded, lineage, inspected, searchQuery } = storeToRefs(store)
-const { formatDate, buildLabel, identitySuffix, renderNotes, carrierBadge } = useJobFormatters()
+const { formatDate, buildLabel, identitySuffix, renderNotes } = useJobFormatters()
 const { fontClass } = useFontSize()
 
 const rowClasses =
@@ -56,7 +56,6 @@ onMounted(() => store.load())
             <th class="px-3 py-2 text-right">Qty</th>
             <th class="px-3 py-2">ROWC/RONC</th>
             <th class="px-3 py-2">Mfg Notes</th>
-            <th class="px-3 py-2">Ship Method</th>
             <th class="px-3 py-2">Customer</th>
             <th class="px-3 py-2 w-10"></th>
           </tr>
@@ -87,14 +86,6 @@ onMounted(() => store.load())
               </td>
               <td class="px-3 py-2 whitespace-normal text-slate-500 dark:text-slate-400 prose prose-sm dark:prose-invert max-w-none"
                   v-html="renderNotes(job.assembly.base_mfg_notes)" />
-              <td class="px-3 py-2">
-                <template v-if="carrierBadge(job.ship_method)">
-                  <span :class="['inline-flex px-2 py-0.5 rounded-full border whitespace-nowrap',
-                                 carrierBadge(job.ship_method)!.class]">
-                    {{ carrierBadge(job.ship_method)!.text }}
-                  </span>
-                </template>
-              </td>
               <td class="px-3 py-2 text-slate-700 dark:text-slate-300">
                 {{ job.customer.name }}
               </td>
@@ -107,7 +98,7 @@ onMounted(() => store.load())
               </td>
             </tr>
             <tr v-if="expanded.has(job.id)" :key="`lineage-${job.id}`">
-              <td :colspan="8" class="p-0 border-b border-slate-200 dark:border-slate-700">
+              <td :colspan="7" class="p-0 border-b border-slate-200 dark:border-slate-700">
                 <LineageAccordion :job-id="job.id" :state="lineage.get(job.id)"
                                   @retry="store.toggleExpand(job.id); store.toggleExpand(job.id)"
                                   @inspect="store.inspect" />

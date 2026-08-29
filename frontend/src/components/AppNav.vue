@@ -9,10 +9,12 @@ import { useHistoryStore } from '@/stores/history'
 import { ref } from 'vue'
 import UploadModal from '@/components/UploadModal.vue'
 import SearchPaginatorBar from '@/components/SearchPaginatorBar.vue'
+import HistoryExportModal from '@/components/HistoryExportModal.vue'
 import { useToast } from '@/composables/useToast'
 import { fetchAwaitingReview } from '@/api/review'
 
 const uploadOpen = ref(false)
+const exportModalIsOpen = ref(false)
 const { show: pushToast } = useToast()
 const inFlightCount = ref(0)
 
@@ -116,9 +118,17 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
         @next="historyStore.next()"
         @scroll-top="scrollTop"
         @scroll-bottom="scrollBottom"
-      />
+      >
+        <template #actions>
+          <button type="button" @click="exportModalIsOpen = true"
+            class="px-3 py-1 rounded border border-slate-300 dark:border-slate-600 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring">
+            CSV Export
+          </button>
+        </template>
+      </SearchPaginatorBar>
     </div>
      <UploadModal :open="uploadOpen" @close="onUploadClose" @success="onUploadSuccess" />
+     <HistoryExportModal :is-open="exportModalIsOpen" :search-query="historyStore.searchQuery" :total-rows="historyStore.total" @close="exportModalIsOpen = false" />
    </nav>
 
 </template>

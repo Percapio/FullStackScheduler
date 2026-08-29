@@ -15,7 +15,7 @@ const emit = defineEmits<{
   inspect: [JobReadExpanded]
 }>()
 
-const { formatDate, buildLabel, identitySuffix, renderNotes, carrierBadge } = useJobFormatters()
+const { formatDate, buildLabel, identitySuffix, renderNotes } = useJobFormatters()
 
 const isAnchor = (job: JobReadExpanded) => job.id === props.jobId
 
@@ -49,7 +49,6 @@ const statusClasses: Record<string, string> = {
           <th class="px-3 py-2 text-right">Qty</th>
           <th class="px-3 py-2">ROWC/RONC</th>
           <th class="px-3 py-2">Mfg Notes</th>
-          <th class="px-3 py-2">Ship Method</th>
           <th class="px-3 py-2">Customer</th>
           <th class="px-3 py-2">Status</th>
           <th class="px-3 py-2 w-10"></th>
@@ -62,7 +61,6 @@ const statusClasses: Record<string, string> = {
           <td class="px-3 py-2 text-right"><div class="h-3 w-8 rounded bg-slate-200 dark:bg-slate-700 ml-auto" /></td>
           <td class="px-3 py-2"><div class="h-3 w-12 rounded bg-slate-200 dark:bg-slate-700" /></td>
           <td class="px-3 py-2"><div class="h-3 w-32 rounded bg-slate-200 dark:bg-slate-700" /></td>
-          <td class="px-3 py-2"><div class="h-5 w-20 rounded-full bg-slate-200 dark:bg-slate-700" /></td>
           <td class="px-3 py-2"><div class="h-3 w-24 rounded bg-slate-200 dark:bg-slate-700" /></td>
           <td class="px-3 py-2"><div class="h-5 w-16 rounded bg-slate-200 dark:bg-slate-700" /></td>
           <td class="px-3 py-2 w-10"></td>
@@ -89,7 +87,6 @@ const statusClasses: Record<string, string> = {
           <th class="px-3 py-2 text-right">Qty</th>
           <th class="px-3 py-2">ROWC/RONC</th>
           <th class="px-3 py-2">Mfg Notes</th>
-          <th class="px-3 py-2">Ship Method</th>
           <th class="px-3 py-2">Customer</th>
           <th class="px-3 py-2">Status</th>
           <th class="px-3 py-2 w-10"></th>
@@ -113,14 +110,6 @@ const statusClasses: Record<string, string> = {
           </td>
           <td class="px-3 py-2 whitespace-normal text-slate-500 dark:text-slate-400 prose prose-sm dark:prose-invert max-w-none"
               v-html="renderNotes(job.assembly?.base_mfg_notes)" />
-          <td class="px-3 py-2">
-            <template v-if="carrierBadge(job.ship_method)">
-              <span :class="['inline-flex items-center px-2 py-0.5 rounded-full border',
-                             carrierBadge(job.ship_method)!.class]">
-                {{ carrierBadge(job.ship_method)!.text }}
-              </span>
-            </template>
-          </td>
           <td class="px-3 py-2 text-slate-700 dark:text-slate-300">
             {{ job.customer.name }}
           </td>

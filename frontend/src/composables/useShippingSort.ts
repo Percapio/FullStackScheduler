@@ -7,7 +7,6 @@ export type FlatSortKey =
   | 'quantity'
   | 'build_type'
   | 'base_mfg_notes'
-  | 'ship_method'
   | 'customer_name'
 
 export type SortDirection = 'asc' | 'desc'
@@ -20,7 +19,6 @@ function sortValue(job: JobReadExpanded, key: FlatSortKey): string | number | nu
     case 'quantity':           return job.quantity
     case 'build_type':         return job.build_type ?? null
     case 'base_mfg_notes':     return job.assembly.base_mfg_notes ?? null
-    case 'ship_method':        return job.ship_method ?? null
     case 'customer_name':      return job.customer.name
   }
 }

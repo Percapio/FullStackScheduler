@@ -88,5 +88,7 @@ const emit = defineEmits<{
         Next →
       </button>
     </div>
+    
+    <slot name="actions" />
   </div>
 </template>

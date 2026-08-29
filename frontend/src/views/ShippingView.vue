@@ -12,7 +12,7 @@ import DiscardedJobsDrawer from '@/components/DiscardedJobsDrawer.vue'
 
 const store = useShippingStore()
 const { jobs, loading, error, inspected, discardedTotal } = storeToRefs(store)
-const { carrierBadge, formatDate, buildLabel, renderNotes } = useJobFormatters()
+const { formatDate, buildLabel, renderNotes } = useJobFormatters()
 
 const sort = ref<SortState>({ key: 'resolved_ship_date', direction: 'asc' })
 const { sorted } = useShippingSort(jobs, sort)
@@ -77,7 +77,6 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
             <SortHeader label="Qty"          sort-key="quantity"           :current="sort" @sort="cycleSort" />
             <SortHeader label="ROWC/RONC"    sort-key="build_type"        :current="sort" @sort="cycleSort" />
             <SortHeader label="Mfg Notes"    sort-key="base_mfg_notes"    :current="sort" @sort="cycleSort" />
-            <SortHeader label="Ship Method"  sort-key="ship_method"       :current="sort" @sort="cycleSort" />
             <SortHeader label="Customer"     sort-key="customer_name"     :current="sort" @sort="cycleSort" />
             <th class="px-3 py-2 w-10"></th>
           </tr>
@@ -104,14 +103,6 @@ async function discardJob(jobId: number, reason: string): Promise<void> {
             </td>
             <td class="px-3 py-2 whitespace-normal text-slate-500 dark:text-slate-400 prose prose-sm dark:prose-invert max-w-none"
                 v-html="renderNotes(job.assembly.base_mfg_notes)"></td>
-            <td class="px-3 py-2">
-              <template v-if="carrierBadge(job.ship_method)">
-                <span :class="['inline-flex items-center px-2 py-0.5 rounded-full border',
-                               carrierBadge(job.ship_method)!.class]">
-                  {{ carrierBadge(job.ship_method)!.text }}
-                </span>
-              </template>
-            </td>
             <td class="px-3 py-2 text-slate-700 dark:text-slate-300">
               {{ job.customer.name }}
             </td>

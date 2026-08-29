@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
+import logging
 from typing import NamedTuple
+
+log = logging.getLogger(__name__)
 
 from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText
@@ -32,9 +35,70 @@ MARKDOWN_HEADERS: frozenset[str] = frozenset({
     "KIT NOTES",
 })
 
+DATA_BEARING_HEADERS: frozenset[str] = KNOWN_HEADERS - MARKDOWN_HEADERS
+
 _BOLD = "**"
 _ITALIC = "*"
 _STRIKE = "~~"
+
+
+# ---------------------------------------------------------------------------
+# Disposition primitives (Phase 21)
+# ---------------------------------------------------------------------------
+
+def is_blank_cell(cell_value: str | None) -> bool:
+    """Report whether an extracted cell carries no operator content.
+
+    Pre:   cell_value is post-extraction — the output of cell_to_text or
+           cell_to_markdown, hence str | None.
+    Post:  True iff cell_value is None, the empty string, or a string whose
+           characters are all whitespace. Pure; total.
+    Raises: never.
+    """
+    if cell_value is None:
+        return True
+    return cell_value.strip() == ""
+
+import enum
+
+class RowDisposition(enum.Enum):
+    """Enumerates why a sheet row was kept or dropped. Shared logging vocabulary
+    for both decision sites: the sentinel test in _iter_data_rows and the
+    post-extraction test in classify_row.
+
+      divider_marked — DIVIDER sentinel cell was non-empty. Decided by
+                       _is_divider_row in _iter_data_rows, BEFORE extraction.
+                       classify_row never returns this member.
+      blank          — no KNOWN_HEADERS column carried content.
+      non_data       — only notes columns carried content; no job identity.
+      data           — at least one data-bearing column carried content.
+    """
+    divider_marked = "divider_marked"
+    blank = "blank"
+    non_data = "non_data"
+    data = "data"
+
+def classify_row(extracted_cells: dict[str, str | None]) -> RowDisposition:
+    """Return the disposition of an already-extracted SCHD / SHIPPED (AA) row.
+
+    Pre:   extracted_cells maps KNOWN_HEADERS names to their post-extraction
+           values. The caller has ALREADY applied the DIVIDER sentinel test and
+           has not called this function for a marked row.
+    Post:  returns exactly one of blank | non_data | data. Never returns
+           divider_marked — that disposition is unreachable here by contract,
+           because a marked row is skipped before extraction ever runs.
+           Emptiness is decided by is_blank_cell throughout.
+           Pure — mutates nothing, reads no module state beyond the two header
+           frozensets.
+    Raises: never.
+    """
+    if all(is_blank_cell(v) for v in extracted_cells.values()):
+        return RowDisposition.blank
+    
+    if all(is_blank_cell(extracted_cells.get(k)) for k in DATA_BEARING_HEADERS):
+        return RowDisposition.non_data
+        
+    return RowDisposition.data
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +265,8 @@ def read_rows(
     Post: yields (row_number, cells) for each non-divider, non-empty row.
           Title rows (above layout.header_row) are skipped. Section-divider
           rows are skipped when the layout declares a divider_header.
-          All-empty rows are skipped. DIVIDER is never included in cells.
+          All-empty rows (including whitespace-only) and rows carrying only
+          notes columns are skipped. DIVIDER is never included in cells.
     Raises (on CALL, not on first next()):
           KeyError                  — no acceptable sheet found.
           MissingDividerColumnError — layout requires DIVIDER column not present.
@@ -263,6 +328,7 @@ def _iter_data_rows(
         start=layout.header_row + 1,
     ):
         if _is_divider_row(row, divider_index):
+            log.info(f"Row {row_number} skipped: disposition={RowDisposition.divider_marked.value}")
             continue
         cells: dict[str, str | None] = {}
         for i, cell in enumerate(row):
@@ -273,8 +339,14 @@ def _iter_data_rows(
                 continue
             extract = cell_to_markdown if header in MARKDOWN_HEADERS else cell_to_text
             cells[header] = extract(cell.value)
-        if all(v is None or v == "" for v in cells.values()):
+        
+        disposition = classify_row(cells)
+        if disposition == RowDisposition.blank:
             continue
+        if disposition == RowDisposition.non_data:
+            log.info(f"Row {row_number} skipped: disposition={disposition.value}")
+            continue
+            
         yield row_number, cells
 
 

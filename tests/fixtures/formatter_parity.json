@@ -1,0 +1,52 @@
+[
+  {
+    "part_number": "BARE",
+    "split_suffix": null,
+    "repeat_reference": null,
+    "build_type": "new",
+    "expected_job": "BARE",
+    "expected_build_type": ""
+  },
+  {
+    "part_number": "SPLIT-ONLY",
+    "split_suffix": "A",
+    "repeat_reference": null,
+    "build_type": "recurring",
+    "expected_job": "SPLIT-ONLY · A",
+    "expected_build_type": "RECURRING"
+  },
+  {
+    "part_number": "RONC-ONLY",
+    "split_suffix": null,
+    "repeat_reference": "R1",
+    "build_type": "npi",
+    "expected_job": "RONC-ONLY · RONC R1",
+    "expected_build_type": "NPI"
+  },
+  {
+    "part_number": "BOTH",
+    "split_suffix": "B",
+    "repeat_reference": "R2",
+    "build_type": "new",
+    "expected_job": "BOTH · B · RONC R2",
+    "expected_build_type": ""
+  },
+  {
+    "part_number": "NULL_BUILD",
+    "split_suffix": null,
+    "repeat_reference": null,
+    "build_type": null,
+    "expected_job": "NULL_BUILD",
+    "expected_build_type": ""
+  },
+  {
+    "part_number": "UNCLOSED_TILDE",
+    "split_suffix": null,
+    "repeat_reference": null,
+    "build_type": "new",
+    "raw_mfg_notes": "test ~~ unclosed",
+    "expected_mfg_notes": "test ~~ unclosed",
+    "expected_job": "UNCLOSED_TILDE",
+    "expected_build_type": ""
+  }
+]
