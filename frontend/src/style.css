@@ -7,12 +7,49 @@
   --color-warn-600: #d97706;
   --color-warn-800: #92400e;
 
+  /* Non-standard neutral stops. Used only behind `dark:`; the light values keep
+     the stops on the stock slate ramp so the generated utilities are coherent. */
+  --color-slate-750: #293548;
   --color-slate-820: #28344a;
   --color-slate-840: #3a4763;
 
+  /* Brand accent ramp, hue-locked to #0093D0. accent-500 never carries white text. */
+  --color-accent-300: #5fc3ee;
+  --color-accent-500: #0093d0;
+  --color-accent-600: #007aad;
+  --color-accent-700: #005e86;
+
+  /* Accent remap: every sky/blue stop the tree uses as an accent resolves to the
+     brand ramp in both themes. sky-50, sky-900, blue-50, blue-200 and blue-900 are
+     deliberately left native — they exist only at the demotion sites. */
+  --color-blue-400: var(--color-accent-300);
+  --color-blue-500: var(--color-accent-500);
+  --color-blue-600: var(--color-accent-600);
+  --color-blue-700: var(--color-accent-700);
+  --color-sky-300:  var(--color-accent-300);
+  --color-sky-400:  var(--color-accent-300);
+  --color-sky-500:  var(--color-accent-500);
+  --color-sky-600:  var(--color-accent-600);
+  --color-sky-700:  var(--color-accent-600);
+
+  /* Grid signals. Both are prose on the Shipping stripes, so each stop is the
+     closest hue-locked value to its brand intent that still clears AA-4.5 on all
+     four row surfaces (white / slate-100 / slate-50 / slate-200).
+     ship-today is #0093D0 darkened to 31% L; #0093D0 itself is 3.45:1 on white. */
+  --color-ship-today:      #006f9e;
+  --color-secondops-text:  #525e6e;
+  --color-secondops-na:    #c23400;
+
+  /* Depth scale for the drawer and modal families. Light alternates rather than
+     ascends: it cannot climb past white, so tone 3 recedes to slate-100. */
+  --color-surface-base:     #f8fafc;
+  --color-surface-raised:   #ffffff;
+  --color-surface-overlay:  #f1f5f9;
+  --color-surface-hairline: #e2e8f0;
+
   --shadow-hover:    0 1px 2px rgba(15,23,42,0.04), 0 4px 12px rgba(15,23,42,0.06);
   --shadow-elevated: 0 10px 15px -3px rgba(15,23,42,0.10), 0 4px 6px -4px rgba(15,23,42,0.08);
-  --shadow-anchor:   inset 4px 0 0 rgba(59,130,246,0.85);
+  --shadow-anchor:   inset 3px 0 0 var(--color-accent-500);
 
   --duration-highlight-pulse: 600ms;
 }
@@ -23,7 +60,7 @@
 
 html, body, #app { height: 100%; }
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
+  @apply bg-surface-base text-slate-900 antialiased;
   margin: 0;
   font-family: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-feature-settings: 'cv11', 'ss01', 'calt', 'liga';
@@ -44,20 +81,56 @@ header {
 
 @media (prefers-color-scheme: dark) {
   body {
-    @apply bg-slate-900 text-slate-100;
+    @apply text-slate-100;
   }
+  /* Neutral-warm dark ramp, re-anchored on #111110. Overriding the custom
+     properties re-skins every `dark:` site without touching a class name. */
   :root {
-    --shadow-hover:    0 1px 2px rgba(0,0,0,0.35), 0 4px 14px rgba(0,0,0,0.45);
-    --shadow-elevated: 0 12px 24px rgba(0,0,0,0.55), 0 4px 8px rgba(0,0,0,0.45);
-    --shadow-anchor:   inset 4px 0 0 rgba(96,165,250,0.9);
+    --color-slate-900: #111110;
+    --color-slate-840: #292826;
+    --color-slate-820: #201f1e;
+    --color-slate-800: #1a1a19;
+    --color-slate-750: #232220;
+    --color-slate-700: #302f2c;
+    --color-slate-600: #43423e;
+    --color-slate-500: #6e706f;
+    --color-slate-400: #8d8f8e;
+    --color-slate-300: #abacab;
+    --color-slate-200: #bdbebd;
+    --color-slate-100: #c6c7c6;
+
+    --color-surface-base:     #111110;
+    --color-surface-raised:   #1a1a19;
+    --color-surface-overlay:  #232220;
+    --color-surface-hairline: #302f2c;
+
+    /* ship-today is #0093D0 raised to 44% L — same hue and saturation, three
+       lightness points, which the brand value cannot spare on the hover rows
+       (3.88:1). secondops-na is fully saturated at 16°; light mode cannot be
+       neon and clear AA on white, so its stop is the vivid deep equivalent. */
+    --color-ship-today:      #00a0e2;
+    --color-secondops-text:  #b8b8b8;
+    --color-secondops-na:    #ff632a;
+
+    /* On a near-black ground elevation reads from a lighter top edge, not a
+       darker halo. The inset highlight is the load-bearing half. */
+    --shadow-hover:    inset 0 1px 0 rgba(255,255,255,0.05), 0 2px 8px rgba(0,0,0,0.55);
+    --shadow-elevated: inset 0 1px 0 rgba(255,255,255,0.07), 0 12px 28px rgba(0,0,0,0.7);
   }
 }
 
 @layer components {
   .focus-ring {
-    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70
-           focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50
-           dark:focus-visible:ring-offset-slate-900;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500/70
+           focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base;
+  }
+  /* Offset variants for controls that sit on tone 2 / tone 3 rather than the page
+     ground. Without them a focused control inside an overlay draws a dark halo. */
+  .focus-ring-raised {
+    @apply focus-visible:ring-offset-surface-raised;
+  }
+  .focus-ring-overlay {
+    @apply focus-visible:ring-offset-surface-overlay;
   }
   .lineage-anchor {
     box-shadow: var(--shadow-anchor);

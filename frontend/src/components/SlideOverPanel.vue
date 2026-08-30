@@ -34,15 +34,15 @@ watchEffect((onCleanup) => {
   <Teleport to="body">
     <Transition name="drawer">
       <div v-if="open" class="fixed inset-0 z-40" data-testid="drawer-overlay">
-        <div class="absolute inset-0 bg-slate-900/40 dark:bg-slate-900/60"
+        <div class="absolute inset-0 bg-black/40 dark:bg-black/60"
              data-testid="drawer-backdrop"
              @click="emit('close')" />
         <aside :class="['absolute right-0 top-0 h-full',
-                        'bg-white dark:bg-slate-800',
+                        'bg-surface-raised',
                         'shadow-2xl flex flex-col overflow-hidden',
                         WIDTH_TO_CLASS[width]]"
                role="dialog" :aria-label="ariaLabel">
-          <header class="sticky top-0 bg-inherit border-b border-slate-200 dark:border-slate-700
+          <header class="sticky top-0 bg-inherit border-b border-surface-hairline
                          flex items-center justify-between px-6 py-4">
             <slot name="header" />
           </header>

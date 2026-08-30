@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ShippingView from '../ShippingView.vue'
@@ -347,5 +347,49 @@ describe('ShippingView — 2nd OPS column', () => {
 
     expect(w.find('[data-testid="second-ops-cell"]').exists()).toBe(false)
     expect(w.find('[data-testid="second-ops-audit-btn"]').exists()).toBe(false)
+  })
+
+  describe('ship-today signal', () => {
+    // Fake timers drive `new Date()` inside the shop clock, so the Pacific date
+    // the formatter derives is deterministic. 18:00Z is mid-morning PDT, well
+    // clear of either midnight boundary.
+    afterEach(() => { vi.useRealTimers() })
+
+    it('marks only the job whose resolved ship date is today in shop time', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-04-19T18:00:00Z'))
+      mockFetch.mockResolvedValue({
+        rows: [
+          makeJob({ id: 1, _pn: 'A', _cid: 1, resolved_ship_date: '2026-04-19' }),
+          makeJob({ id: 2, _pn: 'B', _cid: 2, resolved_ship_date: '2026-04-20' }),
+          makeJob({ id: 3, _pn: 'C', _cid: 3, resolved_ship_date: null }),
+        ],
+        total: 3,
+      })
+      const w = mountView()
+      await flushPromises()
+
+      const cells = w.findAll('[data-testid="ship-date-cell"]')
+      expect(cells.length).toBe(3)
+      expect(cells[0].classes()).toContain('text-ship-today')
+      expect(cells[1].classes()).not.toContain('text-ship-today')
+      expect(cells[2].classes()).not.toContain('text-ship-today')
+      expect(cells[1].classes()).toContain('text-slate-700')
+    })
+
+    it('resolves today in Pacific time, not the viewer local zone', async () => {
+      // 05:00Z on the 20th is still 22:00 PDT on the 19th. A viewer in UTC would
+      // see the 20th; the shop floor has not turned over yet.
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-04-20T05:00:00Z'))
+      mockFetch.mockResolvedValue({
+        rows: [makeJob({ id: 1, _pn: 'A', _cid: 1, resolved_ship_date: '2026-04-19' })],
+        total: 1,
+      })
+      const w = mountView()
+      await flushPromises()
+
+      expect(w.get('[data-testid="ship-date-cell"]').classes()).toContain('text-ship-today')
+    })
   })
 })

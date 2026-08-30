@@ -137,7 +137,7 @@ function handleClose() {
     <template #header>
       <button @click="handleClose" aria-label="Close inspector"
               data-testid="drawer-close-btn"
-              class="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring">
+              class="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring focus-ring-raised">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-slate-500" fill="none"
              viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -168,7 +168,9 @@ function handleClose() {
 
     <div class="px-4 pb-4 space-y-6">
       <template v-for="job in visibleJobs" :key="job.id">
-        <div class="border border-slate-200 dark:border-slate-700 rounded-lg p-4 bg-white dark:bg-slate-800 shadow-sm" :id="`inspect-job-${job.id}`">
+        <div :class="['border border-surface-hairline rounded-lg p-4 bg-surface-overlay',
+                      anchor !== null && job.id === anchor.id ? 'lineage-anchor' : 'shadow-sm']"
+               :id="`inspect-job-${job.id}`">
           <div class="flex items-center gap-2 mb-4">
             <h3 class="text-base font-semibold text-slate-800 dark:text-slate-100">
               Job #{{ job.id }} — {{ job.assembly.part_number }}

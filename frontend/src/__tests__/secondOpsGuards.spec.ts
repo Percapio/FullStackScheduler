@@ -145,9 +145,21 @@ describe('Phase 22 pre-flight greps', () => {
 })
 
 describe('Phase 23 pre-flight greps', () => {
-  it('new Date( in composables/useJobFormatters.ts', () => {
+  it('new Date(<argument>) in composables/useJobFormatters.ts', () => {
+    // The phase-08 defect was `new Date(iso)`: an ISO date string parses as UTC
+    // midnight, after which any local getter can report the previous calendar
+    // day. Constructing the current instant — `new Date()` with no argument —
+    // never parses anything and is the only way to ask what day it is; the clock
+    // that does so must name its zone, asserted below.
     const formatters = readRaw(join(SRC, 'composables', 'useJobFormatters.ts'))
-    expect(formatters).not.toContain('new Date(')
+    expect(formatters).not.toMatch(/new Date\([^)]/)
+  })
+
+  it('an explicit timeZone wherever useJobFormatters reads the current instant', () => {
+    const formatters = readRaw(join(SRC, 'composables', 'useJobFormatters.ts'))
+    if (/new Date\(\)/.test(formatters)) {
+      expect(formatters).toContain('timeZone:')
+    }
   })
 
   it('toISOString in composables/useJobFormatters.ts', () => {

@@ -20,7 +20,7 @@ const {
   secondOpsJob, secondOpsOpen, secondOpsFetch,
   secondOpsRecordJob, secondOpsRecordFetch, secondOpsItem,
 } = storeToRefs(store)
-const { formatShortDate, buildLabel, identitySuffix, renderNotes } = useJobFormatters()
+const { formatShortDate, isShippingToday, buildLabel, identitySuffix, renderNotes } = useJobFormatters()
 
 const sort = ref<SortState>({ key: 'resolved_ship_date', direction: 'asc' })
 const { sorted } = useShippingSort(jobs, sort)
@@ -42,7 +42,7 @@ onMounted(() => {
 
 <template>
   <section>
-    <header class="flex items-baseline justify-between mb-4">
+    <header class="flex items-baseline justify-start gap-[0.75em] mb-4">
       <span class="text-sm text-slate-500 dark:text-slate-400">
         <template v-if="loading">Loading…</template>
         <template v-else>{{ sorted.length }} open jobs</template>
@@ -95,7 +95,12 @@ onMounted(() => {
                      dark:odd:bg-slate-800 dark:even:bg-slate-820
                      odd:hover:bg-slate-50 even:hover:bg-slate-200
                      dark:odd:hover:bg-slate-700 dark:even:hover:bg-slate-840">
-            <td class="px-3 py-2 tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300"
+            <td class="px-3 py-2 tabular-nums whitespace-nowrap"
+                :class="isShippingToday(job.resolved_ship_date)
+                  ? 'text-ship-today'
+                  : 'text-slate-700 dark:text-slate-300'"
+                :data-ships-today="isShippingToday(job.resolved_ship_date) || undefined"
+                data-testid="ship-date-cell"
                 :title="job.ship_date_text ?? undefined">
               {{ formatShortDate(job.resolved_ship_date) }}
             </td>
@@ -116,6 +121,7 @@ onMounted(() => {
             </td>
             <td class="px-3 py-2 align-top">
               <SecondOpsCell
+                active-grid
                 :summary="job.second_ops ?? null"
                 @audit="store.openSecondOps(job)"
                 @inspect="store.openSecondOpsItem($event)"

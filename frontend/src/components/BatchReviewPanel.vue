@@ -364,7 +364,7 @@ async function handleAbandon() {
         <!-- One card per canonical -->
         <div v-for="group in payload.new_b_numbers"
              :key="group.parsed_part_number"
-             class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-820 mb-3">
+             class="rounded-lg border border-surface-hairline bg-surface-overlay mb-3">
 
           <!-- Card header -->
           <div class="flex items-center justify-between px-4 py-2 border-b border-slate-200 dark:border-slate-700">
@@ -420,7 +420,7 @@ async function handleAbandon() {
                      :disabled="groupLoading[group.parsed_part_number] || anyBusy"
                      @keydown.enter="handleSetCanonical(group)" />
               <button type="button"
-                      class="shrink-0 px-2 py-1 text-xs rounded bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-50 transition-colors duration-75"
+                      class="shrink-0 px-2 py-1 text-xs rounded border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 transition-colors duration-75"
                       :disabled="!canonicalInputs[group.parsed_part_number]?.trim() || groupLoading[group.parsed_part_number] || anyBusy"
                       @click="handleSetCanonical(group)">
                 {{ canonicalInputs[group.parsed_part_number] === group.parsed_part_number ? 'Verify all' : 'Apply' }}
@@ -490,7 +490,7 @@ async function handleAbandon() {
                            :disabled="anyBusy"
                            @keydown.enter="handleApplyCanonical(group, row)" />
                     <button type="button"
-                            class="shrink-0 px-1.5 py-0.5 rounded border border-sky-300 text-sky-700 dark:text-sky-300 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors duration-75 disabled:opacity-50"
+                            class="shrink-0 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-75 disabled:opacity-50"
                             :disabled="!canonicalByRow[row.staging_row_id]?.trim() || anyBusy"
                             @click="handleApplyCanonical(group, row)">
                       Apply
@@ -601,7 +601,7 @@ async function handleAbandon() {
         </button>
 
         <button type="button"
-                class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-sky-500 transition-colors duration-100"
+                class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-accent-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-sky-500 transition-colors duration-100"
                 :disabled="!canConfirm || anyBusy"
                 :title="confirmDisabledReason"
                 @click="handleConfirm">

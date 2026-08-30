@@ -99,7 +99,7 @@ function canEditSplitSuffix(): boolean {
                @input="emit('update:canonicalValue', ($event.target as HTMLInputElement).value)"
                @keydown.enter="emit('applyCanonical', row.staging_row_id, canonicalValue)" />
         <button type="button"
-                class="shrink-0 px-1.5 py-0.5 rounded border border-sky-300 text-sky-700 dark:text-sky-300 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors duration-75 disabled:opacity-50"
+                class="shrink-0 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-75 disabled:opacity-50"
                 :disabled="!canonicalValue?.trim() || anyBusy"
                 @click="emit('applyCanonical', row.staging_row_id, canonicalValue)">
           Apply

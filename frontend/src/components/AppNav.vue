@@ -68,13 +68,12 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
 <template>
   <nav class="fixed top-0 inset-x-0 z-50 bg-slate-50/95 dark:bg-slate-900/95 backdrop-blur-sm shadow-[var(--shadow-hover)]">
     <div class="max-w-7xl mx-auto px-6 flex items-center h-14">
-      <span class="font-semibold text-slate-800 dark:text-slate-100 mr-8">Scheduler</span>
       <ul class="flex gap-1">
         <li v-for="tab in tabs" :key="tab.name">
           <RouterLink
             :to="tab.path"
-            class="px-4 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring"
-            active-class="!bg-slate-900 !text-white dark:!bg-slate-100 dark:!text-slate-900"
+            class="px-4 py-2 rounded-md rounded-b-none border-b-2 border-transparent text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-100 ease-out focus-ring"
+            active-class="!border-accent-500 !text-accent-600 dark:!text-accent-300"
           >
             <template v-if="tab.name === 'reconciliation' && inFlightCount > 0">
               {{ tab.label }} <span class="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-semibold rounded-full bg-amber-400 text-amber-900">{{ inFlightCount }}</span>
@@ -85,7 +84,7 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
       </ul>
        <div class="ml-auto flex items-center gap-3">
          <button type="button"
-                 class="px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-sky-500 focus-ring transition-colors duration-100"
+                 class="px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-accent-700 focus-ring transition-colors duration-100"
                  @click="uploadOpen = true">
            Upload Schedule
          </button>

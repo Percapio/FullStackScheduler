@@ -132,13 +132,13 @@ function onReviewAbandoned() {
 <template>
   <Teleport to="body">
     <div v-if="props.open"
-         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm"
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
          role="dialog"
          aria-modal="true"
          aria-labelledby="upload-modal-title"
          @click.self="reviewBatchId ? undefined : close()">
       <div :class="[
-             'w-full mx-4 rounded-lg bg-white dark:bg-slate-800 shadow-[var(--shadow-elevated)] flex flex-col',
+             'w-full mx-4 rounded-lg bg-surface-raised shadow-[var(--shadow-elevated)] flex flex-col',
              reviewBatchId ? 'max-w-2xl' : 'max-w-xl',
            ]">
         <header class="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -147,7 +147,7 @@ function onReviewAbandoned() {
             {{ reviewBatchId ? `Review batch #${reviewBatchId}` : 'Upload Schedule' }}
           </h2>
           <button type="button"
-                  class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 focus-ring rounded px-2"
+                  class="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 focus-ring focus-ring-raised rounded px-2"
                   :disabled="uploading"
                   aria-label="Close upload dialog"
                   @click="close">
@@ -168,9 +168,10 @@ function onReviewAbandoned() {
         <div v-else class="p-6 space-y-4">
           <div :class="[
                 'flex flex-col items-center justify-center gap-3 px-6 py-12 rounded-lg border-2 border-dashed transition-colors duration-150',
+                'bg-surface-overlay',
                 isDragging
-                  ? 'border-sky-50: bg-sky-50 dark:bg-sky-900/30'
-                  : 'border-slate-300 dark:border-slate-600 hover:border-slate-400 dark:hover:border-slate-500 bg-slate-50 dark:bg-slate-820',
+                  ? 'border-accent-500'
+                  : 'border-slate-300 dark:border-slate-600 hover:border-slate-400 dark:hover:border-slate-500',
               ]"
                @dragenter="onDragEnter"
                @dragover="onDragOver"
@@ -189,7 +190,7 @@ function onReviewAbandoned() {
             </p>
             <p class="text-xs text-slate-500 dark:text-slate-400">or</p>
             <button type="button"
-                    class="px-4 py-2 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-sky-500 focus-ring transition-colors duration-100"
+                    class="px-4 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 text-sm font-medium focus-ring focus-ring-overlay transition-colors duration-100"
                     :disabled="uploading"
                     @click="openPicker">
               Browse files
@@ -210,7 +211,7 @@ function onReviewAbandoned() {
               </span>
             </span>
             <button type="button"
-                    class="ml-3 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 focus-ring rounded px-1"
+                    class="ml-3 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 focus-ring focus-ring-raised rounded px-1"
                     :disabled="uploading"
                     @click="reset">
               Clear
@@ -247,13 +248,13 @@ function onReviewAbandoned() {
 
         <footer v-if="!reviewBatchId" class="flex justify-end gap-2 px-6 py-4 border-t border-slate-200 dark:border-slate-700">
           <button type="button"
-                  class="px-4 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 focus-ring transition-colors duration-100"
+                  class="px-4 py-2 rounded-md border border-slate-300 dark:border-slate-600 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 focus-ring focus-ring-raised transition-colors duration-100"
                   :disabled="uploading"
                   @click="close">
             {{ result ? 'Done' : 'Cancel' }}
           </button>
           <button type="button"
-                  class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed focus-ring transition-colors duration-100"
+                  class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-sky-600 text-white text-sm font-medium hover:bg-accent-700 disabled:opacity-50 disabled:cursor-not-allowed focus-ring focus-ring-raised transition-colors duration-100"
                   :disabled="!hasFile || uploading"
                   @click="submit">
             <svg v-if="uploading"

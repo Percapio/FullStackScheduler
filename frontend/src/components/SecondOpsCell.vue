@@ -24,6 +24,11 @@ const props = defineProps<{
   summary: SecondOpsSummary | null
   /** History is the audit trail: read-only, frozen at ship. No Audit, no EDIT. */
   readonly?: boolean
+  /** Shipping's grid is worked, not read: its text is raised a step and an
+   *  N/A is flagged, because an operator scanning it may still need to revisit
+   *  that call. History's archive renders both quietly. Deliberately not derived
+   *  from `readonly` — that flag means "frozen at ship", not "is History". */
+  activeGrid?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -33,6 +38,18 @@ const emit = defineEmits<{
 }>()
 
 const state = computed(() => props.summary?.state ?? null)
+
+const contentText = computed(() => props.activeGrid
+  ? 'text-secondops-text'
+  : 'text-slate-700 dark:text-slate-300')
+
+const controlText = computed(() => props.activeGrid
+  ? 'text-secondops-text'
+  : 'text-slate-600 dark:text-slate-300')
+
+const notApplicableText = computed(() => props.activeGrid
+  ? 'text-secondops-na'
+  : 'text-slate-500 dark:text-slate-400')
 
 const hasUnshownLines = computed(() => {
   const summary = props.summary
@@ -66,8 +83,8 @@ function previewTooltip(line: SecondOpsLine): string | Absent {
         v-else
         type="button"
         data-testid="second-ops-audit-btn"
-        class="self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600
-               text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+        :class="['self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600',
+                 'hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors', controlText]"
         @click.stop="emit('audit')"
       >
         Audit
@@ -76,13 +93,13 @@ function previewTooltip(line: SecondOpsLine): string | Absent {
 
     <template v-else-if="state === 'not_applicable'">
       <div class="flex flex-col gap-1">
-        <span class="text-slate-500 dark:text-slate-400" data-testid="second-ops-na">N/A</span>
+        <span :class="notApplicableText" data-testid="second-ops-na">N/A</span>
         <button
           v-if="!readonly"
           type="button"
           data-testid="second-ops-edit-btn"
-          class="self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600
-                 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+          :class="['self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600',
+                   'hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors', controlText]"
           @click.stop="emit('audit')"
         >
           EDIT
@@ -97,8 +114,8 @@ function previewTooltip(line: SecondOpsLine): string | Absent {
             type="button"
             :title="previewTooltip(line)"
             data-testid="second-ops-preview-line"
-            class="text-left text-slate-700 dark:text-slate-300 hover:underline focus-visible:outline-none
-                   focus-visible:ring-2 focus-visible:ring-blue-500/70 rounded"
+            :class="['text-left hover:underline focus-visible:outline-none',
+                     'focus-visible:ring-2 focus-visible:ring-accent-500/70 rounded', contentText]"
             @click.stop="emit('inspect', line)"
           >{{ previewLabel(line) }}</button>
         </li>
@@ -127,8 +144,8 @@ function previewTooltip(line: SecondOpsLine): string | Absent {
         v-if="!readonly"
         type="button"
         data-testid="second-ops-edit-btn"
-        class="self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600
-               text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+        :class="['self-start rounded px-2 py-0.5 text-xs font-medium border border-slate-300 dark:border-slate-600',
+                 'hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors', controlText]"
         @click.stop="emit('audit')"
       >
         EDIT

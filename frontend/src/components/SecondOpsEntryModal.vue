@@ -217,9 +217,9 @@ async function accept(): Promise<void> {
         class="fixed inset-0 z-50 flex items-center justify-center"
         data-testid="second-ops-entry-modal"
       >
-        <div class="absolute inset-0 bg-slate-900/50" @click="emit('close')" />
+        <div class="absolute inset-0 bg-black/50" @click="emit('close')" />
         <div
-          class="relative z-10 bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-5xl mx-4 p-6 max-h-[90vh] overflow-y-auto"
+          class="relative z-10 bg-surface-raised rounded-xl shadow-2xl w-full max-w-5xl mx-4 p-6 max-h-[90vh] overflow-y-auto"
           role="dialog"
           aria-labelledby="second-ops-entry-title"
         >

@@ -107,14 +107,14 @@ function formatRowLabel(row: StagingRowDetail): string {
             <h3 class="text-sm font-medium text-gray-700 mb-2">Incoming (to be restored)</h3>
             <div
               v-if="preview.incoming.kind === 'staging' && preview.incoming.staging"
-              class="rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900"
+              class="rounded border border-surface-hairline bg-surface-overlay p-3 text-sm text-slate-800 dark:text-slate-200"
               data-testid="restore-conflict-incoming"
             >
               {{ formatRowLabel(preview.incoming.staging) }}
             </div>
             <div
               v-else-if="preview.incoming.kind === 'job' && preview.incoming.job"
-              class="rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900"
+              class="rounded border border-surface-hairline bg-surface-overlay p-3 text-sm text-slate-800 dark:text-slate-200"
               data-testid="restore-conflict-incoming"
             >
               Job #{{ preview.incoming.job.id }} —

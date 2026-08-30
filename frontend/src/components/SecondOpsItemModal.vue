@@ -42,12 +42,12 @@ const LABELS: { key: keyof AuditBomFields; label: string }[] = [
         data-testid="second-ops-item-modal"
       >
         <div
-          class="absolute inset-0 bg-slate-900/50"
+          class="absolute inset-0 bg-black/50"
           data-testid="second-ops-item-backdrop"
           @click="emit('close')"
         />
         <div
-          class="relative z-10 bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-md mx-4 p-6"
+          class="relative z-10 bg-surface-raised rounded-xl shadow-2xl w-full max-w-md mx-4 p-6"
           role="dialog"
           aria-labelledby="second-ops-item-title"
         >

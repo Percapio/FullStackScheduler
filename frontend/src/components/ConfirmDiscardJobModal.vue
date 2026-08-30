@@ -43,12 +43,12 @@ watch(() => props.open, (open) => {
         data-testid="confirm-discard-modal"
       >
         <div
-          class="absolute inset-0 bg-slate-900/50"
+          class="absolute inset-0 bg-black/50"
           data-testid="confirm-discard-backdrop"
           @click="emit('cancel')"
         />
         <div
-          class="relative z-10 bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6"
+          class="relative z-10 bg-surface-raised rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6"
           role="dialog"
           aria-labelledby="confirm-discard-title"
         >

@@ -61,8 +61,8 @@ function handleExport() {
   <Teleport to="body">
     <Transition name="modal">
       <div v-if="isOpen" class="fixed inset-0 z-50 flex items-center justify-center" data-testid="history-export-modal">
-        <div class="absolute inset-0 bg-slate-900/50" data-testid="history-export-backdrop" @click="emit('close')" />
-        <div class="relative z-10 bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6" role="dialog" aria-labelledby="history-export-title">
+        <div class="absolute inset-0 bg-black/50" data-testid="history-export-backdrop" @click="emit('close')" />
+        <div class="relative z-10 bg-surface-raised rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6" role="dialog" aria-labelledby="history-export-title">
           <h3 id="history-export-title" class="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">
             Export History
           </h3>

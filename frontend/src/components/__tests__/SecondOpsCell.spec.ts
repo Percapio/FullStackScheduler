@@ -30,7 +30,7 @@ function makeSummary(overrides: Partial<SecondOpsSummary> = {}): SecondOpsSummar
   }
 }
 
-function mountCell(props: { summary: SecondOpsSummary | null; readonly?: boolean }) {
+function mountCell(props: { summary: SecondOpsSummary | null; readonly?: boolean; activeGrid?: boolean }) {
   return mount(SecondOpsCell, { props })
 }
 
@@ -183,5 +183,36 @@ describe('SecondOpsCell', () => {
     await wrapper.find('[data-testid="second-ops-preview-line"]').trigger('click')
 
     expect(rowClicks).toBe(0)
+  })
+
+  describe('activeGrid', () => {
+    it('flags N/A only in the worked grid, and leaves the archive quiet', () => {
+      const na = makeSummary({ state: 'not_applicable', preview: [], line_count: 0 })
+
+      const shipping = mountCell({ summary: na, activeGrid: true })
+      expect(shipping.get('[data-testid="second-ops-na"]').classes())
+        .toContain('text-secondops-na')
+
+      const history = mountCell({ summary: na, readonly: true })
+      expect(history.get('[data-testid="second-ops-na"]').classes())
+        .not.toContain('text-secondops-na')
+    })
+
+    it('raises the column text only in the worked grid', () => {
+      const shipping = mountCell({ summary: makeSummary(), activeGrid: true })
+      expect(shipping.get('[data-testid="second-ops-preview-line"]').classes())
+        .toContain('text-secondops-text')
+
+      const history = mountCell({ summary: makeSummary(), readonly: true })
+      expect(history.get('[data-testid="second-ops-preview-line"]').classes())
+        .toContain('text-slate-700')
+    })
+
+    it('is independent of readonly, which means frozen-at-ship rather than archived', () => {
+      const both = mountCell({ summary: makeSummary(), readonly: true, activeGrid: true })
+      expect(both.get('[data-testid="second-ops-preview-line"]').classes())
+        .toContain('text-secondops-text')
+      expect(both.find('[data-testid="second-ops-edit-btn"]').exists()).toBe(false)
+    })
   })
 })
