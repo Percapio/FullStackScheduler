@@ -78,6 +78,50 @@ const visibleJobs = computed<JobReadExpanded[]>(() => {
 
 const { showAllData } = useInspectVerbosity()
 
+import { usePhotos } from '@/composables/usePhotos'
+import { photo_folder_for } from '@/api/photos'
+
+const {
+  directoryStatus: photoStatus,
+  folders: photoFolders,
+  lastFetchFailed: photoFetchFailed,
+  loadPhotoIndex,
+  resetPhotoState,
+  openPhotos
+} = usePhotos()
+
+const photoProbeKey = computed(() => {
+  const dates = new Set<string>()
+  for (const j of visibleJobs.value) {
+    if (j.shipped_at) {
+      const f = photo_folder_for(j)
+      if (f) dates.add(f)
+    }
+  }
+  return Array.from(dates).sort().join(',')
+})
+
+watch(photoProbeKey, (newKey) => {
+  if (newKey) {
+    loadPhotoIndex(newKey.split(','))
+  }
+}, { immediate: true })
+
+watch(() => props.anchor, (newAnchor) => {
+  if (!newAnchor) {
+    resetPhotoState()
+  }
+})
+
+import { useToast } from '@/composables/useToast'
+const { show: showToast } = useToast()
+
+watch(photoFetchFailed, (failed) => {
+  if (failed) {
+    showToast('Could not check for photos (network error)', 'error')
+  }
+})
+
 const editingJobId = ref<number | null>(null)
 
 function onEditStarted(jobId: number) {
@@ -184,6 +228,9 @@ function handleClose() {
             :isAnchor="anchor !== null && job.id === anchor.id"
             :showAllData="showAllData && anchor !== null && job.id === anchor.id"
             :editLocked="editingJobId !== null && editingJobId !== job.id"
+            :photoFolders="photoFolders"
+            :photoStatus="photoStatus"
+            :openPhotosCallback="openPhotos"
             @editStarted="onEditStarted"
             @editEnded="onEditEnded"
             @edited="onEdited"

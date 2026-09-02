@@ -8,12 +8,14 @@ import { useDebouncedRef } from '@/composables/useDebouncedRef'
 import { useHistoryStore } from '@/stores/history'
 import { ref } from 'vue'
 import UploadModal from '@/components/UploadModal.vue'
+import SettingsModal from '@/components/SettingsModal.vue'
 import SearchPaginatorBar from '@/components/SearchPaginatorBar.vue'
 import HistoryExportModal from '@/components/HistoryExportModal.vue'
 import { useToast } from '@/composables/useToast'
 import { fetchAwaitingReview } from '@/api/review'
 
 const uploadOpen = ref(false)
+const settingsOpen = ref(false)
 const exportModalIsOpen = ref(false)
 const { show: pushToast } = useToast()
 const inFlightCount = ref(0)
@@ -88,6 +90,11 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
                  @click="uploadOpen = true">
            Upload Schedule
          </button>
+         <button type="button"
+                 class="px-3 py-1.5 rounded-md text-slate-600 dark:text-slate-300 text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700 focus-ring transition-colors duration-100"
+                 @click="settingsOpen = true">
+           Settings
+         </button>
          <div class="flex items-center gap-1">
 
           <button @click="decrease" :disabled="!canDecrease"
@@ -127,6 +134,7 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
       </SearchPaginatorBar>
     </div>
      <UploadModal :open="uploadOpen" @close="onUploadClose" @success="onUploadSuccess" />
+     <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
      <HistoryExportModal :is-open="exportModalIsOpen" :search-query="historyStore.searchQuery" :total-rows="historyStore.total" @close="exportModalIsOpen = false" />
    </nav>
 

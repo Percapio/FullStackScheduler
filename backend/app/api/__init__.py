@@ -52,6 +52,11 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
     app.include_router(assemblies_router, prefix="/api/assemblies", tags=["assemblies"])
     app.include_router(ingest_router, prefix="/api/ingest", tags=["ingest"])
+    
+    from .photos import router as photos_router
+    app.include_router(photos_router, prefix="/api/photos", tags=["photos"])
+    from .settings import settings_router
+    app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
     dist = _dist_dir()
     assets_dir = dist / "assets"

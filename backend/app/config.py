@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     second_ops_max_lines: int = 500          # lines per job; B142006 AUDIT BOM has 56
     second_ops_note_max_chars: int = 4000    # the unexpected-inclusions note
     second_ops_preview_lines: int = 3        # lines rendered in the grid cell
+    
+    # Phase 25 — Shipping Photos
+    shipping_photos_dir: str = ""
+    shipping_photos_index_ttl_seconds: float = 7200.0
+    shipping_photos_unavailable_ttl_seconds: float = 60.0
+    shipping_photos_probe_max: int = 25
+    shipping_photos_open_min_interval_seconds: float = 2.0
+    shipping_photos_max_folders: int = 4000
+    settings_browse_max_entries: int = 2000
+    settings_browse_max_concurrent: int = 2
+    
     model_config = SettingsConfigDict(env_prefix="SCHEDULER_", env_file=".env", extra="ignore")
 
     def model_post_init(self, __ctx) -> None:

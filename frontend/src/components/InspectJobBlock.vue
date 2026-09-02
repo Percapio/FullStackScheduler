@@ -5,11 +5,16 @@ import { useJobActions } from '@/composables/useJobActions'
 import type { HistoryEditDraft, JobReadExpanded } from '@/api/history'
 import { useJobFormatters } from '@/composables/useJobFormatters'
 
+import type { PhotoDirectoryStatus } from '@/api/photos'
+
 const props = defineProps<{
   job: JobReadExpanded
   isAnchor: boolean
   showAllData: boolean
   editLocked: boolean
+  photoFolders: string[]
+  photoStatus: PhotoDirectoryStatus | 'unknown'
+  openPhotosCallback: (date_folder: string) => Promise<any>
 }>()
 
 const emit = defineEmits<{
@@ -54,9 +59,52 @@ watch(() => props.job.id, () => {
   confirmOpen.value = false
 })
 
-const editAvailable = computed(() => canEdit(props.job) && !props.editLocked)
 const discardAvailable = computed(() => canDiscard(props.job))
 
+import { photo_folder_for } from '@/api/photos'
+import { useToast } from '@/composables/useToast'
+const { show: showToast } = useToast()
+
+const photoFolder = computed(() => photo_folder_for(props.job))
+
+const photosAvailable = computed(() => {
+  return photoFolder.value !== null &&
+         props.photoStatus === 'ok' &&
+         props.photoFolders.includes(photoFolder.value)
+})
+
+const photoDisabledTooltip = computed(() => {
+  if (photosAvailable.value) return ''
+  if (photoFolder.value === null) return 'Job has not shipped'
+  if (props.photoStatus === 'unconfigured') return 'Shipping photos directory is not configured'
+  if (props.photoStatus === 'unavailable') return 'Shipping photos directory is unreachable'
+  if (props.photoStatus === 'unknown') return 'Could not check for photos'
+  return `No photos folder for ${photoFolder.value}`
+})
+
+const photoOpening = ref(false)
+
+async function onOpenPhotos() {
+  if (!photoFolder.value || !photosAvailable.value) return
+  photoOpening.value = true
+  
+  const result = await props.openPhotosCallback(photoFolder.value)
+  photoOpening.value = false
+  
+  if (result.kind === 'ok') {
+    showToast(`Opened ${result.date_folder} on the production computer.`, 'success')
+  } else if (result.kind === 'rate_limited') {
+    showToast(`Please wait ${result.retry_after_seconds} seconds before opening another folder.`, 'error')
+  } else if (result.kind === 'not_found') {
+    showToast(`Photos folder ${photoFolder.value} no longer exists.`, 'error')
+  } else if (result.kind === 'unconfigured') {
+    showToast('Shipping photos directory is not configured.', 'error')
+  } else if (result.kind === 'unavailable') {
+    showToast('Shipping photos directory is unreachable.', 'error')
+  } else if (result.kind === 'shell_error' || result.kind === 'network') {
+    showToast('Failed to open photos folder.', 'error')
+  }
+}
 function enterEditMode(): void {
   const pre: HistoryEditDraft = {
     part_number:      props.job.assembly.part_number,
@@ -296,8 +344,20 @@ const curated = computed<CuratedField[]>(() => {
         </template>
       </dl>
 
-      <div v-if="discardAvailable || editAvailable || editLocked"
-           class="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
+      <div class="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
+        <button
+          data-testid="inspect-photos-btn"
+          type="button"
+          :disabled="!photosAvailable || photoOpening"
+          :title="photoDisabledTooltip || ''"
+          class="rounded px-3 py-1.5 text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors disabled:opacity-50 disabled:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-300 dark:disabled:bg-slate-800 flex items-center gap-2 mr-auto"
+          @click="onOpenPhotos"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+          </svg>
+          Photos
+        </button>
         <button
           v-if="canEdit(job)"
           data-testid="inspect-edit-btn"

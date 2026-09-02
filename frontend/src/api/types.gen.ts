@@ -635,6 +635,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/photos/available-dates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Available Dates */
+        get: operations["get_available_dates_api_photos_available_dates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/photos/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open Photo Folder Endpoint */
+        post: operations["open_photo_folder_endpoint_api_photos_open_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/photos-dir": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Photos Dir */
+        get: operations["get_photos_dir_api_settings_photos_dir_get"];
+        /** Put Photos Dir */
+        put: operations["put_photos_dir_api_settings_photos_dir_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse Directory */
+        get: operations["browse_directory_api_settings_browse_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -747,6 +816,22 @@ export interface components {
              * @description Excel workbook (.xlsx) to ingest
              */
             file: string;
+        };
+        /** BrowseEntry */
+        BrowseEntry: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+        };
+        /** BrowseRead */
+        BrowseRead: {
+            /** Parent */
+            parent: string | null;
+            /** Entries */
+            entries: components["schemas"]["BrowseEntry"][];
+            /** Truncated */
+            truncated: boolean;
         };
         /**
          * BuildQualifier
@@ -1108,6 +1193,58 @@ export interface components {
          * @enum {string}
          */
         JobStatus: "planned" | "shipped";
+        /** PhotoFolderIndexRead */
+        PhotoFolderIndexRead: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "unconfigured" | "unavailable" | "ok";
+            /** Folders */
+            folders: string[];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** PhotoOpenRequest */
+        PhotoOpenRequest: {
+            /** Date Folder */
+            date_folder: string;
+        };
+        /** PhotosDirRead */
+        PhotosDirRead: {
+            /** Path */
+            path: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "runtime" | "env" | "unset";
+            /** Configured */
+            configured: boolean;
+            /** Editable */
+            editable: boolean;
+        };
+        /** PhotosDirWrite */
+        PhotosDirWrite: {
+            /** Path */
+            path: string;
+        };
+        /** PhotosDirWriteResponse */
+        PhotosDirWriteResponse: {
+            /** Path */
+            path: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "runtime" | "env" | "unset";
+            /** Configured */
+            configured: boolean;
+            /** Editable */
+            editable: boolean;
+            /** Folder Count */
+            folder_count: number;
+        };
         /**
          * RestoreConflictPreview
          * @description Read-only snapshot describing what would collide if a discarded row were restored.
@@ -2492,6 +2629,155 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_available_dates_api_photos_available_dates_get: {
+        parameters: {
+            query?: {
+                probe?: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoFolderIndexRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_photo_folder_endpoint_api_photos_open_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotoOpenRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_photos_dir_api_settings_photos_dir_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotosDirRead"];
+                };
+            };
+        };
+    };
+    put_photos_dir_api_settings_photos_dir_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotosDirWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotosDirWriteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browse_directory_api_settings_browse_get: {
+        parameters: {
+            query?: {
+                path?: string;
+                prefix?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowseRead"];
                 };
             };
             /** @description Validation Error */

@@ -44,6 +44,12 @@ vi.mock('@/composables/useJobActions', () => ({
   }),
 }))
 
+vi.mock('@/composables/useToast', () => ({
+  useToast: () => ({
+    show: vi.fn(),
+  }),
+}))
+
 let wrapper: VueWrapper | null = null
 
 function mountBlock(
@@ -51,7 +57,16 @@ function mountBlock(
   extraProps: Record<string, unknown> = {},
 ) {
   wrapper = mount(InspectJobBlock, {
-    props: { job, isAnchor: true, showAllData: false, editLocked: false, ...extraProps },
+    props: {
+      job,
+      isAnchor: true,
+      showAllData: false,
+      editLocked: false,
+      photoFolders: [],
+      photoStatus: 'unknown',
+      openPhotosCallback: vi.fn(),
+      ...extraProps
+    },
     attachTo: document.body,
   })
   return wrapper
@@ -241,6 +256,34 @@ describe('InspectJobBlock', () => {
     await flushPromises() // ensure async function completes
 
     expect(mockDiscardJob).toHaveBeenCalledWith(42, 'Duplicate entry')
+  })
+
+  describe('photos integration', () => {
+    it('disables photos button with empty folders array', () => {
+      mountBlock(makeJob({ shipped_at: '2023-07-24' }), {
+        photoStatus: 'ok',
+        photoFolders: []
+      })
+      const btn = document.body.querySelector('[data-testid="inspect-photos-btn"]') as HTMLButtonElement
+      expect(btn.disabled).toBe(true)
+      expect(btn.title).toContain('No photos folder')
+    })
+
+    it('enables photos button when available and calls open callback', async () => {
+      const openPhotosCallback = vi.fn().mockResolvedValue({ kind: 'ok' })
+      const w = mountBlock(makeJob({ shipped_at: '2023-07-24' }), {
+        photoStatus: 'ok',
+        photoFolders: ['2023_07_24'],
+        openPhotosCallback
+      })
+      
+      const btn = document.body.querySelector('[data-testid="inspect-photos-btn"]') as HTMLButtonElement
+      expect(btn.disabled).toBe(false)
+      
+      btn.click()
+      await w.vm.$nextTick()
+      expect(openPhotosCallback).toHaveBeenCalledWith('2023_07_24')
+    })
   })
 })
 

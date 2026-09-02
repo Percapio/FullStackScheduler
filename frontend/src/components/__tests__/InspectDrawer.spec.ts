@@ -38,6 +38,18 @@ vi.mock('@/api/history', () => ({
   fetchJobLineage: vi.fn(),
 }))
 
+vi.mock('@/api/photos', () => ({
+  fetchAvailableDates: vi.fn().mockResolvedValue({ kind: 'ok', status: 'ok', folders: [], truncated: false }),
+  openPhotoFolder: vi.fn(),
+  photo_folder_for: vi.fn((job) => job.shipped_at ? job.shipped_at.replace(/-/g, '_') : null),
+}))
+
+vi.mock('@/composables/useToast', () => ({
+  useToast: () => ({
+    show: vi.fn(),
+  }),
+}))
+
 let wrapper: VueWrapper | null = null
 
 function mountDrawer(anchor: JobReadExpanded | null) {
@@ -140,5 +152,56 @@ describe('InspectDrawer', () => {
     backdrop.click()
     await w.vm.$nextTick()
     expect(w.emitted('close')).toHaveLength(1)
+  })
+
+  describe('photos integration', () => {
+    it('fetches photos after lineage resolves', async () => {
+      const fetchPhotos = (await import('@/api/photos')).fetchAvailableDates as any
+      fetchPhotos.mockClear()
+      
+      const p1 = makeJob({ id: 1, shipped_at: '2023-07-24' })
+      const p2 = makeJob({ id: 2, shipped_at: '2023-07-25' })
+      vi.mocked(fetchJobLineage).mockResolvedValue([p1, p2])
+
+      mountDrawer(p1)
+      await flushPromises()
+      
+      expect(fetchPhotos).toHaveBeenCalledWith(['2023_07_24', '2023_07_25'])
+    })
+
+    it('issues no photos request for empty chain', async () => {
+      const fetchPhotos = (await import('@/api/photos')).fetchAvailableDates as any
+      fetchPhotos.mockClear()
+      
+      const p1 = makeJob({ id: 1, shipped_at: null })
+      vi.mocked(fetchJobLineage).mockResolvedValue([p1])
+
+      mountDrawer(p1)
+      await flushPromises()
+      
+      expect(fetchPhotos).not.toHaveBeenCalled()
+    })
+
+    it('re-fetches if close and reopen on same anchor', async () => {
+      const fetchPhotos = (await import('@/api/photos')).fetchAvailableDates as any
+      fetchPhotos.mockClear()
+      
+      const p1 = makeJob({ id: 1, shipped_at: '2023-07-24' })
+      vi.mocked(fetchJobLineage).mockResolvedValue([p1])
+
+      const w = mountDrawer(p1)
+      await flushPromises()
+      expect(fetchPhotos).toHaveBeenCalledTimes(1)
+
+      // Close
+      await w.setProps({ anchor: null })
+      await flushPromises()
+
+      // Reopen
+      await w.setProps({ anchor: p1 })
+      await flushPromises()
+      
+      expect(fetchPhotos).toHaveBeenCalledTimes(2)
+    })
   })
 })
