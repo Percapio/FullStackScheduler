@@ -86,7 +86,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from ..services.photo_files import (
     resolve_file_index, resolve_photo_file_path, stream_photo_archive, PhotoFileListStatus
 )
-from ..services.photo_thumbnails import resolve_thumbnail, acquire_thumbnail_permit
+from ..services.photo_thumbnails import generate_once, acquire_thumbnail_permit
 
 class PhotoFileEntryRead(BaseModel):
     name: str
@@ -152,6 +152,7 @@ def get_file(
     )
 
 
+from ..services.photo_thumbnails import generate_once
 
 @router.get("/thumb/{filename}")
 def get_thumb(
@@ -161,25 +162,17 @@ def get_thumb(
 ):
     idx = resolve_file_index(date_folder, settings, time.monotonic)
     
-    with acquire_thumbnail_permit("interactive", settings) as (status, _):
-        if status == "err":
-            return JSONResponse(
-                status_code=503,
-                content={"kind": "busy"},
-                headers={"Retry-After": "1", "Cache-Control": "no-store"}
-            )
+    res = generate_once(date_folder, filename, idx, "interactive", settings)
+    if res[0] == "err":
+        if res[1] == "not_previewable":
+            return JSONResponse(status_code=415, content={"kind": res[1]}, headers={"Cache-Control": "no-store"})
+        elif res[1] in ("unavailable", "cache_unavailable", "saturated", "timeout"):
+            return JSONResponse(status_code=503, content={"kind": res[1]}, headers={"Retry-After": "1", "Cache-Control": "no-store"})
+        else:
+            return JSONResponse(status_code=404, content={"kind": res[1]}, headers={"Cache-Control": "no-store"})
             
-        res = resolve_thumbnail(date_folder, filename, idx, settings)
-        if res[0] == "err":
-            if res[1] == "not_previewable":
-                return JSONResponse(status_code=415, content={"kind": res[1]}, headers={"Cache-Control": "no-store"})
-            elif res[1] in ("unavailable", "cache_unavailable"):
-                return JSONResponse(status_code=503, content={"kind": res[1]}, headers={"Retry-After": "1", "Cache-Control": "no-store"})
-            else:
-                return JSONResponse(status_code=404, content={"kind": res[1]}, headers={"Cache-Control": "no-store"})
-                
-        return FileResponse(
-            res[1].path,
+    return FileResponse(
+        res[1].path,
             media_type=res[1].media_type,
             headers={
                 "Cache-Control": "private, max-age=31536000, immutable",

@@ -63,7 +63,7 @@ def test_thumb_endpoint(client, tmp_path, monkeypatch):
         return "err", "not_previewable"
         
     import backend.app.api.photos as ap
-    monkeypatch.setattr(ap, "resolve_thumbnail", mock_resolve)
+    monkeypatch.setattr(ap, "generate_once", mock_resolve)
     
     response = client.get("/api/photos/thumb/file.jpg?date_folder=2023_01_01")
     assert response.status_code == 415
@@ -77,7 +77,7 @@ def test_thumb_endpoint_cache_unavailable(client, tmp_path, monkeypatch):
         return "err", "cache_unavailable"
         
     import backend.app.api.photos as ap
-    monkeypatch.setattr(ap, "resolve_thumbnail", mock_resolve)
+    monkeypatch.setattr(ap, "generate_once", mock_resolve)
     
     response = client.get("/api/photos/thumb/file.jpg?date_folder=2023_01_01")
     assert response.status_code == 503
@@ -93,7 +93,7 @@ def test_thumb_endpoint_success_headers(client, tmp_path, monkeypatch):
         return "ok", ThumbnailResult(path=tmp_path / "2023_01_01" / "file.jpg", media_type="image/jpeg")
         
     import backend.app.api.photos as ap
-    monkeypatch.setattr(ap, "resolve_thumbnail", mock_resolve)
+    monkeypatch.setattr(ap, "generate_once", mock_resolve)
     
     response = client.get("/api/photos/thumb/file.jpg?date_folder=2023_01_01")
     assert response.status_code == 200

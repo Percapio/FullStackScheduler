@@ -6,7 +6,7 @@ from PIL import Image
 
 from backend.app.config import Settings
 from backend.app.services.photo_files import PhotoFileIndex, PhotoFileListStatus, PhotoFileEntry
-from backend.app.services.photo_thumbnails import resolve_thumbnail, _get_cache_dir
+from backend.app.services.photo_thumbnails import generate_once, _get_cache_dir
 
 @pytest.fixture
 def mock_cache_dir(monkeypatch, tmp_path):
@@ -30,7 +30,7 @@ def test_resolve_thumbnail_success(tmp_path, mock_cache_dir):
     
     # Create valid image
     img_path = tmp_path / "2023_01_01" / "valid.jpg"
-    img = Image.new("RGB", (200, 200), color="red")
+    img = Image.new("RGB", (2000, 2000), color="red")
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
@@ -42,7 +42,7 @@ def test_resolve_thumbnail_success(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, result = resolve_thumbnail("2023_01_01", "valid.jpg", idx, settings)
+    res, result = generate_once("2023_01_01", "valid.jpg", idx, "interactive", settings)
     assert res == "ok"
     assert result.media_type == "image/webp"
     assert result.path.exists()
@@ -74,7 +74,7 @@ def test_resolve_thumbnail_exif_transpose(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, result = resolve_thumbnail("2023_01_01", "exif.jpg", idx, settings)
+    res, result = generate_once("2023_01_01", "exif.jpg", idx, "interactive", settings)
     assert res == "ok"
     
     with Image.open(result.path) as t:
@@ -92,7 +92,7 @@ def test_resolve_thumbnail_cache_unavailable(tmp_path, mock_cache_dir, monkeypat
     (tmp_path / "2023_01_01").mkdir()
     
     img_path = tmp_path / "2023_01_01" / "valid.jpg"
-    img = Image.new("RGB", (200, 200), color="red")
+    img = Image.new("RGB", (2000, 2000), color="red")
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
@@ -114,7 +114,7 @@ def test_resolve_thumbnail_cache_unavailable(tmp_path, mock_cache_dir, monkeypat
         
     monkeypatch.setattr(pathlib.Path, "replace", mock_replace)
     
-    res, result = resolve_thumbnail("2023_01_01", "valid.jpg", idx, settings)
+    res, result = generate_once("2023_01_01", "valid.jpg", idx, "interactive", settings)
     assert res == "err"
     assert result == "cache_unavailable"
     
@@ -139,7 +139,7 @@ def test_resolve_thumbnail_undecodable(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, msg = resolve_thumbnail("2023_01_01", "bad.jpg", idx, settings)
+    res, msg = generate_once("2023_01_01", "bad.jpg", idx, "interactive", settings)
     assert res == "err"
     assert msg == "not_previewable"
     
@@ -180,7 +180,7 @@ def test_resolve_thumbnail_sweep(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, result = resolve_thumbnail("2023_01_01", "valid.jpg", idx, settings)
+    res, result = generate_once("2023_01_01", "valid.jpg", idx, "interactive", settings)
     assert res == "ok"
     
     # Sweep should have run, old should be deleted
@@ -290,7 +290,7 @@ def test_gate_waiter_count_returns_to_zero_after_exception():
     import backend.app.services.photo_thumbnails as pt
     assert pt._gate_active == 0
 
-def test_pillow_calls_draft(tmp_path, monkeypatch):
+def test_pillow_calls_draft(tmp_path, monkeypatch, mock_cache_dir):
     settings = Settings(
         shipping_photos_dir=str(tmp_path),
         shipping_photos_thumb_max_edge_px=100
@@ -298,7 +298,7 @@ def test_pillow_calls_draft(tmp_path, monkeypatch):
     (tmp_path / "2023_01_01").mkdir()
     
     img_path = tmp_path / "2023_01_01" / "draft.jpg"
-    img = Image.new("RGB", (200, 200), color="red")
+    img = Image.new("RGB", (2000, 2000), color="red")
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
@@ -311,13 +311,216 @@ def test_pillow_calls_draft(tmp_path, monkeypatch):
     )
     
     draft_calls = []
-    original_draft = Image.Image.draft
+    import PIL.JpegImagePlugin
+    original_draft = PIL.JpegImagePlugin.JpegImageFile.draft
     def mock_draft(self, mode, size):
         draft_calls.append(size)
         return original_draft(self, mode, size)
         
-    monkeypatch.setattr(Image.Image, "draft", mock_draft)
+    monkeypatch.setattr(PIL.JpegImagePlugin.JpegImageFile, "draft", mock_draft)
     
-    res, result = resolve_thumbnail("2023_01_01", "draft.jpg", idx, settings)
+    res, result = generate_once("2023_01_01", "draft.jpg", idx, "interactive", settings)
     assert res == "ok"
     assert len(draft_calls) > 0
+import threading
+import time
+from backend.app.services.photo_thumbnails import generate_once, _inflight, _inflight_lock
+
+def test_single_flight_success(tmp_path, mock_cache_dir, monkeypatch):
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_max_edge_px=100,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    (tmp_path / "2023_01_01").mkdir()
+    
+    img_path = tmp_path / "2023_01_01" / "sf.jpg"
+    img = Image.new("RGB", (200, 200), color="blue")
+    img.save(img_path, format="JPEG")
+    
+    idx = PhotoFileIndex(
+        status=PhotoFileListStatus.OK,
+        entries=[],
+        by_name={"sf.jpg": PhotoFileEntry("sf.jpg", 100, 100, "100-100", True)},
+        total_bytes=100,
+        scanned_at=0,
+        truncated=False
+    )
+
+    import backend.app.services.photo_thumbnails as pt
+    
+    # We want to intercept _generate_impl to block and verify N=1 calls
+    calls = []
+    real_gen = pt._generate_impl
+    ev_start = threading.Event()
+    ev_proceed = threading.Event()
+    
+    def mock_gen(*args, **kwargs):
+        calls.append(1)
+        ev_start.set()
+        ev_proceed.wait()
+        return real_gen(*args, **kwargs)
+        
+    monkeypatch.setattr(pt, "_generate_impl", mock_gen)
+    
+    res1 = []
+    res2 = []
+    
+    def worker1():
+        res1.append(generate_once("2023_01_01", "sf.jpg", idx, "interactive", settings))
+    def worker2():
+        res2.append(generate_once("2023_01_01", "sf.jpg", idx, "interactive", settings))
+        
+    t1 = threading.Thread(target=worker1)
+    t1.start()
+    
+    ev_start.wait()
+    
+    # Now t1 is in _generate_impl (holding permit, registered in inflight map)
+    t2 = threading.Thread(target=worker2)
+    t2.start()
+    
+    # Ensure t2 is waiting
+    time.sleep(0.1)
+    # Check that it's waiting WITHOUT holding a permit.
+    # We started t1 first, it took the only permit? Actually max_concurrent is 8.
+    # But wait, how do we know it didn't take a permit?
+    # Because it is blocked on record.done.wait() and we know it didn't call _generate_impl again!
+    assert len(calls) == 1
+    
+    ev_proceed.set()
+    t1.join()
+    t2.join()
+    
+    assert len(calls) == 1
+    assert res1[0][0] == "ok"
+    assert res2[0][0] == "ok"
+    
+    with _inflight_lock:
+        assert len(_inflight) == 0
+
+def test_single_flight_failure(tmp_path, mock_cache_dir, monkeypatch):
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_max_edge_px=100,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    (tmp_path / "2023_01_01").mkdir()
+    
+    img_path = tmp_path / "2023_01_01" / "fail.jpg"
+    img_path.write_bytes(b"not an image")
+    
+    idx = PhotoFileIndex(
+        status=PhotoFileListStatus.OK,
+        entries=[],
+        by_name={"fail.jpg": PhotoFileEntry("fail.jpg", 100, 100, "100-100", True)},
+        total_bytes=100,
+        scanned_at=0,
+        truncated=False
+    )
+    
+    import backend.app.services.photo_thumbnails as pt
+    
+    calls = []
+    real_gen = pt._generate_impl
+    ev_start = threading.Event()
+    ev_proceed = threading.Event()
+    
+    def mock_gen(*args, **kwargs):
+        calls.append(1)
+        ev_start.set()
+        ev_proceed.wait()
+        return real_gen(*args, **kwargs)
+        
+    monkeypatch.setattr(pt, "_generate_impl", mock_gen)
+    
+    res1 = []
+    res2 = []
+    
+    def worker1():
+        res1.append(generate_once("2023_01_01", "fail.jpg", idx, "interactive", settings))
+    def worker2():
+        res2.append(generate_once("2023_01_01", "fail.jpg", idx, "interactive", settings))
+        
+    t1 = threading.Thread(target=worker1)
+    t1.start()
+    
+    ev_start.wait()
+    t2 = threading.Thread(target=worker2)
+    t2.start()
+    
+    time.sleep(0.1)
+    ev_proceed.set()
+    t1.join()
+    t2.join()
+    
+    assert len(calls) == 1
+    assert res1[0][0] == "err"
+    assert res1[0][1] == "not_previewable"
+    assert res2[0][0] == "err"
+    assert res2[0][1] == "not_previewable"
+    
+    with _inflight_lock:
+        assert len(_inflight) == 0
+
+def test_single_flight_timeout(tmp_path, mock_cache_dir, monkeypatch):
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_max_edge_px=100,
+        shipping_photos_thumb_queue_wait_seconds=0.1
+    )
+    (tmp_path / "2023_01_01").mkdir()
+    
+    img_path = tmp_path / "2023_01_01" / "to.jpg"
+    img = Image.new("RGB", (200, 200), color="blue")
+    img.save(img_path, format="JPEG")
+    
+    idx = PhotoFileIndex(
+        status=PhotoFileListStatus.OK,
+        entries=[],
+        by_name={"to.jpg": PhotoFileEntry("to.jpg", 100, 100, "100-100", True)},
+        total_bytes=100,
+        scanned_at=0,
+        truncated=False
+    )
+    
+    import backend.app.services.photo_thumbnails as pt
+    
+    ev_start = threading.Event()
+
+    real_gen = pt._generate_impl
+    def mock_gen(*args, **kwargs):
+        ev_start.set()
+        time.sleep(0.5)
+        return real_gen(*args, **kwargs)
+        
+    monkeypatch.setattr(pt, "_generate_impl", mock_gen)
+    
+    res1 = []
+    res2 = []
+    
+    def worker1():
+        try:
+            res1.append(generate_once("2023_01_01", "to.jpg", idx, "interactive", settings))
+        except Exception as e:
+            print("W1 ERROR:", repr(e))
+    def worker2():
+        res2.append(generate_once("2023_01_01", "to.jpg", idx, "interactive", settings))
+        
+    t1 = threading.Thread(target=worker1)
+    t1.start()
+    
+    ev_start.wait()
+    t2 = threading.Thread(target=worker2)
+    t2.start()
+    
+    t2.join()
+    assert res2[0][0] == "err"
+    assert res2[0][1] == "timeout"
+    
+    t1.join()
+    assert res1[0][0] == "ok"
+    
+    with _inflight_lock:
+        assert len(_inflight) == 0
+

@@ -104,13 +104,21 @@ def _clean_cache_if_needed(cache_dir: Path, settings: Settings) -> None:
 
 _write_counter = 0
 
-def resolve_thumbnail(
+@dataclass
+class InflightGeneration:
+    done: threading.Event
+    outcome: Union[tuple[Literal["ok"], ThumbnailResult], tuple[Literal["err"], ThumbnailFailure], None] = None
+
+_inflight_lock = threading.Lock()
+_inflight: dict[str, InflightGeneration] = {}
+
+def generate_once(
     date_folder: str,
     file_name: str,
     index: PhotoFileIndex,
+    priority: Priority,
     settings: Settings
-) -> Union[tuple[Literal["ok"], ThumbnailResult], tuple[Literal["err"], ThumbnailFailure]]:
-    global _write_counter
+) -> Union[tuple[Literal["ok"], ThumbnailResult], tuple[Literal["err"], Union[ThumbnailFailure, GateRejection]]]:
     
     # 1. Resolve source
     res = resolve_photo_file_path(date_folder, file_name, index, settings)
@@ -122,26 +130,73 @@ def resolve_thumbnail(
     if not entry or not entry.previewable:
         return "err", "not_previewable"
         
-    cache_key = f"{date_folder}_{file_name}_{entry.version}.webp"
-    
-    cache_key = cache_key.replace("\\", "_").replace("/", "_")
+    cache_key = f"{date_folder}_{file_name}_{entry.version}.webp".replace("\\", "_").replace("/", "_")
     
     cache_dir = _get_cache_dir()
     cache_path = cache_dir / cache_key
     
-    # 2. Check cache
-    try:
-        st = cache_path.stat()
-        if st.st_size == 0:
-            return "err", "not_previewable"
+    def check_cache():
+        try:
+            st = cache_path.stat()
+            if st.st_size == 0:
+                return "err", "not_previewable"
+            now = time.time()
+            os.utime(cache_path, (now, now))
+            return "ok", ThumbnailResult(path=cache_path, media_type="image/webp")
+        except OSError:
+            return None
             
-        now = time.time()
-        os.utime(cache_path, (now, now))
-        return "ok", ThumbnailResult(path=cache_path, media_type="image/webp")
-    except OSError:
-        pass 
+    # 1. Cache hit?
+    hit = check_cache()
+    if hit: return hit
         
-    # 3. Generate
+    # 2. Check inflight
+    with _inflight_lock:
+        record = _inflight.get(cache_key)
+        
+    if record:
+        # 3. Wait WITHOUT holding a permit
+        record.done.wait(timeout=settings.shipping_photos_thumb_queue_wait_seconds)
+        
+        # 4. If wait completed (outcome is set), return it
+        if record.outcome is not None:
+            return record.outcome
+            
+    # 5. Acquire a permit
+    with acquire_thumbnail_permit(priority, settings) as (status, reason):
+        if status == "err":
+            return "err", reason
+            
+        # 6. Re-check cache
+        hit = check_cache()
+        if hit: return hit
+            
+        # 7. Re-check inflight map
+        with _inflight_lock:
+            if cache_key in _inflight:
+                return "err", "timeout"
+                
+            # 8. Register fresh record
+            record = InflightGeneration(done=threading.Event())
+            _inflight[cache_key] = record
+            
+        # Now generate
+        try:
+            outcome = _generate_impl(source_path, cache_path, cache_dir, settings)
+        except Exception as e:
+            logger.error(f"Unexpected error in generation: {e}")
+            outcome = ("err", "not_previewable")
+            
+        # 8b. FINALLY
+        with _inflight_lock:
+            record.outcome = outcome
+            del _inflight[cache_key]
+            record.done.set()
+            
+        return outcome
+
+def _generate_impl(source_path: Path, cache_path: Path, cache_dir: Path, settings: Settings):
+    global _write_counter
     max_edge = settings.shipping_photos_thumb_max_edge_px
     quality = settings.shipping_photos_thumb_quality
     
@@ -149,8 +204,8 @@ def resolve_thumbnail(
     
     try:
         with Image.open(source_path) as img:
-            img = ImageOps.exif_transpose(img)
             img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+            img = ImageOps.exif_transpose(img)
             img.save(temp_path, format="WEBP", quality=quality)
     except Exception as e:
         logger.info("Thumbnail generation failed for %s: %s", source_path, e)
