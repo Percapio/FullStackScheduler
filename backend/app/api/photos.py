@@ -86,7 +86,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from ..services.photo_files import (
     resolve_file_index, resolve_photo_file_path, stream_photo_archive, PhotoFileListStatus
 )
-from ..services.photo_thumbnails import resolve_thumbnail
+from ..services.photo_thumbnails import resolve_thumbnail, acquire_thumbnail_permit
 
 class PhotoFileEntryRead(BaseModel):
     name: str
@@ -151,12 +151,7 @@ def get_file(
         },
     )
 
-_thumb_semaphore = None
-def get_thumb_semaphore(settings: Settings):
-    global _thumb_semaphore
-    if _thumb_semaphore is None:
-        _thumb_semaphore = threading.Semaphore(settings.shipping_photos_thumb_max_concurrent)
-    return _thumb_semaphore
+
 
 @router.get("/thumb/{filename}")
 def get_thumb(
@@ -166,15 +161,14 @@ def get_thumb(
 ):
     idx = resolve_file_index(date_folder, settings, time.monotonic)
     
-    sem = get_thumb_semaphore(settings)
-    if not sem.acquire(blocking=False):
-        return JSONResponse(
-            status_code=503,
-            content={"kind": "busy"},
-            headers={"Retry-After": "1", "Cache-Control": "no-store"}
-        )
-        
-    try:
+    with acquire_thumbnail_permit("interactive", settings) as (status, _):
+        if status == "err":
+            return JSONResponse(
+                status_code=503,
+                content={"kind": "busy"},
+                headers={"Retry-After": "1", "Cache-Control": "no-store"}
+            )
+            
         res = resolve_thumbnail(date_folder, filename, idx, settings)
         if res[0] == "err":
             if res[1] == "not_previewable":
@@ -193,8 +187,6 @@ def get_thumb(
                 "Content-Security-Policy": "sandbox"
             }
         )
-    finally:
-        sem.release()
 
 class ArchiveRequest(BaseModel):
     date_folder: str = Field(pattern=PHOTO_FOLDER_PATTERN.pattern)

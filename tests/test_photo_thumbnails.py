@@ -185,3 +185,139 @@ def test_resolve_thumbnail_sweep(tmp_path, mock_cache_dir):
     
     # Sweep should have run, old should be deleted
     assert not p1.exists()
+
+from backend.app.services.photo_thumbnails import (
+    acquire_thumbnail_permit
+)
+
+@pytest.fixture(autouse=True)
+def reset_gate():
+    import backend.app.services.photo_thumbnails as pt
+    pt._gate_active = 0
+    pt._gate_waiting = 0
+
+def test_gate_interactive_blocks_and_grants(tmp_path):
+    settings = Settings(
+        shipping_photos_thumb_max_concurrent=1,
+        shipping_photos_thumb_max_waiters=1,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    
+    # Take the only permit
+    permit1 = acquire_thumbnail_permit("interactive", settings)
+    ctx1 = permit1.__enter__()
+    assert ctx1[0] == "ok"
+    
+    # Thread 2 should block
+    import threading
+    result = []
+    def thread2():
+        with acquire_thumbnail_permit("interactive", settings) as (status, _):
+            result.append(status)
+            
+    t = threading.Thread(target=thread2)
+    t.start()
+    
+    # Ensure it's waiting
+    time.sleep(0.1)
+    import backend.app.services.photo_thumbnails as pt
+    assert pt._gate_waiting == 1
+    assert not result
+    
+    # Release permit1
+    permit1.__exit__(None, None, None)
+    
+    t.join()
+    assert result == ["ok"]
+    assert pt._gate_waiting == 0
+    assert pt._gate_active == 0
+
+def test_gate_interactive_rejects_when_waiters_full():
+    settings = Settings(
+        shipping_photos_thumb_max_concurrent=0,
+        shipping_photos_thumb_max_waiters=0,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    with acquire_thumbnail_permit("interactive", settings) as (status, reason):
+        assert status == "err"
+        assert reason == "saturated"
+        
+    import backend.app.services.photo_thumbnails as pt
+    assert pt._gate_waiting == 0
+    assert pt._gate_active == 0
+
+def test_gate_warm_rejects_immediately_no_waiter():
+    settings = Settings(
+        shipping_photos_thumb_max_concurrent=0,
+        shipping_photos_thumb_max_waiters=5,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    with acquire_thumbnail_permit("warm", settings) as (status, reason):
+        assert status == "err"
+        assert reason == "saturated"
+        
+    import backend.app.services.photo_thumbnails as pt
+    assert pt._gate_waiting == 0
+    assert pt._gate_active == 0
+
+def test_gate_waiter_count_returns_to_zero_after_timeout():
+    settings = Settings(
+        shipping_photos_thumb_max_concurrent=0,
+        shipping_photos_thumb_max_waiters=5,
+        shipping_photos_thumb_queue_wait_seconds=0.1
+    )
+    
+    with acquire_thumbnail_permit("interactive", settings) as (status, reason):
+        assert status == "err"
+        assert reason == "timeout"
+        
+    import backend.app.services.photo_thumbnails as pt
+    assert pt._gate_waiting == 0
+
+def test_gate_waiter_count_returns_to_zero_after_exception():
+    settings = Settings(
+        shipping_photos_thumb_max_concurrent=1,
+        shipping_photos_thumb_max_waiters=5,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    
+    try:
+        with acquire_thumbnail_permit("interactive", settings):
+            raise ValueError("test")
+    except ValueError:
+        pass
+        
+    import backend.app.services.photo_thumbnails as pt
+    assert pt._gate_active == 0
+
+def test_pillow_calls_draft(tmp_path, monkeypatch):
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_max_edge_px=100
+    )
+    (tmp_path / "2023_01_01").mkdir()
+    
+    img_path = tmp_path / "2023_01_01" / "draft.jpg"
+    img = Image.new("RGB", (200, 200), color="red")
+    img.save(img_path, format="JPEG")
+    
+    idx = PhotoFileIndex(
+        status=PhotoFileListStatus.OK,
+        entries=[],
+        by_name={"draft.jpg": PhotoFileEntry("draft.jpg", 100, 100, "100-100", True)},
+        total_bytes=100,
+        scanned_at=0,
+        truncated=False
+    )
+    
+    draft_calls = []
+    original_draft = Image.Image.draft
+    def mock_draft(self, mode, size):
+        draft_calls.append(size)
+        return original_draft(self, mode, size)
+        
+    monkeypatch.setattr(Image.Image, "draft", mock_draft)
+    
+    res, result = resolve_thumbnail("2023_01_01", "draft.jpg", idx, settings)
+    assert res == "ok"
+    assert len(draft_calls) > 0

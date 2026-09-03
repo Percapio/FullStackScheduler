@@ -8,8 +8,53 @@ from PIL import Image, ImageOps
 
 from ..config import Settings, _runtime_root
 from .photo_files import resolve_photo_file_path, PhotoFileIndex
+import threading
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+GateRejection = Literal["saturated", "timeout"]
+Priority = Literal["interactive", "warm"]
+
+_gate_lock = threading.Lock()
+_gate_cv = threading.Condition(_gate_lock)
+_gate_active = 0
+_gate_waiting = 0
+
+@contextmanager
+def acquire_thumbnail_permit(priority: Priority, settings: Settings):
+    global _gate_active, _gate_waiting
+    
+    with _gate_cv:
+        if _gate_active >= settings.shipping_photos_thumb_max_concurrent:
+            if priority == "warm":
+                yield "err", "saturated"
+                return
+            if _gate_waiting >= settings.shipping_photos_thumb_max_waiters:
+                yield "err", "saturated"
+                return
+                
+            _gate_waiting += 1
+            try:
+                success = _gate_cv.wait_for(
+                    lambda: _gate_active < settings.shipping_photos_thumb_max_concurrent,
+                    settings.shipping_photos_thumb_queue_wait_seconds
+                )
+                if not success:
+                    yield "err", "timeout"
+                    return
+            finally:
+                _gate_waiting -= 1
+                
+        _gate_active += 1
+        
+    try:
+        yield "ok", None
+    finally:
+        with _gate_cv:
+            _gate_active -= 1
+            _gate_cv.notify()
+
 
 ThumbnailFailure = Literal[
     "unconfigured",
