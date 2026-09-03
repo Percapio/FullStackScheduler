@@ -106,6 +106,13 @@ def list_files(
     settings: Settings = Depends(get_settings)
 ):
     idx = resolve_file_index(date_folder, settings, time.monotonic)
+    try:
+        from ..services.photo_warm import enqueue_warm
+        enqueue_warm(date_folder, settings)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to enqueue warm worker: {e}")
+        
     entries = []
     if idx.status == PhotoFileListStatus.OK:
         entries = [

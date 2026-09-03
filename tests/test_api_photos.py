@@ -138,3 +138,27 @@ def test_archive_endpoint_loopback(client, tmp_path):
     names = zf.namelist()
     assert "f1.jpg" in names
     assert "f2.jpg" in names
+def test_files_endpoint_calls_enqueue_warm(client, tmp_path, monkeypatch):
+    (tmp_path / "2023_01_01").mkdir()
+    
+    calls = []
+    def mock_enqueue(folder, settings):
+        calls.append(folder)
+        
+    monkeypatch.setattr("backend.app.services.photo_warm.enqueue_warm", mock_enqueue)
+    
+    response = client.get("/api/photos/files?date_folder=2023_01_01")
+    assert response.status_code == 200
+    assert calls == ["2023_01_01"]
+    
+def test_files_endpoint_enqueue_warm_raises(client, tmp_path, monkeypatch):
+    (tmp_path / "2023_01_01").mkdir()
+    
+    def mock_enqueue(folder, settings):
+        raise ValueError("Boom")
+        
+    monkeypatch.setattr("backend.app.services.photo_warm.enqueue_warm", mock_enqueue)
+    
+    response = client.get("/api/photos/files?date_folder=2023_01_01")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

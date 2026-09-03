@@ -77,4 +77,9 @@ def create_app() -> FastAPI:
     if get_settings().gc_freeze_after_startup:
         freeze_import_time_state()
 
+    @app.on_event('shutdown')
+    def shutdown_event():
+        from ..services.photo_warm import shutdown_warm_worker
+        shutdown_warm_worker()
+
     return app
