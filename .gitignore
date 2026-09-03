@@ -14,6 +14,7 @@ Architecture
 *.csv
 
 backend/outputs/db
+outputs/
 
 build
 dist

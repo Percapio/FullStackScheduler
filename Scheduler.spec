@@ -14,7 +14,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['PIL.ImageQt', 'tkinter', '_tkinter'],
     noarchive=False,
     optimize=0,
 )

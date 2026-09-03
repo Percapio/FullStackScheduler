@@ -2,11 +2,22 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 
-from fastapi import Depends, Query, HTTPException
+from fastapi import Depends, Query, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
 from ..services.history_export import HISTORY_EXPORT_COLUMNS_BY_KEY, DelimiterToken
+
+
+def is_loopback_caller(request: Request) -> bool:
+    if getattr(request, "client", None) is None:
+        return False
+    host = request.client.host
+    return host in ("127.0.0.1", "::1")
+
+def require_loopback(is_loopback: bool = Depends(is_loopback_caller)) -> None:
+    if not is_loopback:
+        raise HTTPException(status_code=403, detail="Loopback callers only")
 
 
 def get_session() -> Iterator[Session]:

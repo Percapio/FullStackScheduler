@@ -6,7 +6,7 @@ from backend.app.config import Settings, get_settings
 from backend.app.api import create_app
 import backend.app.services.runtime_config as rc
 import backend.app.api.settings as api_settings
-
+import backend.app.api.deps as deps
 app = create_app()
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def test_loopback_gate():
         def __init__(self, host):
             self.client = MockClient(host) if host is not None else None
             
-    from backend.app.api.settings import is_loopback_caller
+    from backend.app.api.deps import is_loopback_caller
     assert is_loopback_caller(MockRequest("127.0.0.1")) is True
     assert is_loopback_caller(MockRequest("::1")) is True
     assert is_loopback_caller(MockRequest("192.168.1.5")) is False
@@ -47,7 +47,7 @@ def test_get_photos_dir_non_loopback(client):
     assert "C:\\env" not in response.text # Leak check
 
 def test_get_photos_dir_loopback(client):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     response = client.get("/api/settings/photos-dir")
     assert response.status_code == 200
@@ -55,10 +55,10 @@ def test_get_photos_dir_loopback(client):
     assert data["editable"] is True
     assert data["path"] == "C:\\env"
     assert data["configured"] is True
-    app.dependency_overrides.pop(api_settings.is_loopback_caller)
+    app.dependency_overrides.pop(deps.is_loopback_caller)
     
 def test_get_photos_dir_unconfigured_loopback(client):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     app.dependency_overrides[get_settings] = lambda: Settings(shipping_photos_dir="")
     response = client.get("/api/settings/photos-dir")
@@ -74,7 +74,7 @@ def test_browse_non_loopback(client):
     assert response.status_code == 403
 
 def test_browse_loopback(client, tmp_path):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -91,10 +91,10 @@ def test_browse_loopback(client, tmp_path):
     assert "c" not in names
     
     assert data["parent"] == str(tmp_path.parent)
-    app.dependency_overrides.pop(api_settings.is_loopback_caller)
+    app.dependency_overrides.pop(deps.is_loopback_caller)
 
 def test_browse_filtering_and_truncation(client, tmp_path):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     app.dependency_overrides[get_settings] = lambda: Settings(settings_browse_max_entries=2)
     
@@ -117,7 +117,7 @@ def test_browse_filtering_and_truncation(client, tmp_path):
     app.dependency_overrides.clear()
 
 def test_browse_semaphore(client):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     api_settings._browse_semaphore = None
     settings = Settings(settings_browse_max_concurrent=1)
@@ -137,7 +137,7 @@ def test_browse_semaphore(client):
     app.dependency_overrides.clear()
 
 def test_put_photos_dir_validations(client, tmp_path):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     response = client.put("/api/settings/photos-dir", json={"path": "  "})
     assert response.status_code == 422
@@ -155,20 +155,20 @@ def test_put_photos_dir_validations(client, tmp_path):
     response = client.put("/api/settings/photos-dir", json={"path": str(tmp_path / "file")})
     assert response.status_code == 422
     assert response.json()["detail"]["kind"] == "not_a_dir"
-    app.dependency_overrides.pop(api_settings.is_loopback_caller)
+    app.dependency_overrides.pop(deps.is_loopback_caller)
 
 def test_put_photos_dir_empty_dir_success(client, tmp_path):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     (tmp_path / "empty").mkdir()
     response = client.put("/api/settings/photos-dir", json={"path": str(tmp_path / "empty")})
     assert response.status_code == 200
     assert response.json()["folder_count"] == 0
     assert response.json()["path"] == str(tmp_path / "empty")
-    app.dependency_overrides.pop(api_settings.is_loopback_caller)
+    app.dependency_overrides.pop(deps.is_loopback_caller)
 
 def test_put_photos_dir_invalidates_index(client, tmp_path):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     import backend.app.services.shipping_photos as sp
     from backend.app.services.shipping_photos import resolve_folder_index
@@ -196,7 +196,7 @@ def test_put_photos_dir_invalidates_index(client, tmp_path):
     app.dependency_overrides.clear()
     
 def test_put_photos_dir_storage_failure(client, monkeypatch, tmp_path):
-    app.dependency_overrides[api_settings.is_loopback_caller] = lambda: True
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
     
     def mock_save(*args, **kwargs):
         raise rc.RuntimeConfigWriteError("Failed")
@@ -207,4 +207,4 @@ def test_put_photos_dir_storage_failure(client, monkeypatch, tmp_path):
     response = client.put("/api/settings/photos-dir", json={"path": str(tmp_path / "new")})
     assert response.status_code == 500
     assert response.json()["detail"]["kind"] == "storage"
-    app.dependency_overrides.pop(api_settings.is_loopback_caller)
+    app.dependency_overrides.pop(deps.is_loopback_caller)

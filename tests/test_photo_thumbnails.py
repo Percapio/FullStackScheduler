@@ -524,3 +524,206 @@ def test_single_flight_timeout(tmp_path, mock_cache_dir, monkeypatch):
     with _inflight_lock:
         assert len(_inflight) == 0
 
+
+
+def _one_file_index(name: str) -> PhotoFileIndex:
+    return PhotoFileIndex(
+        status=PhotoFileListStatus.OK,
+        entries=[],
+        by_name={name: PhotoFileEntry(name, 100, 100, "100-100", True)},
+        total_bytes=100,
+        scanned_at=0,
+        truncated=False
+    )
+
+
+def test_single_flight_waiter_holds_no_permit(tmp_path, mock_cache_dir, monkeypatch):
+    """Patch 05 8.1: a waiter must not occupy a permit while waiting.
+
+    Two permits. A holds one generating k1. B waits on k1's record. C requests
+    k2 and must be granted the second permit and COMPLETE while A is still
+    blocked -- which is only possible if B is holding nothing. An
+    implementation that acquires before checking the in-flight map has B
+    sitting on the second permit, and C times out.
+    """
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_max_edge_px=100,
+        shipping_photos_thumb_max_concurrent=2,
+        shipping_photos_thumb_max_waiters=8,
+        shipping_photos_thumb_queue_wait_seconds=1.0
+    )
+    (tmp_path / "2023_01_01").mkdir()
+    for name in ("k1.jpg", "k2.jpg"):
+        Image.new("RGB", (200, 200), color="blue").save(tmp_path / "2023_01_01" / name, format="JPEG")
+
+    idx = PhotoFileIndex(
+        status=PhotoFileListStatus.OK,
+        entries=[],
+        by_name={
+            "k1.jpg": PhotoFileEntry("k1.jpg", 100, 100, "100-100", True),
+            "k2.jpg": PhotoFileEntry("k2.jpg", 100, 100, "100-100", True),
+        },
+        total_bytes=200,
+        scanned_at=0,
+        truncated=False
+    )
+
+    import backend.app.services.photo_thumbnails as pt
+    real_gen = pt._generate_impl
+    k1_started = threading.Event()
+    k1_release = threading.Event()
+
+    def mock_gen(source_path, *args, **kwargs):
+        if source_path.name == "k1.jpg":
+            k1_started.set()
+            k1_release.wait(10.0)
+        return real_gen(source_path, *args, **kwargs)
+
+    monkeypatch.setattr(pt, "_generate_impl", mock_gen)
+
+    res_b, res_c = [], []
+    a = threading.Thread(target=lambda: generate_once("2023_01_01", "k1.jpg", idx, "interactive", settings))
+    a.start()
+    assert k1_started.wait(5.0)
+
+    b = threading.Thread(target=lambda: res_b.append(generate_once("2023_01_01", "k1.jpg", idx, "interactive", settings)))
+    b.start()
+    time.sleep(0.2)  # let B reach its wait on k1's record
+
+    c = threading.Thread(target=lambda: res_c.append(generate_once("2023_01_01", "k2.jpg", idx, "interactive", settings)))
+    c.start()
+    c.join(5.0)
+
+    # C must have finished on the free permit, with A still blocked.
+    assert not c.is_alive(), "C never completed: a waiter was holding its permit"
+    assert res_c and res_c[0][0] == "ok", f"C was starved by the waiter: {res_c}"
+    assert not k1_release.is_set(), "test error: A was released before C finished"
+
+    k1_release.set()
+    b.join(10.0)
+    a.join(10.0)
+    assert res_b[0][0] == "ok"
+
+
+def test_single_flight_lost_race_at_step_6_returns_cache_without_decoding(tmp_path, mock_cache_dir, monkeypatch):
+    """Patch 05 8.1: a caller whose cache entry appears while it queues for a
+    permit returns the cached entry and performs no decode.
+
+    B clears step 1 (miss) and step 2 (no record) before A registers, then
+    blocks on the sole permit while A generates the key and retires. B only
+    discovers the entry at step 6, under the permit.
+    """
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_max_edge_px=100,
+        shipping_photos_thumb_max_concurrent=1,
+        shipping_photos_thumb_max_waiters=8,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    (tmp_path / "2023_01_01").mkdir()
+    Image.new("RGB", (200, 200), color="green").save(tmp_path / "2023_01_01" / "race.jpg", format="JPEG")
+    idx = _one_file_index("race.jpg")
+
+    import backend.app.services.photo_thumbnails as pt
+    from contextlib import contextmanager
+
+    b_at_gate = threading.Event()
+    b_release = threading.Event()
+    seen = []
+    real_permit = pt.acquire_thumbnail_permit
+
+    @contextmanager
+    def gated_permit(priority, s):
+        if not seen:
+            seen.append(1)          # B: past step 2, not yet holding a permit
+            b_at_gate.set()
+            b_release.wait(5.0)
+        with real_permit(priority, s) as granted:
+            yield granted
+
+    decodes = []
+    real_gen = pt._generate_impl
+
+    def counting_gen(*args, **kwargs):
+        decodes.append(1)
+        return real_gen(*args, **kwargs)
+
+    monkeypatch.setattr(pt, "acquire_thumbnail_permit", gated_permit)
+    monkeypatch.setattr(pt, "_generate_impl", counting_gen)
+
+    res_b = []
+    b = threading.Thread(target=lambda: res_b.append(generate_once("2023_01_01", "race.jpg", idx, "interactive", settings)))
+    b.start()
+    assert b_at_gate.wait(5.0)
+
+    res_a = generate_once("2023_01_01", "race.jpg", idx, "interactive", settings)
+    assert res_a[0] == "ok"
+    assert len(decodes) == 1
+
+    b_release.set()
+    b.join(10.0)
+
+    assert res_b[0][0] == "ok"
+    assert res_b[0][1].path == res_a[1].path
+    assert len(decodes) == 1, "B re-generated an entry that was already cached"
+
+
+def test_single_flight_concurrent_claim_rejoins_instead_of_503(tmp_path, mock_cache_dir, monkeypatch):
+    """Regression: two callers that both clear the step-2 in-flight check
+    before either registers at step 7.
+
+    The loser must release its permit and re-join the winner with the budget it
+    has not spent, not return a rejection it never waited for. With the client
+    retry deleted (Patch 05 Decision 5), that 503 is a permanent placeholder.
+    """
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_max_edge_px=100,
+        shipping_photos_thumb_queue_wait_seconds=5.0
+    )
+    (tmp_path / "2023_01_01").mkdir()
+    Image.new("RGB", (200, 200), color="red").save(tmp_path / "2023_01_01" / "claim.jpg", format="JPEG")
+    idx = _one_file_index("claim.jpg")
+
+    import backend.app.services.photo_thumbnails as pt
+    from contextlib import contextmanager
+
+    # Hold both callers at the gate so neither can register until both have
+    # passed the step-2 check.
+    both_past_step_2 = threading.Barrier(2, timeout=10.0)
+    real_permit = pt.acquire_thumbnail_permit
+
+    @contextmanager
+    def gated_permit(priority, s):
+        both_past_step_2.wait()
+        with real_permit(priority, s) as granted:
+            yield granted
+
+    decodes = []
+    real_gen = pt._generate_impl
+
+    def slow_gen(*args, **kwargs):
+        decodes.append(1)
+        time.sleep(0.2)
+        return real_gen(*args, **kwargs)
+
+    monkeypatch.setattr(pt, "acquire_thumbnail_permit", gated_permit)
+    monkeypatch.setattr(pt, "_generate_impl", slow_gen)
+
+    results = {}
+
+    def call(name):
+        results[name] = generate_once("2023_01_01", "claim.jpg", idx, "interactive", settings)
+
+    threads = [threading.Thread(target=call, args=(n,)) for n in ("A", "B")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(15.0)
+
+    assert results["A"][0] == "ok", f"A was rejected without waiting: {results['A']}"
+    assert results["B"][0] == "ok", f"B was rejected without waiting: {results['B']}"
+    assert len(decodes) == 1, "both callers decoded the same key"
+    with _inflight_lock:
+        assert len(_inflight) == 0

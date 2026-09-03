@@ -31,14 +31,23 @@ def mock_clock():
             self.time += amount
     return Clock()
 
+@pytest.fixture(autouse=True)
+def mock_runtime(monkeypatch, tmp_path):
+    import backend.app.services.runtime_config as rc
+    rc._cached_config = None
+    monkeypatch.setattr(rc, "_runtime_root", lambda: tmp_path)
+    
 @pytest.fixture
 def reset_module_state():
+    import backend.app.services.runtime_config as rc
     # Reset globals before each test
     sp._cached_index = None
     sp._last_open_monotonic = None
+    rc._cached_config = None
     yield
     sp._cached_index = None
     sp._last_open_monotonic = None
+    rc._cached_config = None
 
 def test_grammar():
     # Accepted

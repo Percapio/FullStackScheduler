@@ -23,37 +23,53 @@ _gate_waiting = 0
 
 @contextmanager
 def acquire_thumbnail_permit(priority: Priority, settings: Settings):
+    """Acquires a generation permit.
+
+    INTERACTIVE blocks for at most queue_wait_seconds, and is rejected without
+    queueing once max_waiters are already waiting. WARM never blocks and never
+    registers as a waiter, so the worker cannot occupy a slot an operator is
+    waiting for nor lengthen the queue by standing in it.
+
+    The rejection is decided under _gate_cv but yielded outside it: a caller
+    that did any work in its error branch would otherwise hold the gate's lock
+    for the duration and stall every other request.
+    """
     global _gate_active, _gate_waiting
-    
+
+    rejection: GateRejection | None = None
+
     with _gate_cv:
         if _gate_active >= settings.shipping_photos_thumb_max_concurrent:
             if priority == "warm":
-                yield "err", "saturated"
-                return
-            if _gate_waiting >= settings.shipping_photos_thumb_max_waiters:
-                yield "err", "saturated"
-                return
-                
-            _gate_waiting += 1
-            try:
-                success = _gate_cv.wait_for(
-                    lambda: _gate_active < settings.shipping_photos_thumb_max_concurrent,
-                    settings.shipping_photos_thumb_queue_wait_seconds
-                )
-                if not success:
-                    yield "err", "timeout"
-                    return
-            finally:
-                _gate_waiting -= 1
-                
-        _gate_active += 1
-        
+                rejection = "saturated"
+            elif _gate_waiting >= settings.shipping_photos_thumb_max_waiters:
+                rejection = "saturated"
+            else:
+                _gate_waiting += 1
+                try:
+                    granted = _gate_cv.wait_for(
+                        lambda: _gate_active < settings.shipping_photos_thumb_max_concurrent,
+                        settings.shipping_photos_thumb_queue_wait_seconds
+                    )
+                finally:
+                    _gate_waiting -= 1
+                if not granted:
+                    rejection = "timeout"
+
+        if rejection is None:
+            _gate_active += 1
+
+    if rejection is not None:
+        yield "err", rejection
+        return
+
     try:
         yield "ok", None
     finally:
         with _gate_cv:
             _gate_active -= 1
             _gate_cv.notify()
+
 
 
 ThumbnailFailure = Literal[
@@ -146,54 +162,72 @@ def generate_once(
         except OSError:
             return None
             
-    # 1. Cache hit?
-    hit = check_cache()
-    if hit: return hit
-        
-    # 2. Check inflight
-    with _inflight_lock:
-        record = _inflight.get(cache_key)
-        
-    if record:
-        # 3. Wait WITHOUT holding a permit
-        record.done.wait(timeout=settings.shipping_photos_thumb_queue_wait_seconds)
-        
-        # 4. If wait completed (outcome is set), return it
-        if record.outcome is not None:
-            return record.outcome
-            
-    # 5. Acquire a permit
-    with acquire_thumbnail_permit(priority, settings) as (status, reason):
-        if status == "err":
-            return "err", reason
-            
-        # 6. Re-check cache
+    deadline = time.monotonic() + settings.shipping_photos_thumb_queue_wait_seconds
+
+    while True:
+        # 1. Cache hit? No lock, no permit.
         hit = check_cache()
-        if hit: return hit
-            
-        # 7. Re-check inflight map
+        if hit:
+            return hit
+
+        # 2. Is this key already being generated?
         with _inflight_lock:
-            if cache_key in _inflight:
-                return "err", "timeout"
-                
-            # 8. Register fresh record
-            record = InflightGeneration(done=threading.Event())
-            _inflight[cache_key] = record
-            
-        # Now generate
-        try:
-            outcome = _generate_impl(source_path, cache_path, cache_dir, settings)
-        except Exception as e:
-            logger.error(f"Unexpected error in generation: {e}")
+            record = _inflight.get(cache_key)
+
+        # 3./4. Wait on the generator's outcome WITHOUT holding a permit. A
+        #       waiter that held one while waiting on the holder of another is
+        #       how N permits deadlock on N distinct photos.
+        if record is not None:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                record.done.wait(timeout=remaining)
+                if record.outcome is not None:
+                    return record.outcome
+            return "err", "timeout"
+
+        # 5. No generator yet. Take a permit and try to become one.
+        record = None
+        with acquire_thumbnail_permit(priority, settings) as (status, reason):
+            if status == "err":
+                return "err", reason
+
+            # 6. The cache may have been populated while we queued for a permit.
+            hit = check_cache()
+            if hit:
+                return hit
+
+            # 7. So may the in-flight map. Two decoders on one key is what this
+            #    function exists to prevent, so claim the key or don't generate.
+            with _inflight_lock:
+                if cache_key not in _inflight:
+                    record = InflightGeneration(done=threading.Event())
+                    _inflight[cache_key] = record
+
+            if record is None:
+                # Someone claimed it while we queued. `continue` leaves this
+                # `with`, so the permit is released before we re-join them on
+                # the next pass with whatever budget is left. Returning a
+                # rejection here instead would 503 a caller that has not yet
+                # waited at all -- and with the client retry gone, that tile
+                # is a permanent placeholder.
+                continue
+
+            # 8. Generate, then publish the outcome and retire the record in a
+            #    real finally: an exception between registration and completion
+            #    would otherwise park every subsequent caller for the full wait,
+            #    turning one corrupt photo into a stall for the process's life.
             outcome = ("err", "not_previewable")
-            
-        # 8b. FINALLY
-        with _inflight_lock:
-            record.outcome = outcome
-            del _inflight[cache_key]
-            record.done.set()
-            
-        return outcome
+            try:
+                outcome = _generate_impl(source_path, cache_path, cache_dir, settings)
+            except Exception as e:
+                logger.error("Unexpected error generating %s: %s", cache_key, e)
+            finally:
+                with _inflight_lock:
+                    record.outcome = outcome
+                    _inflight.pop(cache_key, None)
+                    record.done.set()
+
+            return outcome
 
 def _generate_impl(source_path: Path, cache_path: Path, cache_dir: Path, settings: Settings):
     global _write_counter
@@ -204,6 +238,12 @@ def _generate_impl(source_path: Path, cache_path: Path, cache_dir: Path, setting
     
     try:
         with Image.open(source_path) as img:
+            # Transpose AFTER the resize, against Patch 05 5.1's stated order.
+            # exif_transpose forces a full load, which discards the DCT-scaled
+            # decode thumbnail() gets from draft() -- 50 ms against 16 ms on a
+            # 4032x3024 orientation-6 JPEG, on the one optimisation 0.1's whole
+            # cost model rests on. The fit box is square, so both orders give
+            # pixel-identical output; only the cost differs.
             img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
             img = ImageOps.exif_transpose(img)
             img.save(temp_path, format="WEBP", quality=quality)

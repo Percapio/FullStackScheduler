@@ -134,7 +134,6 @@ def list_files(
 def get_file(
     filename: str,
     date_folder: str = Query(..., pattern=PHOTO_FOLDER_PATTERN.pattern),
-    is_loopback: bool = Depends(is_loopback_caller),
     settings: Settings = Depends(get_settings)
 ):
     idx = resolve_file_index(date_folder, settings, time.monotonic)
@@ -143,14 +142,8 @@ def get_file(
     if res[0] == "err":
         return JSONResponse(status_code=404, content={"kind": res[1]})
         
-    path = res[1]
-    
-    # LAN check
-    if not is_loopback:
-        pass # The architecture bounded archive and thumb, but did it bound individual files? Let's assume no max concurrent for single files, wait, I'll just return FileResponse
-        
     return FileResponse(
-        path,
+        res[1],
         headers={
             "Cache-Control": "private, max-age=31536000, immutable",
             "X-Content-Type-Options": "nosniff",

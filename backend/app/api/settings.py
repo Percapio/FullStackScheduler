@@ -10,20 +10,11 @@ from pydantic import BaseModel, Field
 from ..config import Settings, get_settings
 from ..services.runtime_config import effective_photos_dir, save_photos_dir, RuntimeConfigWriteError
 from ..services.shipping_photos import PHOTO_FOLDER_PATTERN, invalidate_index
+from .deps import is_loopback_caller, require_loopback
 
 logger = logging.getLogger(__name__)
 
 settings_router = APIRouter()
-
-def is_loopback_caller(request: Request) -> bool:
-    if getattr(request, "client", None) is None:
-        return False
-    host = request.client.host
-    return host in ("127.0.0.1", "::1")
-
-def require_loopback(is_loopback: bool = Depends(is_loopback_caller)) -> None:
-    if not is_loopback:
-        raise HTTPException(status_code=403, detail="Loopback callers only")
 
 class PhotosDirRead(BaseModel):
     path: Optional[str]
@@ -181,7 +172,9 @@ def put_photos_dir(
     except RuntimeConfigWriteError:
         raise HTTPException(status_code=500, detail={"kind": "storage"})
         
+    from ..services.photo_files import invalidate_file_index, ALL_FOLDERS
     invalidate_index()
+    invalidate_file_index(ALL_FOLDERS())
     
     host = request.client.host if getattr(request, "client", None) else "unknown"
     logger.info("Photos directory changed from %r to %r by %s", old_dir, str(path_obj), host)

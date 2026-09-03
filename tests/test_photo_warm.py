@@ -14,6 +14,7 @@ def reset_warm_state():
     pw._warm_queue.clear()
     pw._warm_known.clear()
     pw._warm_thread = None
+    pw._warm_worker_running = False
     pw._warm_stop.clear()
     yield
     pw.shutdown_warm_worker(timeout=5.0)
@@ -317,3 +318,51 @@ def test_per_file_exception_does_not_kill_loop(tmp_path):
         assert "f1" not in pw._warm_known
         assert "f2" not in pw._warm_known
 
+
+
+def test_enqueue_during_worker_retirement_is_not_stranded(tmp_path):
+    """Regression: the worker retires by clearing a flag under _warm_lock, not
+    by dying.
+
+    enqueue_warm used to gate the thread start on is_alive(). A GET /files
+    landing between the worker breaking out of a drained queue and the thread
+    actually terminating enqueued the folder and started nothing, leaving it in
+    _warm_queue and _warm_known forever -- never warmed, and never
+    re-enqueueable, because the dedup check then returned early on every
+    subsequent request for that folder.
+    """
+    settings = Settings(
+        shipping_photos_dir=str(tmp_path),
+        shipping_photos_thumb_warm_enabled=True
+    )
+
+    walked = []
+    real_loop = pw.warm_worker_loop
+
+    def loop_with_slow_teardown(s, stop):
+        real_loop(s, stop)
+        time.sleep(1.0)          # thread stays alive well past retirement
+
+    with patch.object(pw, "warm_worker_loop", side_effect=loop_with_slow_teardown), \
+         patch.object(pw, "_process_folder", side_effect=lambda df, s, stop: walked.append(df)):
+
+        pw.enqueue_warm("2023_01_01", settings)
+
+        deadline = time.monotonic() + 5.0
+        while walked != ["2023_01_01"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert walked == ["2023_01_01"]
+
+        # The first worker has drained the queue and retired, but is still alive.
+        assert pw._warm_thread.is_alive()
+        assert pw._warm_worker_running is False
+
+        pw.enqueue_warm("2023_01_02", settings)
+
+        deadline = time.monotonic() + 5.0
+        while walked != ["2023_01_01", "2023_01_02"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert walked == ["2023_01_01", "2023_01_02"], "the folder was stranded"
+    assert not pw._warm_queue
+    assert not pw._warm_known

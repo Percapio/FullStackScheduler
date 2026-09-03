@@ -162,3 +162,23 @@ def test_files_endpoint_enqueue_warm_raises(client, tmp_path, monkeypatch):
     response = client.get("/api/photos/files?date_folder=2023_01_01")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_thumb_endpoint_saturated_returns_503_no_store(client, tmp_path, monkeypatch):
+    """Patch 05 8.3: unchanged from Phase 26, asserted here because Part 2
+    rewrote the code path that produces it."""
+    (tmp_path / "2023_01_01").mkdir()
+    (tmp_path / "2023_01_01" / "file.jpg").write_bytes(b"image data")
+
+    # Permits exhausted AND the admission bound already full, so the request is
+    # rejected without queueing rather than waiting out queue_wait_seconds.
+    import backend.app.services.photo_thumbnails as pt
+    monkeypatch.setattr(pt, "_gate_active", 999)
+    monkeypatch.setattr(pt, "_gate_waiting", 999)
+
+    response = client.get("/api/photos/thumb/file.jpg?date_folder=2023_01_01")
+
+    assert response.status_code == 503
+    assert response.json()["kind"] in ("saturated", "timeout")
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Retry-After"] == "1"
