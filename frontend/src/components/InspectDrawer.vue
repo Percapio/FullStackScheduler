@@ -107,11 +107,7 @@ watch(photoProbeKey, (newKey) => {
   }
 }, { immediate: true })
 
-watch(() => props.anchor, (newAnchor) => {
-  if (!newAnchor) {
-    resetPhotoState()
-  }
-})
+// old watch removed
 
 import { useToast } from '@/composables/useToast'
 const { show: showToast } = useToast()
@@ -162,6 +158,11 @@ function onDiscarded(jobId: number) {
   })
 }
 
+import PhotoGalleryModal from './PhotoGalleryModal.vue'
+import { usePhotoGallery } from '@/composables/usePhotoGallery'
+
+const gallery = usePhotoGallery()
+
 function handleClose() {
   if (editingJobId.value !== null) {
     const ok = window.confirm('Discard unsaved changes?')
@@ -169,9 +170,17 @@ function handleClose() {
   }
   emit('close')
 }
+
+watch(() => props.anchor, (newAnchor) => {
+  if (!newAnchor) {
+    resetPhotoState()
+    gallery.closeGallery()
+  }
+})
 </script>
 
 <template>
+  <PhotoGalleryModal :gallery="gallery" />
   <SlideOverPanel
     :open="anchor !== null"
     width="xl"
@@ -231,6 +240,7 @@ function handleClose() {
             :photoFolders="photoFolders"
             :photoStatus="photoStatus"
             :openPhotosCallback="openPhotos"
+            :openGalleryCallback="gallery.openGallery"
             @editStarted="onEditStarted"
             @editEnded="onEditEnded"
             @edited="onEdited"

@@ -15,6 +15,7 @@ const props = defineProps<{
   photoFolders: string[]
   photoStatus: PhotoDirectoryStatus | 'unknown'
   openPhotosCallback: (date_folder: string) => Promise<any>
+  openGalleryCallback: (date_folder: string) => Promise<void>
 }>()
 
 const emit = defineEmits<{
@@ -345,19 +346,36 @@ const curated = computed<CuratedField[]>(() => {
       </dl>
 
       <div class="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
-        <button
-          data-testid="inspect-photos-btn"
-          type="button"
-          :disabled="!photosAvailable || photoOpening"
-          :title="photoDisabledTooltip || ''"
-          class="rounded px-3 py-1.5 text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors disabled:opacity-50 disabled:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-300 dark:disabled:bg-slate-800 flex items-center gap-2 mr-auto"
-          @click="onOpenPhotos"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-          Photos
-        </button>
+        <div class="flex gap-2 mr-auto">
+          <button
+            data-testid="inspect-gallery-btn"
+            type="button"
+            :disabled="!photosAvailable"
+            :title="photoDisabledTooltip || 'View photos in gallery'"
+            class="rounded px-3 py-1.5 text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors disabled:opacity-50 disabled:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-300 dark:disabled:bg-slate-800 flex items-center gap-2"
+            @click="photoFolder && props.openGalleryCallback(photoFolder)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Gallery
+          </button>
+          
+          <!-- Only show folder button if we are on loopback (isConsole), but actually the old button was always visible just didn't work over LAN. We can just keep it -->
+          <button
+            data-testid="inspect-photos-btn"
+            type="button"
+            :disabled="!photosAvailable || photoOpening"
+            :title="photoDisabledTooltip || 'Open photos folder on production computer'"
+            class="rounded px-3 py-1.5 text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors disabled:opacity-50 disabled:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-300 dark:disabled:bg-slate-800 flex items-center gap-2"
+            @click="onOpenPhotos"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            Folder
+          </button>
+        </div>
         <button
           v-if="canEdit(job)"
           data-testid="inspect-edit-btn"

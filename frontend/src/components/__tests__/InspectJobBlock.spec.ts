@@ -65,6 +65,7 @@ function mountBlock(
       photoFolders: [],
       photoStatus: 'unknown',
       openPhotosCallback: vi.fn(),
+      openGalleryCallback: vi.fn(),
       ...extraProps
     },
     attachTo: document.body,

@@ -1,5 +1,34 @@
-import { describe, expect, it } from 'vitest';
-import { classify_photo_open_failure, photo_folder_for } from '../photos';
+import { describe, it, expect, vi } from 'vitest';
+import { classify_photo_open_failure, photo_folder_for, fetchPhotoFiles, downloadPhotoArchive } from '../photos';
+import { apiClient } from '../client';
+
+vi.mock('../client', () => ({
+    apiClient: {
+        get: vi.fn(),
+        post: vi.fn()
+    }
+}));
+
+describe('photos api', () => {
+    it('fetchPhotoFiles returns data on ok', async () => {
+        vi.mocked(apiClient.get).mockResolvedValueOnce({
+            data: { status: 'ok', entries: [], truncated: false }
+        });
+        
+        const res = await fetchPhotoFiles('2023_01_01');
+        expect(res).toEqual({ kind: 'ok', status: 'ok', entries: [], truncated: false });
+    });
+    
+    it('downloadPhotoArchive handles busy', async () => {
+        const error = {
+            response: { status: 503, data: { kind: 'busy' } }
+        };
+        vi.mocked(apiClient.post).mockRejectedValueOnce(error);
+        
+        const res = await downloadPhotoArchive('2023_01_01', []);
+        expect(res).toEqual({ kind: 'busy' });
+    });
+});
 
 describe('classify_photo_open_failure', () => {
     it('returns not_found for 404 with kind', () => {

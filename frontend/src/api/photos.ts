@@ -84,3 +84,67 @@ export async function openPhotoFolder(date_folder: string): Promise<PhotoOpenOut
         return classify_photo_open_failure(date_folder, e);
     }
 }
+
+export interface PhotoFileEntry {
+    name: string;
+    size_bytes: number;
+    mtime_ns: number;
+    version: string;
+    previewable: boolean;
+}
+
+export type PhotoFileListOutcome =
+    | { kind: 'ok'; status: 'ok'; entries: PhotoFileEntry[]; truncated: boolean }
+    | { kind: 'ok'; status: 'unconfigured' | 'unavailable' | 'not_found'; entries: []; truncated: boolean }
+    | { kind: 'network'; message: string };
+
+export async function fetchPhotoFiles(date_folder: string): Promise<PhotoFileListOutcome> {
+    try {
+        const res = await apiClient.get('/api/photos/files', { params: { date_folder } });
+        return {
+            kind: 'ok',
+            status: res.data.status,
+            entries: res.data.entries,
+            truncated: res.data.truncated
+        };
+    } catch (e: any) {
+        return { kind: 'network', message: e.message || 'Network error' };
+    }
+}
+
+export type ArchiveOutcome =
+    | { kind: 'ok'; blob: Blob; filename: string }
+    | { kind: 'not_found'; status: string }
+    | { kind: 'lan_cap_exceeded'; limit: 'files' | 'bytes' }
+    | { kind: 'busy' }
+    | { kind: 'network'; message: string };
+
+export async function downloadPhotoArchive(
+    date_folder: string,
+    selection: string[]
+): Promise<ArchiveOutcome> {
+    try {
+        const res = await apiClient.post('/api/photos/archive', { date_folder, selection }, { responseType: 'blob' });
+        const disposition = res.headers['content-disposition'] || '';
+        const match = disposition.match(/filename="([^"]+)"/);
+        const filename = match ? match[1] : `Photos_${date_folder}.zip`;
+        return { kind: 'ok', blob: res.data, filename };
+    } catch (e: any) {
+        if (!e.response) return { kind: 'network', message: e.message || 'Network error' };
+        const status = e.response.status;
+        let body: any = {};
+        if (e.response.data instanceof Blob) {
+            try {
+                const text = await e.response.data.text();
+                body = JSON.parse(text);
+            } catch (parseErr) {}
+        } else {
+            body = e.response.data;
+        }
+        
+        if (status === 404) return { kind: 'not_found', status: body.kind };
+        if (status === 403) return { kind: 'lan_cap_exceeded', limit: body.limit };
+        if (status === 503) return { kind: 'busy' };
+        return { kind: 'network', message: `Unexpected error: ${status}` };
+    }
+}
