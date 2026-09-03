@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from fastapi import status as http_status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -429,8 +429,10 @@ def _get_non_deleted_group(session: Session, batch_id: int, pn: str) -> list[Imp
 
 @router.post("", status_code=http_status.HTTP_200_OK)
 def ingest_upload(
+    request: Request,
     file: UploadFile = File(..., description="Excel workbook (.xlsx) to ingest"),
     force: bool = False,
+    x_client_id: str | None = Header(None, alias="X-Client-Id"),
 ):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _ALLOWED_SUFFIXES:
@@ -474,6 +476,21 @@ def ingest_upload(
                 status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"{type(exc).__name__}: {exc}",
             ) from exc
+
+        if getattr(request.app.state, "publisher", None):
+            from ..updates import ScheduleMerged, BatchAwaitingReview
+            if result.kind == "held_for_review":
+                request.app.state.publisher.publish(BatchAwaitingReview(
+                    batch_id=result.batch_id,
+                    origin=x_client_id
+                ))
+            else:
+                request.app.state.publisher.publish(ScheduleMerged(
+                    batch_id=result.batch_id,
+                    rows_inserted=result.rows_inserted,
+                    rows_updated=result.rows_updated,
+                    origin=x_client_id
+                ))
 
         if result.kind == "held_for_review":
             return {
@@ -838,8 +855,10 @@ def delete_staging_row_from_review(
 
 @router.post("/{batch_id}/confirm")
 def confirm_review(
+    request: Request,
     batch_id: int,
     session_factory: Callable[[], Session] = Depends(get_session_factory),
+    x_client_id: str | None = Header(None, alias="X-Client-Id"),
 ):
     """Run Stage 4..6 against the surviving staging rows and finalize the batch."""
     with _timed("confirm_review", batch_id=batch_id):
@@ -881,6 +900,16 @@ def confirm_review(
         )
 
     _invalidate_similar_cache(batch_id)
+    
+    if getattr(request.app.state, "publisher", None):
+        from ..updates import ScheduleMerged
+        request.app.state.publisher.publish(ScheduleMerged(
+            batch_id=result.batch_id,
+            rows_inserted=result.rows_inserted,
+            rows_updated=result.rows_updated,
+            origin=x_client_id
+        ))
+
     return {
         "batch_id": result.batch_id,
         "source_sha256": result.source_sha256,

@@ -201,6 +201,8 @@ describe('SecondOpsCell', () => {
     it('raises the column text only in the worked grid', () => {
       const shipping = mountCell({ summary: makeSummary(), activeGrid: true })
       expect(shipping.get('[data-testid="second-ops-preview-line"]').classes())
+        .toContain('text-secondops-recorded')
+      expect(shipping.get('[data-testid="second-ops-edit-btn"]').classes())
         .toContain('text-secondops-text')
 
       const history = mountCell({ summary: makeSummary(), readonly: true })
@@ -211,7 +213,7 @@ describe('SecondOpsCell', () => {
     it('is independent of readonly, which means frozen-at-ship rather than archived', () => {
       const both = mountCell({ summary: makeSummary(), readonly: true, activeGrid: true })
       expect(both.get('[data-testid="second-ops-preview-line"]').classes())
-        .toContain('text-secondops-text')
+        .toContain('text-secondops-recorded')
       expect(both.find('[data-testid="second-ops-edit-btn"]').exists()).toBe(false)
     })
   })

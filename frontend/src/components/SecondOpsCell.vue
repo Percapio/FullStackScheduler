@@ -40,7 +40,7 @@ const emit = defineEmits<{
 const state = computed(() => props.summary?.state ?? null)
 
 const contentText = computed(() => props.activeGrid
-  ? 'text-secondops-text'
+  ? 'text-secondops-recorded'
   : 'text-slate-700 dark:text-slate-300')
 
 const controlText = computed(() => props.activeGrid

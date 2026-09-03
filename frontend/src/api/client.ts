@@ -19,10 +19,18 @@ const _devFallback = import.meta.env.DEV ? 'http://localhost:8000' : ''
 // Any new endpoint whose worst-case wall time exceeds 25 s MUST pass an
 // explicit per-request `timeout` override at the call site. Long-running
 // endpoints without an override silently inherit 30 s and will cancel under load.
+export const baseURL = import.meta.env.VITE_API_BASE ?? _devFallback
+
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE ?? _devFallback,
+  baseURL,
   timeout: 30_000,
   headers: { 'Content-Type': 'application/json' },
+})
+
+apiClient.interceptors.request.use(async (config) => {
+  const { CLIENT_ID } = await import('@/composables/useUpdateChannel')
+  config.headers['X-Client-Id'] = CLIENT_ID
+  return config
 })
 
 export type ApiError = AxiosError<{ detail: unknown }>

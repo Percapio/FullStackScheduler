@@ -36,8 +36,54 @@ def freeze_import_time_state() -> None:
     gc.freeze()
 
 
+from contextlib import asynccontextmanager
+import queue
+import asyncio
+
+@asynccontextmanager
+async def application_lifespan(app: FastAPI):
+    from ..config import get_settings
+    from ..updates import ScheduleUpdateHub, EventPublisher
+    from ..services.photo_warm import shutdown_warm_worker
+    import logging
+    logger = logging.getLogger(__name__)
+
+    settings = get_settings()
+    hub = ScheduleUpdateHub(settings)
+    q = queue.Queue(maxsize=settings.ws_publish_queue_max)
+    publisher = EventPublisher(q)
+
+    app.state.hub = hub
+    app.state.publisher = publisher
+
+    async def drain_task():
+        while True:
+            try:
+                event = await asyncio.to_thread(q.get, True, 0.5)
+                await hub.fan_out(event)
+            except queue.Empty:
+                pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"WebSocket drain task error: {e}")
+                await asyncio.sleep(settings.ws_drain_restart_backoff_seconds)
+
+    task = asyncio.create_task(drain_task())
+
+    yield
+
+    await hub.close_all()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    shutdown_warm_worker()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Scheduler API", version="0.4.0")
+    app = FastAPI(title="Scheduler API", version="0.4.0", lifespan=application_lifespan)
 
     if not getattr(sys, "frozen", False):
         app.add_middleware(
@@ -58,6 +104,43 @@ def create_app() -> FastAPI:
     from .settings import settings_router
     app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
+    @app.websocket("/api/ws/updates")
+    async def updates_ws(websocket: __import__('starlette').websockets.WebSocket, client_id: str | None = None):
+        await websocket.accept()
+        from ..updates import WebSocketConnection
+        hub = websocket.app.state.hub
+        settings = hub._settings
+        
+        conn = WebSocketConnection(socket=websocket, client_id=client_id)
+        outcome = hub.register(conn, client_id)
+        
+        if outcome == "RejectedAtCapacity":
+            await websocket.close(code=1008, reason="Capacity exceeded")
+            return
+
+        async def heartbeat_loop():
+            while not conn.closing:
+                await asyncio.sleep(settings.ws_heartbeat_seconds)
+                if conn.closing:
+                    break
+                try:
+                    await websocket.send_json({
+                        "type": "heartbeat",
+                        "heartbeat_seconds": settings.ws_heartbeat_seconds
+                    })
+                except Exception:
+                    break
+
+        hb_task = asyncio.create_task(heartbeat_loop())
+        try:
+            while True:
+                await websocket.receive()
+        except Exception:
+            pass
+        finally:
+            hb_task.cancel()
+            hub.deregister(conn)
+
     dist = _dist_dir()
     assets_dir = dist / "assets"
     if assets_dir.is_dir():
@@ -76,10 +159,5 @@ def create_app() -> FastAPI:
     from ..config import get_settings
     if get_settings().gc_freeze_after_startup:
         freeze_import_time_state()
-
-    @app.on_event('shutdown')
-    def shutdown_event():
-        from ..services.photo_warm import shutdown_warm_worker
-        shutdown_warm_worker()
 
     return app

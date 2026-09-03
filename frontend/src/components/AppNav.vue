@@ -14,6 +14,10 @@ import HistoryExportModal from '@/components/HistoryExportModal.vue'
 import { useToast } from '@/composables/useToast'
 import { fetchAwaitingReview } from '@/api/review'
 
+const props = defineProps<{
+  wsStatus?: 'Connecting' | 'Live' | 'Backoff'
+}>()
+
 const uploadOpen = ref(false)
 const settingsOpen = ref(false)
 const exportModalIsOpen = ref(false)
@@ -102,9 +106,22 @@ function scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, beh
           <button @click="increase" :disabled="!canIncrease"
             class="px-1.5 py-0.5 rounded text-sm font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors duration-100 ease-out focus-ring">A+</button>
         </div>
-        <span class="text-lg font-mono text-slate-500 dark:text-slate-400 tabular-nums"
-              :title="'Pacific Time (America/Los_Angeles)'"
-        >{{ time }}</span>
+        <div class="flex items-center gap-2">
+          <div v-if="wsStatus"
+               :class="[
+                 'w-2.5 h-2.5 rounded-full shrink-0',
+                 {
+                   'bg-green-500': wsStatus === 'Live',
+                   'bg-amber-400': wsStatus === 'Connecting',
+                   'bg-red-500': wsStatus === 'Backoff',
+                 }
+               ]"
+               :title="wsStatus === 'Live' ? 'Connected to live updates' : (wsStatus === 'Connecting' ? 'Connecting to live updates...' : 'Disconnected from live updates')"
+          ></div>
+          <span class="text-lg font-mono text-slate-500 dark:text-slate-400 tabular-nums"
+                :title="'Pacific Time (America/Los_Angeles)'"
+          >{{ time }}</span>
+        </div>
       </div>
     </div>
 

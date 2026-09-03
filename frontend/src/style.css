@@ -39,6 +39,7 @@
   --color-ship-today:      #006f9e;
   --color-secondops-text:  #525e6e;
   --color-secondops-na:    #c23400;
+  --color-secondops-recorded: #065f46;
 
   /* Depth scale for the drawer and modal families. Light alternates rather than
      ascends: it cannot climb past white, so tone 3 recedes to slate-100. */
@@ -111,6 +112,7 @@ header {
     --color-ship-today:      #00a0e2;
     --color-secondops-text:  #b8b8b8;
     --color-secondops-na:    #ff632a;
+    --color-secondops-recorded: #34d399;
 
     /* On a near-black ground elevation reads from a lighter top edge, not a
        darker halo. The inset highlight is the load-bearing half. */

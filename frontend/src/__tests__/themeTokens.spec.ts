@@ -60,7 +60,7 @@ describe('theme tokens', () => {
 
   it('gives every grid signal a value in both themes', () => {
     const light = STYLESHEET.slice(0, STYLESHEET.indexOf('@media (prefers-color-scheme: dark)'))
-    for (const token of ['--color-ship-today', '--color-secondops-text', '--color-secondops-na']) {
+    for (const token of ['--color-ship-today', '--color-secondops-text', '--color-secondops-na', '--color-secondops-recorded']) {
       expect(declaredIn(light, token), `${token} light`).not.toBeNull()
       expect(declaredIn(DARK_BRANCH, token), `${token} dark`).not.toBeNull()
       expect(declaredIn(light, token)).not.toBe(declaredIn(DARK_BRANCH, token))

@@ -79,6 +79,14 @@ export const useShippingStore = defineStore('shipping', () => {
     try {
       const { rows, total } = await fetchShippingJobs(500)
       jobs.value = rows
+      if (inspected.value !== null) {
+        const found = rows.find(j => j.id === inspected.value!.id)
+        if (!found) {
+          inspected.value = null
+        } else {
+          applyEdited(found)
+        }
+      }
       if (total > rows.length) {
         useToast().show(
           `Showing ${rows.length} of ${total} open jobs. Contact admin if the full list is needed.`,

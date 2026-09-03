@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     shipping_photos_archive_lan_max_files: int = 60
     shipping_photos_archive_lan_max_bytes: int = 750_000_000
     
+    # Touch-Up 26 — Update Channel
+    ws_max_connections: int = 32
+    ws_publish_queue_max: int = 64
+    ws_send_timeout_seconds: float = 5.0
+    ws_heartbeat_seconds: float = 30.0
+    ws_drain_restart_backoff_seconds: float = 10.0
+    
     model_config = SettingsConfigDict(env_prefix="SCHEDULER_", env_file=".env", extra="ignore")
 
     def model_post_init(self, __ctx) -> None:

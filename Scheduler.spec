@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
 
-hiddenimports = ['sqlalchemy.dialects.sqlite', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on']
+hiddenimports = ['sqlalchemy.dialects.sqlite', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on', 'websockets', 'websockets.legacy.server', 'uvicorn.protocols.websockets.websockets_impl']
 hiddenimports += collect_submodules('backend')
 
 
