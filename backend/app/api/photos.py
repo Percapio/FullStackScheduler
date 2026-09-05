@@ -147,7 +147,8 @@ def get_file(
         headers={
             "Cache-Control": "private, max-age=31536000, immutable",
             "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "sandbox"
+            "Content-Security-Policy": "sandbox",
+            "Content-Encoding": "identity"
         },
     )
 
@@ -177,13 +178,115 @@ def get_thumb(
             headers={
                 "Cache-Control": "private, max-age=31536000, immutable",
                 "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "sandbox"
+                "Content-Security-Policy": "sandbox",
+                "Content-Encoding": "identity"
             }
         )
 
 class ArchiveRequest(BaseModel):
     date_folder: str = Field(pattern=PHOTO_FOLDER_PATTERN.pattern)
     selection: List[str] = Field(default_factory=list)
+
+from ..services.archive_tokens import issue_ticket, redeem_ticket, ArchiveTicket
+
+class ArchiveTokenRead(BaseModel):
+    token: str
+    filename: str
+    expires_in_seconds: float
+
+@router.post("/archive-token")
+def create_archive_token(
+    req: ArchiveRequest,
+    is_loopback: bool = Depends(is_loopback_caller),
+    settings: Settings = Depends(get_settings),
+):
+    idx = resolve_file_index(req.date_folder, settings, time.monotonic)
+    if idx.status != PhotoFileListStatus.OK:
+        return JSONResponse(status_code=404, content={"kind": idx.status.value})
+
+    if not is_loopback:
+        target_entries = idx.entries if not req.selection else [
+            idx.by_name[s] for s in req.selection if s in idx.by_name
+        ]
+        if len(target_entries) > settings.shipping_photos_archive_lan_max_files:
+            return JSONResponse(status_code=403,
+                                content={"kind": "lan_cap_exceeded", "limit": "files"})
+        if sum(e.size_bytes for e in target_entries) > settings.shipping_photos_archive_lan_max_bytes:
+            return JSONResponse(status_code=403,
+                                content={"kind": "lan_cap_exceeded", "limit": "bytes"})
+
+    # Advisory busy probe (D3). Deliberately racy: the binding acquire happens
+    # in archive-download. This exists so the overwhelmingly common "both
+    # permits are in use" case produces a visible in-modal message instead of
+    # a silent iframe failure. Same semaphore object as POST /archive — see
+    # the note below.
+    sem = get_archive_semaphore(settings)
+    if not sem.acquire(blocking=False):
+        return JSONResponse(status_code=503, content={"kind": "busy"},
+                            headers={"Retry-After": "5"})
+    sem.release()
+
+    filename = f"Photos_{req.date_folder}.zip"
+    token = issue_ticket(
+        ArchiveTicket(
+            date_folder=req.date_folder,
+            selection=list(req.selection),
+            filename=filename,
+            minted_loopback=is_loopback,
+        ),
+        settings,
+        time.monotonic,
+    )
+    return ArchiveTokenRead(
+        token=token,
+        filename=filename,
+        expires_in_seconds=settings.shipping_photos_archive_token_ttl_seconds,
+    )
+
+@router.get("/archive-download")
+def download_archive(
+    token: str = Query(..., min_length=16, max_length=128),
+    is_loopback: bool = Depends(is_loopback_caller),
+    settings: Settings = Depends(get_settings),
+):
+    ticket = redeem_ticket(token, settings, time.monotonic)
+    if ticket is None:
+        return JSONResponse(status_code=404, content={"kind": "token_expired"},
+                            headers={"Cache-Control": "no-store"})
+
+    # Cheap invariant: a ticket minted on loopback skipped the LAN caps, so it
+    # must not be redeemable from the LAN. Costs nothing; closes the only way
+    # the caps could be sidestepped by a shared URL.
+    if ticket.minted_loopback and not is_loopback:
+        return JSONResponse(status_code=403, content={"kind": "token_scope"},
+                            headers={"Cache-Control": "no-store"})
+
+    idx = resolve_file_index(ticket.date_folder, settings, time.monotonic)
+    if idx.status != PhotoFileListStatus.OK:
+        return JSONResponse(status_code=404, content={"kind": idx.status.value},
+                            headers={"Cache-Control": "no-store"})
+
+    sem = get_archive_semaphore(settings)
+    if not sem.acquire(blocking=False):
+        return JSONResponse(status_code=503, content={"kind": "busy"},
+                            headers={"Retry-After": "5", "Cache-Control": "no-store"})
+
+    stream = stream_photo_archive(ticket.date_folder, ticket.selection, idx, settings)
+
+    return StreamingResponse(
+        hold_permit_across_stream(stream, sem),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{ticket.filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            # Opts this response out of GZipMiddleware (§6.1). MANDATORY —
+            # without it, Starlette would gzip a 750 MB ZIP_STORED stream at
+            # compresslevel 9, destroying the very throughput this change buys.
+            "Content-Encoding": "identity",
+        },
+    )
+
 
 _archive_semaphore = None
 def get_archive_semaphore(settings: Settings):
@@ -204,6 +307,8 @@ def create_archive(
     is_loopback: bool = Depends(is_loopback_caller),
     settings: Settings = Depends(get_settings)
 ):
+    # Legacy/direct loopback path. For new usage (e.g. LAN), use the token pair:
+    # POST /archive-token -> GET /archive-download
     idx = resolve_file_index(req.date_folder, settings, time.monotonic)
     if idx.status != PhotoFileListStatus.OK:
         return JSONResponse(status_code=404, content={"kind": idx.status.value})

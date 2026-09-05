@@ -85,6 +85,12 @@ async def application_lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="Scheduler API", version="0.4.0", lifespan=application_lifespan)
 
+    from starlette.middleware.gzip import GZipMiddleware
+    # Static assets ship ~375 KB uncompressed; gzip takes that to ~109 KB.
+    # Added BEFORE CORSMiddleware so CORS ends up outermost (add_middleware
+    # prepends), keeping CORS headers on every response including errors.
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
     if not getattr(sys, "frozen", False):
         app.add_middleware(
             CORSMiddleware,

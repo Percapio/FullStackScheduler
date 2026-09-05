@@ -1,12 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { classify_photo_open_failure, photo_folder_for, fetchPhotoFiles, downloadPhotoArchive } from '../photos';
+import { classify_photo_open_failure, photo_folder_for, fetchPhotoFiles, requestArchiveTicket, archiveDownloadUrl } from '../photos';
 import { apiClient } from '../client';
 
 vi.mock('../client', () => ({
     apiClient: {
         get: vi.fn(),
         post: vi.fn()
-    }
+    },
+    baseURL: 'mock-base'
 }));
 
 describe('photos api', () => {
@@ -19,14 +20,28 @@ describe('photos api', () => {
         expect(res).toEqual({ kind: 'ok', status: 'ok', entries: [], truncated: false });
     });
     
-    it('downloadPhotoArchive handles busy', async () => {
+    it('requestArchiveTicket handles busy', async () => {
         const error = {
             response: { status: 503, data: { kind: 'busy' } }
         };
         vi.mocked(apiClient.post).mockRejectedValueOnce(error);
         
-        const res = await downloadPhotoArchive('2023_01_01', []);
+        const res = await requestArchiveTicket('2023_01_01', []);
         expect(res).toEqual({ kind: 'busy' });
+    });
+
+    it('requestArchiveTicket maps 403 to lan_cap_exceeded', async () => {
+        const error = {
+            response: { status: 403, data: { kind: 'lan_cap_exceeded', limit: 'files' } }
+        };
+        vi.mocked(apiClient.post).mockRejectedValueOnce(error);
+        
+        const res = await requestArchiveTicket('2023_01_01', []);
+        expect(res).toEqual({ kind: 'lan_cap_exceeded', limit: 'files' });
+    });
+
+    it('archiveDownloadUrl percent-encodes', () => {
+        expect(archiveDownloadUrl('a+b/c')).toContain('a%2Bb%2Fc');
     });
 });
 

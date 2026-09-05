@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch, ref } from 'vue'
+import { computed, watch, ref, onBeforeUnmount } from 'vue'
 import { usePhotoGallery } from '@/composables/usePhotoGallery'
 
 const props = defineProps<{
@@ -10,7 +10,9 @@ const state = computed(() => props.gallery.state.value)
 const isOpen = computed(() => state.value.state !== 'closed')
 
 const downloadError = ref<string | null>(null)
-const downloading = ref(false)
+const preparing = ref(false)
+const handedOff = ref(false)
+let handoffTimer: ReturnType<typeof setTimeout> | undefined
 
 const galleryGeneration = ref(0)
 const loadedImages = ref<Set<string>>(new Set())
@@ -28,6 +30,7 @@ watch(() => (state.value.state === 'ready' ? state.value.date_folder : null), (n
 
 watch(() => state.value.state, () => {
   downloadError.value = null
+  handedOff.value = false
 })
 
 const previewableCount = computed(() => {
@@ -47,13 +50,20 @@ function close() {
 
 async function onDownload() {
   downloadError.value = null
-  downloading.value = true
+  handedOff.value = false
+  preparing.value = true
   const err = await props.gallery.downloadSelection()
-  downloading.value = false
+  preparing.value = false
   if (err) {
     downloadError.value = err
+    return
   }
+  handedOff.value = true
+  clearTimeout(handoffTimer)
+  handoffTimer = setTimeout(() => { handedOff.value = false }, 6000)
 }
+
+onBeforeUnmount(() => clearTimeout(handoffTimer))
 
 function thumbUrl(filename: string, date_folder: string, version: string) {
   return `/api/photos/thumb/${encodeURIComponent(filename)}?date_folder=${encodeURIComponent(date_folder)}&v=${encodeURIComponent(version)}`
@@ -175,6 +185,9 @@ function retryImage(filename: string, e: Event) {
 
               <div class="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
                 <div v-if="downloadError" class="text-sm text-red-600 mb-2">{{ downloadError }}</div>
+                <div v-if="handedOff" class="text-sm text-emerald-600 mb-2">
+                  Download started — check your browser's downloads.
+                </div>
                 
                 <div class="flex items-center justify-between">
                   <div class="flex gap-2">
@@ -184,10 +197,10 @@ function retryImage(filename: string, e: Event) {
                   
                   <button
                     @click="onDownload"
-                    :disabled="downloading || (state.selection.size === 0 && state.entries.length > 0)"
+                    :disabled="preparing || (state.selection.size === 0 && state.entries.length > 0)"
                     class="px-4 py-2 bg-blue-600 text-white rounded font-medium disabled:opacity-50 hover:bg-blue-700"
                   >
-                    {{ downloading ? 'Downloading...' : 'Download' }}
+                    {{ preparing ? 'Preparing…' : 'Download' }}
                   </button>
                 </div>
               </div>

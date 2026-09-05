@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     shipping_photos_archive_lan_max_files: int = 60
     shipping_photos_archive_lan_max_bytes: int = 750_000_000
     
+    # Touch-Up 27 — Archive handoff
+    shipping_photos_archive_token_ttl_seconds: float = 300.0
+    shipping_photos_archive_token_max: int = 32
     # Touch-Up 26 — Update Channel
     ws_max_connections: int = 32
     ws_publish_queue_max: int = 64

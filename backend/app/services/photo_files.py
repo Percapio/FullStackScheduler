@@ -287,9 +287,9 @@ def stream_photo_archive(
                 try:
                     with open(filepath, "rb") as f:
                         zinfo = zipfile.ZipInfo(filename=entry.name)
-                        # We don't set file size to stream it dynamically or just use write?
-                        # zipfile has writestr but that buffers in memory.
-                        # Wait, ZipFile.open(..., "w") returns a file-like object we can write chunks to!
+                        zinfo.file_size = entry.size_bytes   # drives the ZIP64 local-header decision
+                        _mt = time.localtime(entry.mtime_ns / 1e9)[:6]
+                        zinfo.date_time = _mt if _mt[0] >= 1980 else (1980, 1, 1, 0, 0, 0)
                         with zf.open(zinfo, mode="w") as z_out:
                             while True:
                                 chunk = f.read(65536)

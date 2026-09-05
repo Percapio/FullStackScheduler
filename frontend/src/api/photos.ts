@@ -1,5 +1,5 @@
 import type { components } from './types.gen';
-import { apiClient } from './client';
+import { apiClient, baseURL } from './client';
 
 export type PhotoDirectoryStatus = 'unknown' | 'unconfigured' | 'unavailable' | 'ok';
 
@@ -112,39 +112,31 @@ export async function fetchPhotoFiles(date_folder: string): Promise<PhotoFileLis
     }
 }
 
-export type ArchiveOutcome =
-    | { kind: 'ok'; blob: Blob; filename: string }
+export type ArchiveTicketOutcome =
+    | { kind: 'ok'; token: string; filename: string }
     | { kind: 'not_found'; status: string }
     | { kind: 'lan_cap_exceeded'; limit: 'files' | 'bytes' }
     | { kind: 'busy' }
     | { kind: 'network'; message: string };
 
-export async function downloadPhotoArchive(
+export async function requestArchiveTicket(
     date_folder: string,
     selection: string[]
-): Promise<ArchiveOutcome> {
+): Promise<ArchiveTicketOutcome> {
     try {
-        const res = await apiClient.post('/api/photos/archive', { date_folder, selection }, { responseType: 'blob' });
-        const disposition = res.headers['content-disposition'] || '';
-        const match = disposition.match(/filename="([^"]+)"/);
-        const filename = match ? match[1] : `Photos_${date_folder}.zip`;
-        return { kind: 'ok', blob: res.data, filename };
+        const res = await apiClient.post('/api/photos/archive-token', { date_folder, selection });
+        return { kind: 'ok', token: res.data.token, filename: res.data.filename };
     } catch (e: any) {
         if (!e.response) return { kind: 'network', message: e.message || 'Network error' };
         const status = e.response.status;
-        let body: any = {};
-        if (e.response.data instanceof Blob) {
-            try {
-                const text = await e.response.data.text();
-                body = JSON.parse(text);
-            } catch (parseErr) {}
-        } else {
-            body = e.response.data;
-        }
-        
+        const body = e.response.data ?? {};
         if (status === 404) return { kind: 'not_found', status: body.kind };
         if (status === 403) return { kind: 'lan_cap_exceeded', limit: body.limit };
         if (status === 503) return { kind: 'busy' };
         return { kind: 'network', message: `Unexpected error: ${status}` };
     }
+}
+
+export function archiveDownloadUrl(token: string): string {
+    return `${baseURL}/api/photos/archive-download?token=${encodeURIComponent(token)}`;
 }

@@ -221,3 +221,19 @@ def test_archive_streaming_missing_file(tmp_path):
     data = b"".join(stream)
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert "_MISSING.txt" in zf.namelist()
+
+def test_archive_sets_zip64_file_size(tmp_path):
+    settings = Settings(shipping_photos_dir=str(tmp_path))
+    d = tmp_path / "2023_01_01"
+    d.mkdir()
+    f = d / "a.jpg"
+    f.write_bytes(b"a" * 1024)
+    
+    idx = resolve_file_index("2023_01_01", settings, time.time)
+    
+    stream = stream_photo_archive("2023_01_01", [], idx, settings)
+    data = b"".join(stream)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    
+    info = zf.getinfo("a.jpg")
+    assert info.file_size == 1024
