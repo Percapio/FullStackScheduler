@@ -19,7 +19,7 @@ describe('usePhotoGallery', () => {
 
     it('opens gallery and loads entries', async () => {
         vi.mocked(photosApi.fetchPhotoFiles).mockResolvedValueOnce({
-            kind: 'ok', status: 'ok', entries: [
+            kind: 'ok', status: 'ok', folders: [], folders_truncated: false, entries: [
                 { name: '1.jpg', size_bytes: 10, mtime_ns: 0, version: '1', previewable: true }
             ], truncated: false
         });
@@ -34,7 +34,7 @@ describe('usePhotoGallery', () => {
     
     it('handles toggle and clear selection', async () => {
         vi.mocked(photosApi.fetchPhotoFiles).mockResolvedValueOnce({
-            kind: 'ok', status: 'ok', entries: [
+            kind: 'ok', status: 'ok', folders: [], folders_truncated: false, entries: [
                 { name: '1.jpg', size_bytes: 10, mtime_ns: 0, version: '1', previewable: true }
             ], truncated: false
         });
@@ -54,7 +54,7 @@ describe('usePhotoGallery', () => {
 
     it('hands off to iframe on successful mint and keeps selection', async () => {
         vi.mocked(photosApi.fetchPhotoFiles).mockResolvedValueOnce({
-            kind: 'ok', status: 'ok', entries: [{ name: '1.jpg', size_bytes: 10, mtime_ns: 0, version: '1', previewable: true }], truncated: false
+            kind: 'ok', status: 'ok', folders: [], folders_truncated: false, entries: [{ name: '1.jpg', size_bytes: 10, mtime_ns: 0, version: '1', previewable: true }], truncated: false
         });
         vi.mocked(photosApi.requestArchiveTicket).mockResolvedValue({
             kind: 'ok', token: 'tok_123', filename: 'Photos.zip'
@@ -80,7 +80,7 @@ describe('usePhotoGallery', () => {
 
     it('returns error on 403 and creates no iframe', async () => {
         vi.mocked(photosApi.fetchPhotoFiles).mockResolvedValueOnce({
-            kind: 'ok', status: 'ok', entries: [], truncated: false
+            kind: 'ok', status: 'ok', folders: [], folders_truncated: false, entries: [], truncated: false
         });
         vi.mocked(photosApi.requestArchiveTicket).mockResolvedValueOnce({
             kind: 'lan_cap_exceeded', limit: 'files'

@@ -64,8 +64,9 @@ class Settings(BaseSettings):
     # Phase 26 — Web Photo Gallery
     shipping_photos_file_index_ttl_seconds: float = 120.0
     shipping_photos_file_unavailable_ttl_seconds: float = 30.0
-    shipping_photos_file_index_max_folders: int = 32
+    shipping_photos_file_index_max_keys: int = 96
     shipping_photos_max_files_per_folder: int = 2000
+    shipping_photos_max_subfolders_per_date: int = 200
     shipping_photos_thumb_max_edge_px: int = 400
     shipping_photos_thumb_quality: int = 78
     shipping_photos_thumb_cache_max_bytes: int = 512_000_000
@@ -74,7 +75,8 @@ class Settings(BaseSettings):
     shipping_photos_thumb_queue_wait_seconds: float = 20.0
     shipping_photos_thumb_max_waiters: int = 16
     shipping_photos_thumb_warm_enabled: bool = True
-    shipping_photos_thumb_warm_queue_max_folders: int = 8
+    shipping_photos_thumb_warm_queue_max_keys: int = 24
+    shipping_photos_thumb_warm_max_subfolders_per_date: int = 4
     shipping_photos_thumb_warm_backoff_seconds: float = 0.25
     shipping_photos_thumb_warm_max_attempts: int = 8
     shipping_photos_archive_max_concurrent: int = 2

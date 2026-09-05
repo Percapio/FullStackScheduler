@@ -3,9 +3,9 @@ import { fetchPhotoFiles, requestArchiveTicket, archiveDownloadUrl, type PhotoFi
 
 export type GalleryState =
     | { state: 'closed' }
-    | { state: 'loading'; date_folder: string }
-    | { state: 'ready'; date_folder: string; entries: PhotoFileEntry[]; truncated: boolean; selection: Set<string> }
-    | { state: 'error'; date_folder: string; message: string };
+    | { state: 'loading'; date_folder: string; sub_folder: string; seq: number }
+    | { state: 'ready'; date_folder: string; sub_folder: string; folders: string[]; entries: PhotoFileEntry[]; truncated: boolean; folders_truncated: boolean; selection: Set<string> }
+    | { state: 'error'; date_folder: string; sub_folder: string; message: string };
 
 const DOWNLOAD_FRAME_ID = 'archive-download-frame';
 
@@ -28,13 +28,16 @@ function handOffToBrowser(url: string) {
 }
 
 const state = ref<GalleryState>({ state: 'closed' });
+let requestSeq: number = 0;
 
 export function usePhotoGallery() {
-    const openGallery = async (date_folder: string) => {
-        state.value = { state: 'loading', date_folder };
-        const outcome = await fetchPhotoFiles(date_folder);
+    const loadFolder = async (date_folder: string, sub_folder: string) => {
+        requestSeq += 1;
+        const currentSeq = requestSeq;
+        state.value = { state: 'loading', date_folder, sub_folder, seq: currentSeq };
+        const outcome = await fetchPhotoFiles(date_folder, sub_folder);
         
-        if (state.value.state !== 'loading' || state.value.date_folder !== date_folder) {
+        if (state.value.state !== 'loading' || state.value.seq !== currentSeq) {
             return; // superseded
         }
         
@@ -43,14 +46,18 @@ export function usePhotoGallery() {
                 state.value = {
                     state: 'ready',
                     date_folder,
+                    sub_folder,
+                    folders: outcome.folders,
                     entries: outcome.entries,
                     truncated: outcome.truncated,
+                    folders_truncated: outcome.folders_truncated,
                     selection: new Set()
                 };
             } else {
                 state.value = {
                     state: 'error',
                     date_folder,
+                    sub_folder,
                     message: `Directory status: ${outcome.status}`
                 };
             }
@@ -58,9 +65,22 @@ export function usePhotoGallery() {
             state.value = {
                 state: 'error',
                 date_folder,
+                sub_folder,
                 message: outcome.message
             };
         }
+    };
+
+    const openGallery = (date_folder: string) => loadFolder(date_folder, "");
+    
+    const navigateTo = (folder_name: string) => {
+        if (state.value.state !== 'ready' || state.value.sub_folder !== "") return;
+        loadFolder(state.value.date_folder, folder_name);
+    };
+
+    const navigateUp = () => {
+        if (state.value.state !== 'ready') return;
+        loadFolder(state.value.date_folder, "");
     };
     
     const closeGallery = () => {
@@ -96,8 +116,9 @@ export function usePhotoGallery() {
         
         const selection = Array.from(state.value.selection);
         const date_folder = state.value.date_folder;
+        const sub_folder = state.value.sub_folder;
         
-        const outcome = await requestArchiveTicket(date_folder, selection);
+        const outcome = await requestArchiveTicket(date_folder, sub_folder, selection);
         if (outcome.kind === 'ok') {
             handOffToBrowser(archiveDownloadUrl(outcome.token));
             return null;
@@ -115,6 +136,8 @@ export function usePhotoGallery() {
     return {
         state: readonly(state),
         openGallery,
+        navigateTo,
+        navigateUp,
         closeGallery,
         toggleSelection,
         selectAll,

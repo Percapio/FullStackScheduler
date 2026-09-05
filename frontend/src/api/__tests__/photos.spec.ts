@@ -26,7 +26,7 @@ describe('photos api', () => {
         };
         vi.mocked(apiClient.post).mockRejectedValueOnce(error);
         
-        const res = await requestArchiveTicket('2023_01_01', []);
+        const res = await requestArchiveTicket('2023_01_01', '', []);
         expect(res).toEqual({ kind: 'busy' });
     });
 
@@ -36,7 +36,7 @@ describe('photos api', () => {
         };
         vi.mocked(apiClient.post).mockRejectedValueOnce(error);
         
-        const res = await requestArchiveTicket('2023_01_01', []);
+        const res = await requestArchiveTicket('2023_01_01', '', []);
         expect(res).toEqual({ kind: 'lan_cap_exceeded', limit: 'files' });
     });
 

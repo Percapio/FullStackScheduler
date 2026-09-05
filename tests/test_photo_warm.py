@@ -8,6 +8,24 @@ import pytest
 from backend.app.config import Settings
 from backend.app.services.photo_files import PhotoFileListStatus, PhotoFileIndex, PhotoFileEntry
 import backend.app.services.photo_warm as pw
+from backend.app.services.photo_files import ROOT
+
+def make_index(entries, status=PhotoFileListStatus.OK, key=("f1", ROOT)):
+    """PhotoFileIndex gained key/folders/folder_set/folders_truncated in Touch-Up 28.
+    Building them inline in every test is how four of them ended up missing fields."""
+    return PhotoFileIndex(
+        key=key,
+        status=status,
+        entries=entries,
+        by_name={e.name: e for e in entries},
+        folders=[],
+        folder_set=set(),
+        total_bytes=sum(e.size_bytes for e in entries),
+        scanned_at=0,
+        truncated=False,
+        folders_truncated=False,
+    )
+
 
 @pytest.fixture(autouse=True)
 def reset_warm_state():
@@ -22,7 +40,7 @@ def reset_warm_state():
 def test_enqueue_queue_full_drops_oldest(tmp_path):
     settings = Settings(
         shipping_photos_dir=str(tmp_path),
-        shipping_photos_thumb_warm_queue_max_folders=2,
+        shipping_photos_thumb_warm_queue_max_keys=2,
         shipping_photos_thumb_warm_enabled=True
     )
     
@@ -32,19 +50,19 @@ def test_enqueue_queue_full_drops_oldest(tmp_path):
         # Actually enqueue starts it automatically.
         # So we can set max folders, and let's mock thread start to not start.
         with patch("threading.Thread.start"):
-           pw.enqueue_warm("f1", settings)
-           pw.enqueue_warm("f2", settings)
-           pw.enqueue_warm("f3", settings)
+           pw.enqueue_warm("f1", ROOT, settings)
+           pw.enqueue_warm("f2", ROOT, settings)
+           pw.enqueue_warm("f3", ROOT, settings)
             
-           assert list(pw._warm_queue) == ["f2", "f3"]
-           assert "f1" not in pw._warm_known
-           assert "f2" in pw._warm_known
-           assert "f3" in pw._warm_known
+           assert list(pw._warm_queue) == [("f2", ROOT), ("f3", ROOT)]
+           assert ("f1", ROOT) not in pw._warm_known
+           assert ("f2", ROOT) in pw._warm_known
+           assert ("f3", ROOT) in pw._warm_known
             
             # Since f1 was dropped, we can re-enqueue it!
-           pw.enqueue_warm("f1", settings)
-           assert list(pw._warm_queue) == ["f3", "f1"]
-           assert "f2" not in pw._warm_known
+           pw.enqueue_warm("f1", ROOT, settings)
+           assert list(pw._warm_queue) == [("f3", ROOT), ("f1", ROOT)]
+           assert ("f2", ROOT) not in pw._warm_known
 
 def test_enqueue_dedup_queued_and_walking(tmp_path):
     settings = Settings(
@@ -55,33 +73,36 @@ def test_enqueue_dedup_queued_and_walking(tmp_path):
     ev_process_start = threading.Event()
     ev_process_proceed = threading.Event()
     
-    def mock_process(folder, *args):
-        if folder == "f1":
+    # _process_folder takes a FolderKey, not a date_folder string. Comparing
+    # against "f1" here silently never matched, so ev_process_start was never
+    # set and the main thread blocked forever on the wait below.
+    def mock_process(key, *args):
+        if key == ("f1", ROOT):
             ev_process_start.set()
-            ev_process_proceed.wait()
-            
+            ev_process_proceed.wait(timeout=10)
+
     with patch("backend.app.services.photo_warm._process_folder", side_effect=mock_process):
-        pw.enqueue_warm("f1", settings)
-        
+        pw.enqueue_warm("f1", ROOT, settings)
+
         # wait for f1 to be walking
-        ev_process_start.wait()
-        
+        assert ev_process_start.wait(timeout=10), "worker never entered _process_folder"
+
         # f1 is now walking. It is dequeued but in _warm_known!
-        assert "f1" not in pw._warm_queue
-        assert "f1" in pw._warm_known
-        
+        assert ("f1", ROOT) not in pw._warm_queue
+        assert ("f1", ROOT) in pw._warm_known
+
         # Enqueue f1 again -> ignored
-        pw.enqueue_warm("f1", settings)
-        assert "f1" not in pw._warm_queue
-        
+        pw.enqueue_warm("f1", ROOT, settings)
+        assert ("f1", ROOT) not in pw._warm_queue
+
         # Enqueue f2 -> queued
-        pw.enqueue_warm("f2", settings)
-        assert list(pw._warm_queue) == ["f2"]
-        
+        pw.enqueue_warm("f2", ROOT, settings)
+        assert list(pw._warm_queue) == [("f2", ROOT)]
+
         # Enqueue f2 again -> ignored
-        pw.enqueue_warm("f2", settings)
-        assert list(pw._warm_queue) == ["f2"]
-        
+        pw.enqueue_warm("f2", ROOT, settings)
+        assert list(pw._warm_queue) == [("f2", ROOT)]
+
         ev_process_proceed.set()
 
 def test_concurrent_enqueue_starts_one_thread(tmp_path):
@@ -92,11 +113,11 @@ def test_concurrent_enqueue_starts_one_thread(tmp_path):
     
     ev = threading.Event()
     def mock_process(*args):
-        ev.wait()
-        
+        ev.wait(timeout=10)
+
     with patch("backend.app.services.photo_warm._process_folder", side_effect=mock_process):
         def worker(i):
-           pw.enqueue_warm(f"f{i}", settings)
+           pw.enqueue_warm(f"f{i}", ROOT, settings)
             
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
         for t in threads:
@@ -120,7 +141,7 @@ def test_warm_disabled(tmp_path):
         shipping_photos_thumb_warm_enabled=False
     )
     
-    pw.enqueue_warm("f1", settings)
+    pw.enqueue_warm("f1", ROOT, settings)
     assert len(pw._warm_queue) == 0
     assert pw._warm_thread is None
 
@@ -130,31 +151,25 @@ def test_worker_order_and_previewable(tmp_path):
         shipping_photos_thumb_warm_enabled=True
     )
     
-    idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
-        entries=[
-            PhotoFileEntry("c.jpg", 100, 100, "v1", True),
-            PhotoFileEntry("a.txt", 100, 100, "v1", False),
-            PhotoFileEntry("b.jpg", 100, 100, "v1", True)
-        ],
-        by_name={},
-        total_bytes=300,
-        scanned_at=0,
-        truncated=False
-    )
-    
+    idx = make_index([
+        PhotoFileEntry("c.jpg", 100, 100, "v1", True),
+        PhotoFileEntry("a.txt", 100, 100, "v1", False),
+        PhotoFileEntry("b.jpg", 100, 100, "v1", True),
+    ])
+
     calls = []
     def mock_resolve(*args):
         return idx
-        
-    def mock_generate_once(folder, name, *args):
+
+    # generate_once(date_folder, sub_folder, file_name, index, priority, settings)
+    def mock_generate_once(date_folder, sub_folder, name, *args):
         calls.append(name)
         return "ok", None
-        
+
     with patch("backend.app.services.photo_warm.resolve_file_index", side_effect=mock_resolve), \
          patch("backend.app.services.photo_warm.generate_once", side_effect=mock_generate_once):
          
-        pw.enqueue_warm("f1", settings)
+        pw.enqueue_warm("f1", ROOT, settings)
         while pw._warm_known: time.sleep(0.01)
         pw.shutdown_warm_worker()
          
@@ -173,30 +188,32 @@ def test_non_ok_index_skips_and_leaves_worker_alive(tmp_path, caplog):
         shipping_photos_thumb_warm_enabled=True
     )
     
-    def mock_resolve(folder, *args):
-        if folder == "f1":
-            return PhotoFileIndex(status=PhotoFileListStatus.NOT_FOUND, entries=[], by_name={}, total_bytes=0, scanned_at=0, truncated=False)
-        elif folder == "f2":
-            return PhotoFileIndex(status=PhotoFileListStatus.UNAVAILABLE, entries=[], by_name={}, total_bytes=0, scanned_at=0, truncated=False)
+    # resolve_file_index(date_folder, sub_folder, settings, clock)
+    def mock_resolve(date_folder, sub_folder, *args):
+        key = (date_folder, sub_folder)
+        if date_folder == "f1":
+            return make_index([], status=PhotoFileListStatus.NOT_FOUND, key=key)
+        elif date_folder == "f2":
+            return make_index([], status=PhotoFileListStatus.UNAVAILABLE, key=key)
         else:
-            return PhotoFileIndex(status=PhotoFileListStatus.OK, entries=[PhotoFileEntry("a.jpg", 100, 100, "v1", True)], by_name={}, total_bytes=100, scanned_at=0, truncated=False)
-            
+            return make_index([PhotoFileEntry("a.jpg", 100, 100, "v1", True)], key=key)
+
     calls = []
-    def mock_generate_once(folder, name, *args):
-        calls.append(folder)
+    def mock_generate_once(date_folder, sub_folder, name, *args):
+        calls.append((date_folder, sub_folder))
         return "ok", None
-        
+
     with patch("backend.app.services.photo_warm.resolve_file_index", side_effect=mock_resolve), \
          patch("backend.app.services.photo_warm.generate_once", side_effect=mock_generate_once):
          
-        pw.enqueue_warm("f1", settings)
-        pw.enqueue_warm("f2", settings)
-        pw.enqueue_warm("f3", settings)
+        pw.enqueue_warm("f1", ROOT, settings)
+        pw.enqueue_warm("f2", ROOT, settings)
+        pw.enqueue_warm("f3", ROOT, settings)
          
         while pw._warm_known: time.sleep(0.01)
         pw.shutdown_warm_worker()
          
-        assert calls == ["f3"]
+        assert calls == [("f3", ROOT)]
         assert "non-OK index status: PhotoFileListStatus.NOT_FOUND" in caplog.text
         assert "non-OK index status: PhotoFileListStatus.UNAVAILABLE" in caplog.text
 
@@ -208,32 +225,25 @@ def test_nocapacity_retries_and_moves_to_next_file(tmp_path):
         shipping_photos_thumb_warm_backoff_seconds=0.01
     )
     
-    idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
-        entries=[
-            PhotoFileEntry("a.jpg", 100, 100, "v1", True),
-            PhotoFileEntry("b.jpg", 100, 100, "v1", True)
-        ],
-        by_name={},
-        total_bytes=200,
-        scanned_at=0,
-        truncated=False
-    )
-    
+    idx = make_index([
+        PhotoFileEntry("a.jpg", 100, 100, "v1", True),
+        PhotoFileEntry("b.jpg", 100, 100, "v1", True),
+    ])
+
     calls = []
     def mock_resolve(*args):
         return idx
-        
-    def mock_generate_once(folder, name, *args):
+
+    def mock_generate_once(date_folder, sub_folder, name, *args):
         calls.append(name)
         if name == "a.jpg":
             return "err", "saturated"
         return "ok", None
-        
+
     with patch("backend.app.services.photo_warm.resolve_file_index", side_effect=mock_resolve), \
          patch("backend.app.services.photo_warm.generate_once", side_effect=mock_generate_once):
          
-        pw.enqueue_warm("f1", settings)
+        pw.enqueue_warm("f1", ROOT, settings)
         while pw._warm_known: time.sleep(0.01)
         pw.shutdown_warm_worker()
          
@@ -245,32 +255,25 @@ def test_stop_event_terminates_loop(tmp_path):
         shipping_photos_thumb_warm_enabled=True
     )
     
-    idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
-        entries=[
-            PhotoFileEntry("a.jpg", 100, 100, "v1", True),
-            PhotoFileEntry("b.jpg", 100, 100, "v1", True)
-        ],
-        by_name={},
-        total_bytes=200,
-        scanned_at=0,
-        truncated=False
-    )
-    
+    idx = make_index([
+        PhotoFileEntry("a.jpg", 100, 100, "v1", True),
+        PhotoFileEntry("b.jpg", 100, 100, "v1", True),
+    ])
+
     calls = []
     def mock_resolve(*args):
         return idx
-        
-    def mock_generate_once(folder, name, *args):
+
+    def mock_generate_once(date_folder, sub_folder, name, *args):
         calls.append(name)
         if name == "a.jpg":
            pw._warm_stop.set()
         return "ok", None
-        
+
     with patch("backend.app.services.photo_warm.resolve_file_index", side_effect=mock_resolve), \
          patch("backend.app.services.photo_warm.generate_once", side_effect=mock_generate_once):
          
-        pw.enqueue_warm("f1", settings)
+        pw.enqueue_warm("f1", ROOT, settings)
         pw._warm_thread.join(5.0)
          
         assert calls == ["a.jpg"]
@@ -281,42 +284,35 @@ def test_per_file_exception_does_not_kill_loop(tmp_path):
         shipping_photos_thumb_warm_enabled=True
     )
     
-    idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
-        entries=[
-            PhotoFileEntry("a.jpg", 100, 100, "v1", True),
-            PhotoFileEntry("b.jpg", 100, 100, "v1", True)
-        ],
-        by_name={},
-        total_bytes=200,
-        scanned_at=0,
-        truncated=False
-    )
-    
+    idx = make_index([
+        PhotoFileEntry("a.jpg", 100, 100, "v1", True),
+        PhotoFileEntry("b.jpg", 100, 100, "v1", True),
+    ])
+
     calls = []
     def mock_resolve(*args):
         return idx
-        
-    def mock_generate_once(folder, name, *args):
+
+    def mock_generate_once(date_folder, sub_folder, name, *args):
         calls.append(name)
         if name == "a.jpg":
             raise ValueError("Test error")
         return "ok", None
-        
+
     with patch("backend.app.services.photo_warm.resolve_file_index", side_effect=mock_resolve), \
          patch("backend.app.services.photo_warm.generate_once", side_effect=mock_generate_once):
          
-        pw.enqueue_warm("f1", settings)
+        pw.enqueue_warm("f1", ROOT, settings)
          
          # Enqueue f2 to make sure the loop is still alive after f1 is done!
-        pw.enqueue_warm("f2", settings)
+        pw.enqueue_warm("f2", ROOT, settings)
         while pw._warm_known: time.sleep(0.01)
         pw.shutdown_warm_worker()
          
         assert calls == ["a.jpg", "b.jpg", "a.jpg", "b.jpg"]
          
-        assert "f1" not in pw._warm_known
-        assert "f2" not in pw._warm_known
+        assert ("f1", ROOT) not in pw._warm_known
+        assert ("f2", ROOT) not in pw._warm_known
 
 
 
@@ -346,23 +342,23 @@ def test_enqueue_during_worker_retirement_is_not_stranded(tmp_path):
     with patch.object(pw, "warm_worker_loop", side_effect=loop_with_slow_teardown), \
          patch.object(pw, "_process_folder", side_effect=lambda df, s, stop: walked.append(df)):
 
-        pw.enqueue_warm("2023_01_01", settings)
+        pw.enqueue_warm("2023_01_01", ROOT, settings)
 
         deadline = time.monotonic() + 5.0
-        while walked != ["2023_01_01"] and time.monotonic() < deadline:
+        while walked != [("2023_01_01", ROOT)] and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert walked == ["2023_01_01"]
+        assert walked == [("2023_01_01", ROOT)]
 
         # The first worker has drained the queue and retired, but is still alive.
         assert pw._warm_thread.is_alive()
         assert pw._warm_worker_running is False
 
-        pw.enqueue_warm("2023_01_02", settings)
+        pw.enqueue_warm("2023_01_02", ROOT, settings)
 
         deadline = time.monotonic() + 5.0
-        while walked != ["2023_01_01", "2023_01_02"] and time.monotonic() < deadline:
+        while walked != [("2023_01_01", ROOT), ("2023_01_02", ROOT)] and time.monotonic() < deadline:
             time.sleep(0.01)
 
-    assert walked == ["2023_01_01", "2023_01_02"], "the folder was stranded"
+    assert walked == [("2023_01_01", ROOT), ("2023_01_02", ROOT)], "the folder was stranded"
     assert not pw._warm_queue
     assert not pw._warm_known

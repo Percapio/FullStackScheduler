@@ -94,18 +94,20 @@ export interface PhotoFileEntry {
 }
 
 export type PhotoFileListOutcome =
-    | { kind: 'ok'; status: 'ok'; entries: PhotoFileEntry[]; truncated: boolean }
-    | { kind: 'ok'; status: 'unconfigured' | 'unavailable' | 'not_found'; entries: []; truncated: boolean }
+    | { kind: 'ok'; status: 'ok'; folders: string[]; entries: PhotoFileEntry[]; truncated: boolean; folders_truncated: boolean }
+    | { kind: 'ok'; status: 'unconfigured' | 'unavailable' | 'not_found'; folders: string[]; entries: []; truncated: boolean; folders_truncated: boolean }
     | { kind: 'network'; message: string };
 
-export async function fetchPhotoFiles(date_folder: string): Promise<PhotoFileListOutcome> {
+export async function fetchPhotoFiles(date_folder: string, sub_folder: string = ""): Promise<PhotoFileListOutcome> {
     try {
-        const res = await apiClient.get('/api/photos/files', { params: { date_folder } });
+        const res = await apiClient.get('/api/photos/files', { params: { date_folder, sub_folder } });
         return {
             kind: 'ok',
             status: res.data.status,
+            folders: res.data.folders,
             entries: res.data.entries,
-            truncated: res.data.truncated
+            truncated: res.data.truncated,
+            folders_truncated: res.data.folders_truncated
         };
     } catch (e: any) {
         return { kind: 'network', message: e.message || 'Network error' };
@@ -121,10 +123,11 @@ export type ArchiveTicketOutcome =
 
 export async function requestArchiveTicket(
     date_folder: string,
+    sub_folder: string,
     selection: string[]
 ): Promise<ArchiveTicketOutcome> {
     try {
-        const res = await apiClient.post('/api/photos/archive-token', { date_folder, selection });
+        const res = await apiClient.post('/api/photos/archive-token', { date_folder, sub_folder, selection });
         return { kind: 'ok', token: res.data.token, filename: res.data.filename };
     } catch (e: any) {
         if (!e.response) return { kind: 'network', message: e.message || 'Network error' };

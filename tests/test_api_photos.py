@@ -15,6 +15,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(rc, "load_runtime_config", lambda: {})
     _file_indexes.clear()
     from backend.app.services.archive_tokens import clear_tickets
+    from backend.app.services.photo_files import ROOT
     clear_tickets()
     
     def override_settings():
@@ -144,7 +145,7 @@ def test_files_endpoint_calls_enqueue_warm(client, tmp_path, monkeypatch):
     (tmp_path / "2023_01_01").mkdir()
     
     calls = []
-    def mock_enqueue(folder, settings):
+    def mock_enqueue(folder, sub_folder, settings):
         calls.append(folder)
         
     monkeypatch.setattr("backend.app.services.photo_warm.enqueue_warm", mock_enqueue)
@@ -156,7 +157,7 @@ def test_files_endpoint_calls_enqueue_warm(client, tmp_path, monkeypatch):
 def test_files_endpoint_enqueue_warm_raises(client, tmp_path, monkeypatch):
     (tmp_path / "2023_01_01").mkdir()
     
-    def mock_enqueue(folder, settings):
+    def mock_enqueue(folder, sub_folder, settings):
         raise ValueError("Boom")
         
     monkeypatch.setattr("backend.app.services.photo_warm.enqueue_warm", mock_enqueue)
@@ -355,7 +356,7 @@ def test_archive_download_not_gzipped(client, tmp_path):
 def test_issue_ticket_stamps_clock_inside_lock():
     import backend.app.services.archive_tokens as at
     from backend.app.config import Settings
-    ticket = ArchiveTicket("2023_01_01", [], "file.zip", False, issued_at=999.0)
+    ticket = ArchiveTicket("2023_01_01", "", [], "file.zip", False, issued_at=999.0)
     
     at.clear_tickets()
     token = at.issue_ticket(ticket, Settings(), lambda: 100.0)

@@ -19,7 +19,7 @@ const loadedImages = ref<Set<string>>(new Set())
 const failedImages = ref<Set<string>>(new Set())
 const retryNonces = ref<Record<string, number>>({})
 
-watch(() => (state.value.state === 'ready' ? state.value.date_folder : null), (newFolder, oldFolder) => {
+watch(() => (state.value.state === 'ready' ? `${state.value.date_folder}/${state.value.sub_folder}` : null), (newFolder, oldFolder) => {
   if (newFolder !== oldFolder) {
     galleryGeneration.value++
     loadedImages.value.clear()
@@ -65,8 +65,8 @@ async function onDownload() {
 
 onBeforeUnmount(() => clearTimeout(handoffTimer))
 
-function thumbUrl(filename: string, date_folder: string, version: string) {
-  return `/api/photos/thumb/${encodeURIComponent(filename)}?date_folder=${encodeURIComponent(date_folder)}&v=${encodeURIComponent(version)}`
+function thumbUrl(filename: string, date_folder: string, sub_folder: string, version: string) {
+  return `/api/photos/thumb/${encodeURIComponent(filename)}?date_folder=${encodeURIComponent(date_folder)}&sub_folder=${encodeURIComponent(sub_folder)}&v=${encodeURIComponent(version)}`
 }
 
 // Both handlers are built during render so they CLOSE OVER the generation they
@@ -118,7 +118,17 @@ function retryImage(filename: string, e: Event) {
             <template v-else-if="state.state === 'ready'">
               <div class="flex items-center justify-between mb-4 pb-4 border-b border-slate-200 dark:border-slate-700">
                 <h3 class="text-lg font-semibold leading-6 text-slate-900 dark:text-slate-100 flex items-center gap-4" id="modal-title">
-                  <span>Photos for {{ state.date_folder }}</span>
+                  <div class="flex items-center gap-2">
+                    <button v-if="state.sub_folder !== ''" @click="props.gallery.navigateUp()" class="text-sm px-2 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 rounded">
+                      &larr; Back
+                    </button>
+                    <span>
+                      <template v-if="state.sub_folder === ''">Photos for {{ state.date_folder }}</template>
+                      <template v-else>
+                        <a href="#" @click.prevent="props.gallery.navigateUp()" class="hover:underline">{{ state.date_folder }}</a> / {{ state.sub_folder }}
+                      </template>
+                    </span>
+                  </div>
                   <span v-if="resolvedCount < previewableCount" class="text-sm font-normal text-slate-500 bg-slate-100 dark:bg-slate-700 px-2 py-1 rounded">
                     {{ resolvedCount }} of {{ previewableCount }} ready
                   </span>
@@ -131,19 +141,36 @@ function retryImage(filename: string, e: Event) {
                 </button>
               </div>
 
+              <div v-if="state.folders_truncated" class="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded text-sm">
+                This folder contains more job folders than can be shown. Showing the first {{ state.folders.length }}.
+              </div>
               <div v-if="state.truncated" class="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded text-sm">
                 This folder contains more photos than can be displayed. Showing the first {{ state.entries.length }}.
               </div>
 
               <div class="flex-1 overflow-y-auto min-h-0">
-                <div v-if="state.entries.length === 0" class="text-center py-12 text-slate-500">
+                <div v-if="state.entries.length === 0 && state.folders.length === 0" class="text-center py-12 text-slate-500">
                   No previewable photos found in this folder.
+                </div>
+                
+                <div v-if="state.folders.length > 0" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-6">
+                  <div
+                    v-for="folder in state.folders"
+                    :key="`${state.date_folder}/${folder}`"
+                    class="relative aspect-[4/3] cursor-pointer group rounded overflow-hidden bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 flex flex-col items-center justify-center border border-slate-200 dark:border-slate-600 transition-colors"
+                    @click="props.gallery.navigateTo(folder)"
+                  >
+                    <svg class="w-10 h-10 text-slate-400 mb-2 group-hover:text-blue-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                    <span class="text-sm font-medium text-slate-700 dark:text-slate-300 px-2 truncate w-full text-center" :title="folder">{{ folder }}</span>
+                  </div>
                 </div>
                 
                 <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   <div
                     v-for="entry in state.entries"
-                    :key="`${state.date_folder}/${entry.name}/${retryNonces[entry.name] || 0}`"
+                    :key="`${state.date_folder}/${state.sub_folder}/${entry.name}/${retryNonces[entry.name] || 0}`"
                     class="relative aspect-square cursor-pointer group rounded overflow-hidden bg-slate-100 dark:bg-slate-900"
                     @click="props.gallery.toggleSelection(entry.name)"
                   >
@@ -151,7 +178,7 @@ function retryImage(filename: string, e: Event) {
                       <div v-if="!loadedImages.has(entry.name) && !failedImages.has(entry.name)" class="absolute inset-0 bg-slate-200 dark:bg-slate-700 animate-pulse"></div>
                       <img
                         v-if="!failedImages.has(entry.name)"
-                        :src="thumbUrl(entry.name, state.date_folder, entry.version)"
+                        :src="thumbUrl(entry.name, state.date_folder, state.sub_folder, entry.version)"
                         :alt="entry.name"
                         class="w-full h-full object-cover transition-transform group-hover:scale-105"
                         :class="{ 'opacity-0': !loadedImages.has(entry.name) }"

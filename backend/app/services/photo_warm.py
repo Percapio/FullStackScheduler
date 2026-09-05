@@ -1,37 +1,45 @@
 import threading
 import logging
 import time
-from typing import Set, Deque
+from typing import Set, Deque, Union
 from collections import deque
 from backend.app.config import Settings
-from backend.app.services.photo_files import resolve_file_index, PhotoFileListStatus
+from backend.app.services.photo_files import resolve_file_index, PhotoFileListStatus, FolderKey, ROOT
 from backend.app.services.photo_thumbnails import generate_once
 
 logger = logging.getLogger(__name__)
 
 _warm_lock = threading.Lock()
-_warm_queue: Deque[str] = deque()
-_warm_known: Set[str] = set()
+_warm_queue: Deque[FolderKey] = deque()
+_warm_known: Set[FolderKey] = set()
 _warm_thread: threading.Thread | None = None
 _warm_worker_running = False
 _warm_stop = threading.Event()
 
-def enqueue_warm(date_folder: str, settings: Settings) -> None:
+def enqueue_warm(date_folder: str, sub_folder: str, settings: Settings) -> None:
     if not settings.shipping_photos_thumb_warm_enabled:
         return
         
     global _warm_thread, _warm_worker_running
     
     with _warm_lock:
-        if date_folder in _warm_known:
+        key = (date_folder, sub_folder)
+        if key in _warm_known:
             return
             
-        if len(_warm_queue) >= settings.shipping_photos_thumb_warm_queue_max_folders:
+        if sub_folder != ROOT:
+            date_subfolders = [k for k in _warm_queue if k[0] == date_folder and k[1] != ROOT]
+            if len(date_subfolders) >= settings.shipping_photos_thumb_warm_max_subfolders_per_date:
+                oldest = date_subfolders[0]
+                _warm_queue.remove(oldest)
+                _warm_known.discard(oldest)
+                
+        while len(_warm_queue) >= settings.shipping_photos_thumb_warm_queue_max_keys:
             oldest = _warm_queue.popleft()
             _warm_known.discard(oldest)
             
-        _warm_queue.append(date_folder)
-        _warm_known.add(date_folder)
+        _warm_queue.append(key)
+        _warm_known.add(key)
         
         # _warm_worker_running -- not is_alive() -- is what decides this.
         # A worker that drains the queue retires by clearing the flag under
@@ -53,19 +61,19 @@ def enqueue_warm(date_folder: str, settings: Settings) -> None:
 
 def warm_worker_loop(settings: Settings, stop: threading.Event) -> None:
     while True:
-        date_folder = _next_folder_or_retire(stop)
-        if date_folder is None:
+        key = _next_folder_or_retire(stop)
+        if key is None:
             return
 
         try:
-            _process_folder(date_folder, settings, stop)
+            _process_folder(key, settings, stop)
         except Exception as e:
-            logger.debug("Warm worker caught exception for folder %s: %s", date_folder, e)
+            logger.debug("Warm worker caught exception for folder %s: %s", key, e)
         finally:
             with _warm_lock:
-                _warm_known.discard(date_folder)
+                _warm_known.discard(key)
 
-def _next_folder_or_retire(stop: threading.Event) -> str | None:
+def _next_folder_or_retire(stop: threading.Event) -> Union[FolderKey, None]:
     """Pops the next folder, or retires this worker.
 
     Both outcomes are decided in one critical section so that observing an
@@ -80,12 +88,13 @@ def _next_folder_or_retire(stop: threading.Event) -> str | None:
             _warm_worker_running = False
         return None
 
-def _process_folder(date_folder: str, settings: Settings, stop: threading.Event) -> None:
+def _process_folder(key: FolderKey, settings: Settings, stop: threading.Event) -> None:
     clock = time.monotonic
-    index = resolve_file_index(date_folder, settings, clock)
+    date_folder, sub_folder = key
+    index = resolve_file_index(date_folder, sub_folder, settings, clock)
     
     if index.status != PhotoFileListStatus.OK:
-        logger.debug("Warm worker skipping folder %s due to non-OK index status: %s", date_folder, index.status)
+        logger.debug("Warm worker skipping folder %s due to non-OK index status: %s", key, index.status)
         return
         
     for entry in index.entries:
@@ -101,7 +110,7 @@ def _process_folder(date_folder: str, settings: Settings, stop: threading.Event)
                 return
                 
             try:
-                status, outcome = generate_once(date_folder, entry.name, index, "warm", settings)
+                status, outcome = generate_once(date_folder, sub_folder, entry.name, index, "warm", settings)
             except Exception as e:
                 logger.debug("Per-file exception for %s: %s", entry.name, e)
                 break

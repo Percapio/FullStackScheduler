@@ -97,18 +97,21 @@ class PhotoFileEntryRead(BaseModel):
 
 class PhotoFileListRead(BaseModel):
     status: Literal["unconfigured", "unavailable", "not_found", "ok"]
+    folders: List[str]
     entries: List[PhotoFileEntryRead]
     truncated: bool
+    folders_truncated: bool
 
 @router.get("/files", response_model=PhotoFileListRead)
 def list_files(
     date_folder: str = Query(..., pattern=PHOTO_FOLDER_PATTERN.pattern),
+    sub_folder: str = Query(default="", max_length=255, pattern="^[^/\\\\]*$"),
     settings: Settings = Depends(get_settings)
 ):
-    idx = resolve_file_index(date_folder, settings, time.monotonic)
+    idx = resolve_file_index(date_folder, sub_folder, settings, time.monotonic)
     try:
         from ..services.photo_warm import enqueue_warm
-        enqueue_warm(date_folder, settings)
+        enqueue_warm(date_folder, sub_folder, settings)
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Failed to enqueue warm worker: {e}")
@@ -126,18 +129,21 @@ def list_files(
         ]
     return PhotoFileListRead(
         status=idx.status.value,
+        folders=idx.folders if idx.status == PhotoFileListStatus.OK else [],
         entries=entries,
-        truncated=idx.truncated
+        truncated=idx.truncated,
+        folders_truncated=idx.folders_truncated if idx.status == PhotoFileListStatus.OK else False
     )
 
 @router.get("/file/{filename}")
 def get_file(
     filename: str,
     date_folder: str = Query(..., pattern=PHOTO_FOLDER_PATTERN.pattern),
+    sub_folder: str = Query(default="", max_length=255, pattern="^[^/\\\\]*$"),
     settings: Settings = Depends(get_settings)
 ):
-    idx = resolve_file_index(date_folder, settings, time.monotonic)
-    res = resolve_photo_file_path(date_folder, filename, idx, settings)
+    idx = resolve_file_index(date_folder, sub_folder, settings, time.monotonic)
+    res = resolve_photo_file_path(date_folder, sub_folder, filename, idx, settings)
     
     if res[0] == "err":
         return JSONResponse(status_code=404, content={"kind": res[1]})
@@ -159,11 +165,12 @@ from ..services.photo_thumbnails import generate_once
 def get_thumb(
     filename: str,
     date_folder: str = Query(..., pattern=PHOTO_FOLDER_PATTERN.pattern),
+    sub_folder: str = Query(default="", max_length=255, pattern="^[^/\\\\]*$"),
     settings: Settings = Depends(get_settings)
 ):
-    idx = resolve_file_index(date_folder, settings, time.monotonic)
+    idx = resolve_file_index(date_folder, sub_folder, settings, time.monotonic)
     
-    res = generate_once(date_folder, filename, idx, "interactive", settings)
+    res = generate_once(date_folder, sub_folder, filename, idx, "interactive", settings)
     if res[0] == "err":
         if res[1] == "not_previewable":
             return JSONResponse(status_code=415, content={"kind": res[1]}, headers={"Cache-Control": "no-store"})
@@ -185,9 +192,10 @@ def get_thumb(
 
 class ArchiveRequest(BaseModel):
     date_folder: str = Field(pattern=PHOTO_FOLDER_PATTERN.pattern)
+    sub_folder: str = Field(default="", max_length=255, pattern="^[^/\\\\]*$")
     selection: List[str] = Field(default_factory=list)
 
-from ..services.archive_tokens import issue_ticket, redeem_ticket, ArchiveTicket
+from ..services.archive_tokens import issue_ticket, redeem_ticket, ArchiveTicket, archive_attachment_name
 
 class ArchiveTokenRead(BaseModel):
     token: str
@@ -200,7 +208,7 @@ def create_archive_token(
     is_loopback: bool = Depends(is_loopback_caller),
     settings: Settings = Depends(get_settings),
 ):
-    idx = resolve_file_index(req.date_folder, settings, time.monotonic)
+    idx = resolve_file_index(req.date_folder, req.sub_folder, settings, time.monotonic)
     if idx.status != PhotoFileListStatus.OK:
         return JSONResponse(status_code=404, content={"kind": idx.status.value})
 
@@ -226,10 +234,11 @@ def create_archive_token(
                             headers={"Retry-After": "5"})
     sem.release()
 
-    filename = f"Photos_{req.date_folder}.zip"
+    filename = archive_attachment_name(req.date_folder, req.sub_folder)
     token = issue_ticket(
         ArchiveTicket(
             date_folder=req.date_folder,
+            sub_folder=req.sub_folder,
             selection=list(req.selection),
             filename=filename,
             minted_loopback=is_loopback,
@@ -261,7 +270,7 @@ def download_archive(
         return JSONResponse(status_code=403, content={"kind": "token_scope"},
                             headers={"Cache-Control": "no-store"})
 
-    idx = resolve_file_index(ticket.date_folder, settings, time.monotonic)
+    idx = resolve_file_index(ticket.date_folder, ticket.sub_folder, settings, time.monotonic)
     if idx.status != PhotoFileListStatus.OK:
         return JSONResponse(status_code=404, content={"kind": idx.status.value},
                             headers={"Cache-Control": "no-store"})
@@ -271,7 +280,7 @@ def download_archive(
         return JSONResponse(status_code=503, content={"kind": "busy"},
                             headers={"Retry-After": "5", "Cache-Control": "no-store"})
 
-    stream = stream_photo_archive(ticket.date_folder, ticket.selection, idx, settings)
+    stream = stream_photo_archive(ticket.date_folder, ticket.sub_folder, ticket.selection, idx, settings)
 
     return StreamingResponse(
         hold_permit_across_stream(stream, sem),
@@ -309,7 +318,7 @@ def create_archive(
 ):
     # Legacy/direct loopback path. For new usage (e.g. LAN), use the token pair:
     # POST /archive-token -> GET /archive-download
-    idx = resolve_file_index(req.date_folder, settings, time.monotonic)
+    idx = resolve_file_index(req.date_folder, req.sub_folder, settings, time.monotonic)
     if idx.status != PhotoFileListStatus.OK:
         return JSONResponse(status_code=404, content={"kind": idx.status.value})
         
@@ -327,12 +336,12 @@ def create_archive(
     if not sem.acquire(blocking=False):
         return JSONResponse(status_code=503, content={"kind": "busy"}, headers={"Retry-After": "5"})
         
-    stream = stream_photo_archive(req.date_folder, req.selection, idx, settings)
+    stream = stream_photo_archive(req.date_folder, req.sub_folder, req.selection, idx, settings)
     
     return StreamingResponse(
         hold_permit_across_stream(stream, sem),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="Photos_{req.date_folder}.zip"'
+            "Content-Disposition": f'attachment; filename="{archive_attachment_name(req.date_folder, req.sub_folder)}"'
         }
     )

@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 from backend.app.config import Settings
-from backend.app.services.photo_files import PhotoFileIndex, PhotoFileListStatus, PhotoFileEntry
+from backend.app.services.photo_files import PhotoFileIndex, PhotoFileListStatus, PhotoFileEntry, ROOT
 from backend.app.services.photo_thumbnails import generate_once, _get_cache_dir
 
 @pytest.fixture
@@ -34,7 +34,11 @@ def test_resolve_thumbnail_success(tmp_path, mock_cache_dir):
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"valid.jpg": PhotoFileEntry("valid.jpg", 100, 100, "100-100", True)},
         total_bytes=100,
@@ -42,7 +46,7 @@ def test_resolve_thumbnail_success(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, result = generate_once("2023_01_01", "valid.jpg", idx, "interactive", settings)
+    res, result = generate_once("2023_01_01", ROOT, "valid.jpg", idx, "interactive", settings)
     assert res == "ok"
     assert result.media_type == "image/webp"
     assert result.path.exists()
@@ -66,7 +70,11 @@ def test_resolve_thumbnail_exif_transpose(tmp_path, mock_cache_dir):
     img.save(img_path, format="JPEG", exif=exif_data)
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"exif.jpg": PhotoFileEntry("exif.jpg", 100, 100, "100-100", True)},
         total_bytes=100,
@@ -74,7 +82,7 @@ def test_resolve_thumbnail_exif_transpose(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, result = generate_once("2023_01_01", "exif.jpg", idx, "interactive", settings)
+    res, result = generate_once("2023_01_01", ROOT, "exif.jpg", idx, "interactive", settings)
     assert res == "ok"
     
     with Image.open(result.path) as t:
@@ -96,7 +104,11 @@ def test_resolve_thumbnail_cache_unavailable(tmp_path, mock_cache_dir, monkeypat
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"valid.jpg": PhotoFileEntry("valid.jpg", 100, 100, "100-100", True)},
         total_bytes=100,
@@ -114,7 +126,7 @@ def test_resolve_thumbnail_cache_unavailable(tmp_path, mock_cache_dir, monkeypat
         
     monkeypatch.setattr(pathlib.Path, "replace", mock_replace)
     
-    res, result = generate_once("2023_01_01", "valid.jpg", idx, "interactive", settings)
+    res, result = generate_once("2023_01_01", ROOT, "valid.jpg", idx, "interactive", settings)
     assert res == "err"
     assert result == "cache_unavailable"
     
@@ -131,7 +143,11 @@ def test_resolve_thumbnail_undecodable(tmp_path, mock_cache_dir):
     img_path.write_bytes(b"not an image")
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"bad.jpg": PhotoFileEntry("bad.jpg", 12, 100, "100-12", True)},
         total_bytes=12,
@@ -139,12 +155,13 @@ def test_resolve_thumbnail_undecodable(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, msg = generate_once("2023_01_01", "bad.jpg", idx, "interactive", settings)
+    res, msg = generate_once("2023_01_01", ROOT, "bad.jpg", idx, "interactive", settings)
     assert res == "err"
     assert msg == "not_previewable"
     
     # Sentinel should exist
-    sentinel = mock_cache_dir / "2023_01_01_bad.jpg_100-12.webp"
+    from backend.app.services.photo_thumbnails import thumbnail_cache_key
+    sentinel = mock_cache_dir / thumbnail_cache_key("2023_01_01", ROOT, "bad.jpg", "100-12")
     assert sentinel.exists()
     assert sentinel.stat().st_size == 0
 
@@ -172,7 +189,11 @@ def test_resolve_thumbnail_sweep(tmp_path, mock_cache_dir):
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"valid.jpg": PhotoFileEntry("valid.jpg", 100, 100, "100-100", True)},
         total_bytes=100,
@@ -180,7 +201,7 @@ def test_resolve_thumbnail_sweep(tmp_path, mock_cache_dir):
         truncated=False
     )
     
-    res, result = generate_once("2023_01_01", "valid.jpg", idx, "interactive", settings)
+    res, result = generate_once("2023_01_01", ROOT, "valid.jpg", idx, "interactive", settings)
     assert res == "ok"
     
     # Sweep should have run, old should be deleted
@@ -302,7 +323,11 @@ def test_pillow_calls_draft(tmp_path, monkeypatch, mock_cache_dir):
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"draft.jpg": PhotoFileEntry("draft.jpg", 100, 100, "100-100", True)},
         total_bytes=100,
@@ -319,7 +344,7 @@ def test_pillow_calls_draft(tmp_path, monkeypatch, mock_cache_dir):
         
     monkeypatch.setattr(PIL.JpegImagePlugin.JpegImageFile, "draft", mock_draft)
     
-    res, result = generate_once("2023_01_01", "draft.jpg", idx, "interactive", settings)
+    res, result = generate_once("2023_01_01", ROOT, "draft.jpg", idx, "interactive", settings)
     assert res == "ok"
     assert len(draft_calls) > 0
 import threading
@@ -339,7 +364,11 @@ def test_single_flight_success(tmp_path, mock_cache_dir, monkeypatch):
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"sf.jpg": PhotoFileEntry("sf.jpg", 100, 100, "100-100", True)},
         total_bytes=100,
@@ -367,9 +396,9 @@ def test_single_flight_success(tmp_path, mock_cache_dir, monkeypatch):
     res2 = []
     
     def worker1():
-        res1.append(generate_once("2023_01_01", "sf.jpg", idx, "interactive", settings))
+        res1.append(generate_once("2023_01_01", ROOT, "sf.jpg", idx, "interactive", settings))
     def worker2():
-        res2.append(generate_once("2023_01_01", "sf.jpg", idx, "interactive", settings))
+        res2.append(generate_once("2023_01_01", ROOT, "sf.jpg", idx, "interactive", settings))
         
     t1 = threading.Thread(target=worker1)
     t1.start()
@@ -411,7 +440,11 @@ def test_single_flight_failure(tmp_path, mock_cache_dir, monkeypatch):
     img_path.write_bytes(b"not an image")
     
     idx = PhotoFileIndex(
-        status=PhotoFileListStatus.OK,
+                    key=('2023_01_01', ROOT),
+            folders=[],
+            folder_set=set(),
+            folders_truncated=False,
+status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"fail.jpg": PhotoFileEntry("fail.jpg", 100, 100, "100-100", True)},
         total_bytes=100,
@@ -438,9 +471,9 @@ def test_single_flight_failure(tmp_path, mock_cache_dir, monkeypatch):
     res2 = []
     
     def worker1():
-        res1.append(generate_once("2023_01_01", "fail.jpg", idx, "interactive", settings))
+        res1.append(generate_once("2023_01_01", ROOT, "fail.jpg", idx, "interactive", settings))
     def worker2():
-        res2.append(generate_once("2023_01_01", "fail.jpg", idx, "interactive", settings))
+        res2.append(generate_once("2023_01_01", ROOT, "fail.jpg", idx, "interactive", settings))
         
     t1 = threading.Thread(target=worker1)
     t1.start()
@@ -476,12 +509,16 @@ def test_single_flight_timeout(tmp_path, mock_cache_dir, monkeypatch):
     img.save(img_path, format="JPEG")
     
     idx = PhotoFileIndex(
+        key=("2023_01_01", ROOT),
         status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"to.jpg": PhotoFileEntry("to.jpg", 100, 100, "100-100", True)},
+        folders=[],
+        folder_set=set(),
         total_bytes=100,
         scanned_at=0,
-        truncated=False
+        truncated=False,
+        folders_truncated=False
     )
     
     import backend.app.services.photo_thumbnails as pt
@@ -501,11 +538,11 @@ def test_single_flight_timeout(tmp_path, mock_cache_dir, monkeypatch):
     
     def worker1():
         try:
-            res1.append(generate_once("2023_01_01", "to.jpg", idx, "interactive", settings))
+            res1.append(generate_once("2023_01_01", ROOT, "to.jpg", idx, "interactive", settings))
         except Exception as e:
             print("W1 ERROR:", repr(e))
     def worker2():
-        res2.append(generate_once("2023_01_01", "to.jpg", idx, "interactive", settings))
+        res2.append(generate_once("2023_01_01", ROOT, "to.jpg", idx, "interactive", settings))
         
     t1 = threading.Thread(target=worker1)
     t1.start()
@@ -528,12 +565,16 @@ def test_single_flight_timeout(tmp_path, mock_cache_dir, monkeypatch):
 
 def _one_file_index(name: str) -> PhotoFileIndex:
     return PhotoFileIndex(
+        key=("2023_01_01", ROOT),
         status=PhotoFileListStatus.OK,
         entries=[],
         by_name={name: PhotoFileEntry(name, 100, 100, "100-100", True)},
+        folders=[],
+        folder_set=set(),
         total_bytes=100,
         scanned_at=0,
-        truncated=False
+        truncated=False,
+        folders_truncated=False
     )
 
 
@@ -558,15 +599,19 @@ def test_single_flight_waiter_holds_no_permit(tmp_path, mock_cache_dir, monkeypa
         Image.new("RGB", (200, 200), color="blue").save(tmp_path / "2023_01_01" / name, format="JPEG")
 
     idx = PhotoFileIndex(
+        key=("2023_01_01", ROOT),
         status=PhotoFileListStatus.OK,
         entries=[],
         by_name={
             "k1.jpg": PhotoFileEntry("k1.jpg", 100, 100, "100-100", True),
             "k2.jpg": PhotoFileEntry("k2.jpg", 100, 100, "100-100", True),
         },
+        folders=[],
+        folder_set=set(),
         total_bytes=200,
         scanned_at=0,
-        truncated=False
+        truncated=False,
+        folders_truncated=False
     )
 
     import backend.app.services.photo_thumbnails as pt
@@ -583,15 +628,15 @@ def test_single_flight_waiter_holds_no_permit(tmp_path, mock_cache_dir, monkeypa
     monkeypatch.setattr(pt, "_generate_impl", mock_gen)
 
     res_b, res_c = [], []
-    a = threading.Thread(target=lambda: generate_once("2023_01_01", "k1.jpg", idx, "interactive", settings))
+    a = threading.Thread(target=lambda: generate_once("2023_01_01", ROOT, "k1.jpg", idx, "interactive", settings))
     a.start()
     assert k1_started.wait(5.0)
 
-    b = threading.Thread(target=lambda: res_b.append(generate_once("2023_01_01", "k1.jpg", idx, "interactive", settings)))
+    b = threading.Thread(target=lambda: res_b.append(generate_once("2023_01_01", ROOT, "k1.jpg", idx, "interactive", settings)))
     b.start()
     time.sleep(0.2)  # let B reach its wait on k1's record
 
-    c = threading.Thread(target=lambda: res_c.append(generate_once("2023_01_01", "k2.jpg", idx, "interactive", settings)))
+    c = threading.Thread(target=lambda: res_c.append(generate_once("2023_01_01", ROOT, "k2.jpg", idx, "interactive", settings)))
     c.start()
     c.join(5.0)
 
@@ -653,11 +698,11 @@ def test_single_flight_lost_race_at_step_6_returns_cache_without_decoding(tmp_pa
     monkeypatch.setattr(pt, "_generate_impl", counting_gen)
 
     res_b = []
-    b = threading.Thread(target=lambda: res_b.append(generate_once("2023_01_01", "race.jpg", idx, "interactive", settings)))
+    b = threading.Thread(target=lambda: res_b.append(generate_once("2023_01_01", ROOT, "race.jpg", idx, "interactive", settings)))
     b.start()
     assert b_at_gate.wait(5.0)
 
-    res_a = generate_once("2023_01_01", "race.jpg", idx, "interactive", settings)
+    res_a = generate_once("2023_01_01", ROOT, "race.jpg", idx, "interactive", settings)
     assert res_a[0] == "ok"
     assert len(decodes) == 1
 
@@ -714,7 +759,7 @@ def test_single_flight_concurrent_claim_rejoins_instead_of_503(tmp_path, mock_ca
     results = {}
 
     def call(name):
-        results[name] = generate_once("2023_01_01", "claim.jpg", idx, "interactive", settings)
+        results[name] = generate_once("2023_01_01", ROOT, "claim.jpg", idx, "interactive", settings)
 
     threads = [threading.Thread(target=call, args=(n,)) for n in ("A", "B")]
     for t in threads:

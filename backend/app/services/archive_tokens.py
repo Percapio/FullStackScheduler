@@ -8,16 +8,33 @@ from typing import Callable, List, Optional
 
 from ..config import Settings
 
+from ..services.photo_files import SubFolder, ROOT
 
 @dataclass(frozen=True)
 class ArchiveTicket:
     """issued_at is stamped by issue_ticket under _lock. Callers construct a
     ticket without it and must not rely on the value they pass."""
     date_folder: str
+    sub_folder: SubFolder
     selection: List[str]
     filename: str
     minted_loopback: bool
     issued_at: float = 0.0
+
+def archive_attachment_name(date_folder: str, sub_folder: SubFolder) -> str:
+    import hashlib
+    import re
+    if sub_folder == ROOT:
+        return f"Photos_{date_folder}.zip"
+    
+    reduced = re.sub(r'[^A-Za-z0-9_.-]', '', sub_folder)[:64]
+    if reduced == sub_folder and reduced:
+        slug = reduced
+    else:
+        digest = hashlib.sha256(sub_folder.encode('utf-8')).hexdigest()[:8]
+        slug = f"x{digest}"
+    
+    return f"Photos_{date_folder}_{slug}.zip"
 
 
 _lock = threading.Lock()

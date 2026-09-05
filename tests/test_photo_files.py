@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from backend.app.config import Settings
-from backend.app.services.photo_files import (
+from backend.app.services.photo_files import ( ROOT,
     is_plausible_file_name,
     resolve_photo_file_path,
     PhotoFileIndex,
@@ -52,41 +52,49 @@ def test_membership_guard_resolution(tmp_path):
     (tmp_path / "2023_01_01" / "file.jpg").touch()
     
     idx = PhotoFileIndex(
+        key=("2023_01_01", ROOT),
         status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"file.jpg": PhotoFileEntry("file.jpg", 0, 0, "0", True)},
+        folders=[],
+        folder_set=set(),
         total_bytes=0,
         scanned_at=0,
-        truncated=False
+        truncated=False,
+        folders_truncated=False
     )
     
     # Member
-    res, path = resolve_photo_file_path("2023_01_01", "file.jpg", idx, settings)
+    res, path = resolve_photo_file_path("2023_01_01", ROOT, "file.jpg", idx, settings)
     assert res == "ok"
     
     # Not member
-    res, msg = resolve_photo_file_path("2023_01_01", "FILE.JPG", idx, settings)
+    res, msg = resolve_photo_file_path("2023_01_01", ROOT, "FILE.JPG", idx, settings)
     assert res == "err"
     assert msg == "file_not_found"
     
     # Pre-filter fail
-    res, msg = resolve_photo_file_path("2023_01_01", "a/b", idx, settings)
+    res, msg = resolve_photo_file_path("2023_01_01", ROOT, "a/b", idx, settings)
     assert res == "err"
     
     # Folder not found
-    res, msg = resolve_photo_file_path("2023_01_02", "file.jpg", idx, settings)
+    res, msg = resolve_photo_file_path("2023_01_02", ROOT, "file.jpg", idx, settings)
     assert res == "err"
-    assert msg == "file_not_found"
+    assert msg == "index_mismatch"
 
 def test_membership_guard_containment(tmp_path):
     settings = Settings(shipping_photos_dir=str(tmp_path))
     idx = PhotoFileIndex(
+        key=("2023_01_01", ROOT),
         status=PhotoFileListStatus.OK,
         entries=[],
         by_name={"file.jpg": PhotoFileEntry("file.jpg", 0, 0, "0", True)},
+        folders=[],
+        folder_set=set(),
         total_bytes=0,
         scanned_at=0,
-        truncated=False
+        truncated=False,
+        folders_truncated=False
     )
     
     (tmp_path / "2023_01_01").mkdir()
@@ -97,7 +105,7 @@ def test_membership_guard_containment(tmp_path):
             return (tmp_path / "other" / "file.jpg").resolve()
         return p.resolve()
         
-    res, msg = resolve_photo_file_path("2023_01_01", "file.jpg", idx, settings, resolve=evil_resolve)
+    res, msg = resolve_photo_file_path("2023_01_01", ROOT, "file.jpg", idx, settings, resolve=evil_resolve)
     assert res == "err"
     assert msg == "not_a_file"
     
@@ -105,7 +113,7 @@ def test_membership_guard_containment(tmp_path):
     def dir_stat(p):
         return FileStatus(is_regular_file=False, size_bytes=0, mtime_ns=0)
         
-    res, msg = resolve_photo_file_path("2023_01_01", "file.jpg", idx, settings, stat_fn=dir_stat)
+    res, msg = resolve_photo_file_path("2023_01_01", ROOT, "file.jpg", idx, settings, stat_fn=dir_stat)
     assert res == "err"
     assert msg == "not_a_file"
 
@@ -120,7 +128,7 @@ def test_file_index_caching(tmp_path):
     
     t = 0.0
     
-    idx1 = resolve_file_index("2023_01_01", settings, lambda: t)
+    idx1 = resolve_file_index("2023_01_01", ROOT, settings, lambda: t)
     assert idx1.status == "ok"
     assert len(idx1.entries) == 1
     
@@ -128,12 +136,12 @@ def test_file_index_caching(tmp_path):
     
     # Under TTL, gets cached
     t = 5.0
-    idx2 = resolve_file_index("2023_01_01", settings, lambda: t)
+    idx2 = resolve_file_index("2023_01_01", ROOT, settings, lambda: t)
     assert len(idx2.entries) == 1
     
     # Over TTL, rescans
     t = 11.0
-    idx3 = resolve_file_index("2023_01_01", settings, lambda: t)
+    idx3 = resolve_file_index("2023_01_01", ROOT, settings, lambda: t)
     assert len(idx3.entries) == 2
     
 def test_file_index_truncation_and_size(tmp_path):
@@ -147,7 +155,7 @@ def test_file_index_truncation_and_size(tmp_path):
         p = tmp_path / "2023_01_01" / f"f{i}.jpg"
         p.write_bytes(b"x") # 1 byte
         
-    idx = resolve_file_index("2023_01_01", settings, time.time)
+    idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
     assert idx.truncated is True
     assert len(idx.entries) == 2
     assert idx.total_bytes == 2
@@ -155,29 +163,29 @@ def test_file_index_truncation_and_size(tmp_path):
 def test_file_index_lru(tmp_path):
     settings = Settings(
         shipping_photos_dir=str(tmp_path),
-        shipping_photos_file_index_max_folders=2
+        shipping_photos_file_index_max_keys=2
     )
     (tmp_path / "2023_01_01").mkdir()
     (tmp_path / "2023_01_02").mkdir()
     (tmp_path / "2023_01_03").mkdir()
     
-    resolve_file_index("2023_01_01", settings, time.time)
-    resolve_file_index("2023_01_02", settings, time.time)
+    resolve_file_index("2023_01_01", ROOT, settings, time.time)
+    resolve_file_index("2023_01_02", ROOT, settings, time.time)
     
     # Touch 1
-    resolve_file_index("2023_01_01", settings, time.time)
+    resolve_file_index("2023_01_01", ROOT, settings, time.time)
     
     # Add 3
-    resolve_file_index("2023_01_03", settings, time.time)
+    resolve_file_index("2023_01_03", ROOT, settings, time.time)
     
     # 2 should be evicted, 1 should remain
-    assert "2023_01_02" not in _file_indexes
-    assert "2023_01_01" in _file_indexes
+    assert ("2023_01_02", ROOT) not in _file_indexes
+    assert ("2023_01_01", ROOT) in _file_indexes
 
 def test_file_index_invalidate(tmp_path):
     settings = Settings(shipping_photos_dir=str(tmp_path))
     (tmp_path / "2023_01_01").mkdir()
-    resolve_file_index("2023_01_01", settings, time.time)
+    resolve_file_index("2023_01_01", ROOT, settings, time.time)
     assert len(_file_indexes) > 0
     invalidate_file_index(ALL_FOLDERS())
     assert len(_file_indexes) == 0
@@ -193,11 +201,11 @@ def test_archive_streaming(tmp_path):
     (d / "b.jpg").write_bytes(b"b")
     (d / "c.notpreviewable").write_bytes(b"c") # should be archived if in index
     
-    idx = resolve_file_index("2023_01_01", settings, time.time)
+    idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
     assert len(idx.entries) == 2
     assert idx.truncated is True
     
-    stream = stream_photo_archive("2023_01_01", [], idx, settings)
+    stream = stream_photo_archive("2023_01_01", ROOT, [], idx, settings)
     data = b"".join(stream)
     
     assert len(data) > 0
@@ -213,11 +221,11 @@ def test_archive_streaming_missing_file(tmp_path):
     d.mkdir()
     (d / "a.jpg").write_bytes(b"a")
     
-    idx = resolve_file_index("2023_01_01", settings, time.time)
+    idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
     
     (d / "a.jpg").unlink() # Delete before streaming
     
-    stream = stream_photo_archive("2023_01_01", [], idx, settings)
+    stream = stream_photo_archive("2023_01_01", ROOT, [], idx, settings)
     data = b"".join(stream)
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert "_MISSING.txt" in zf.namelist()
@@ -229,9 +237,9 @@ def test_archive_sets_zip64_file_size(tmp_path):
     f = d / "a.jpg"
     f.write_bytes(b"a" * 1024)
     
-    idx = resolve_file_index("2023_01_01", settings, time.time)
+    idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
     
-    stream = stream_photo_archive("2023_01_01", [], idx, settings)
+    stream = stream_photo_archive("2023_01_01", ROOT, [], idx, settings)
     data = b"".join(stream)
     zf = zipfile.ZipFile(io.BytesIO(data))
     
