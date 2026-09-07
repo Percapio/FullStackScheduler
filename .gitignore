@@ -30,4 +30,7 @@ CLAUDE.md
 gemini_context_dump.txt
 ctags.txt
 symbol_map.json
-test_partial_model.py
+
+/test_*
+/patch_*
+/fix_*
