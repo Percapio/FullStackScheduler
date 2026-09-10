@@ -1,4 +1,7 @@
 {
-  "shipping_photos_dir": "E:\\NEW PHOTOS",
-  "updated_at": "2026-09-01T19:54:54.606767"
+  "shipping_photos_dir": "D:\\Dev\\Scheduler\\Schedule\\backend\\destination",
+  "updated_at": "2026-09-09T21:31:02.719680",
+  "shipping_photos_auto_copy_enabled": true,
+  "shipping_photos_auto_copy_source": "D:\\Dev\\Scheduler\\Schedule\\backend\\source",
+  "shipping_photos_auto_copy_time": "21:31"
 }

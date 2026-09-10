@@ -208,3 +208,88 @@ def test_put_photos_dir_storage_failure(client, monkeypatch, tmp_path):
     assert response.status_code == 500
     assert response.json()["detail"]["kind"] == "storage"
     app.dependency_overrides.pop(deps.is_loopback_caller)
+
+
+def test_put_photos_dir_containment_checks(client, tmp_path):
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
+    
+    (tmp_path / "outer").mkdir()
+    (tmp_path / "outer" / "inner").mkdir()
+    
+    # Mock auto copy source is inner
+    import backend.app.services.runtime_config as rc
+    original_load = rc.load_runtime_config
+    rc.load_runtime_config = lambda: {"shipping_photos_auto_copy_source": str(tmp_path / "outer" / "inner")}
+
+    response = client.put("/api/settings/photos-dir", json={"path": str(tmp_path / "outer")})
+    assert response.status_code == 422
+    assert response.json()["detail"]["kind"] == "source_inside_destination"
+    
+    rc.load_runtime_config = lambda: {"shipping_photos_auto_copy_source": str(tmp_path / "outer")}
+    response = client.put("/api/settings/photos-dir", json={"path": str(tmp_path / "outer" / "inner")})
+    assert response.status_code == 422
+    assert response.json()["detail"]["kind"] == "destination_inside_source"
+    app.dependency_overrides.clear()
+    rc.load_runtime_config = original_load
+
+def test_get_auto_copy_non_loopback(client):
+    response = client.get("/api/settings/auto-copy")
+    assert response.status_code == 200
+    assert response.json()["editable"] is False
+    assert response.json()["source"] is None
+
+def test_get_auto_copy_loopback(client):
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
+    response = client.get("/api/settings/auto-copy")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["editable"] is True
+    assert "enabled" in data
+    app.dependency_overrides.pop(deps.is_loopback_caller)
+
+def test_put_auto_copy_validations(client, tmp_path):
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
+    
+    response = client.put("/api/settings/auto-copy", json={"enabled": True, "source": "  ", "scheduled_time": "12:00"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["kind"] == "no_source"
+    
+    (tmp_path / "outer").mkdir()
+    (tmp_path / "outer" / "inner").mkdir()
+    
+    app.dependency_overrides[get_settings] = lambda: Settings(shipping_photos_dir=str(tmp_path / "outer" / "inner"))
+    response = client.put("/api/settings/auto-copy", json={"enabled": True, "source": str(tmp_path / "outer"), "scheduled_time": "12:00"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["kind"] == "destination_inside_source"
+
+    app.dependency_overrides[get_settings] = lambda: Settings(shipping_photos_dir=str(tmp_path / "outer"))
+    response = client.put("/api/settings/auto-copy", json={"enabled": True, "source": str(tmp_path / "outer" / "inner"), "scheduled_time": "12:00"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["kind"] == "source_inside_destination"
+    app.dependency_overrides.clear()
+
+def test_post_auto_copy_run_conflicts(client, tmp_path):
+    app.dependency_overrides[deps.is_loopback_caller] = lambda: True
+    
+    # Disabled by default
+    response = client.post("/api/settings/auto-copy/run")
+    assert response.status_code == 409
+    assert response.json()["detail"]["kind"] == "disabled"
+    
+    import backend.app.services.photo_sync as ps
+    import backend.app.services.runtime_config as rc
+    original_load2 = rc.load_runtime_config
+    rc.load_runtime_config = lambda: {"shipping_photos_auto_copy_enabled": True}
+    
+    # Simulate running
+    original_get_worker_running = ps.get_worker_running
+    import backend.app.api.settings as api_settings
+    api_settings.get_worker_running = lambda: True
+    
+    response = client.post("/api/settings/auto-copy/run")
+    assert response.status_code == 409
+    assert response.json()["detail"]["kind"] == "already_running"
+    
+    api_settings.get_worker_running = original_get_worker_running
+    app.dependency_overrides.clear()
+    rc.load_runtime_config = original_load2

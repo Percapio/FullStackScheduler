@@ -25,7 +25,7 @@ def reset_cache():
 
 def test_missing_file_empty_config(mock_runtime_root, reset_cache):
     config = load_runtime_config()
-    assert config == {"shipping_photos_dir": None, "updated_at": None}
+    assert config == {"shipping_photos_dir": None, "updated_at": None, "shipping_photos_auto_copy_enabled": None, "shipping_photos_auto_copy_source": None, "shipping_photos_auto_copy_time": None}
     assert not (mock_runtime_root / "runtime-config.json").exists()
 
 def test_round_trip(mock_runtime_root, reset_cache):
@@ -51,24 +51,24 @@ def test_corrupt_store_preserves_file(mock_runtime_root, reset_cache):
     # Not valid JSON
     path.write_text("{bad", encoding="utf-8")
     config = load_runtime_config()
-    assert config == {"shipping_photos_dir": None, "updated_at": None}
+    assert config == {"shipping_photos_dir": None, "updated_at": None, "shipping_photos_auto_copy_enabled": None, "shipping_photos_auto_copy_source": None, "shipping_photos_auto_copy_time": None}
     assert path.read_text(encoding="utf-8") == "{bad"
     
     # JSON of wrong type (list)
     rc._cached_config = None
     path.write_text("[]", encoding="utf-8")
-    assert load_runtime_config() == {"shipping_photos_dir": None, "updated_at": None}
+    assert load_runtime_config() == {"shipping_photos_dir": None, "updated_at": None, "shipping_photos_auto_copy_enabled": None, "shipping_photos_auto_copy_source": None, "shipping_photos_auto_copy_time": None}
     assert path.read_text(encoding="utf-8") == "[]"
     
     # JSON of wrong type (bare string)
     rc._cached_config = None
     path.write_text('"C:\\\\photos"', encoding="utf-8")
-    assert load_runtime_config() == {"shipping_photos_dir": None, "updated_at": None}
+    assert load_runtime_config() == {"shipping_photos_dir": None, "updated_at": None, "shipping_photos_auto_copy_enabled": None, "shipping_photos_auto_copy_source": None, "shipping_photos_auto_copy_time": None}
     
     # JSON right type, wrong value type
     rc._cached_config = None
     path.write_text('{"shipping_photos_dir": 123}', encoding="utf-8")
-    assert load_runtime_config() == {"shipping_photos_dir": None, "updated_at": None}
+    assert load_runtime_config() == {"shipping_photos_dir": None, "updated_at": None, "shipping_photos_auto_copy_enabled": None, "shipping_photos_auto_copy_source": None, "shipping_photos_auto_copy_time": None}
 
 def test_atomic_write_preserves_original_on_failure(mock_runtime_root, reset_cache, monkeypatch):
     class Clock:
@@ -102,7 +102,7 @@ def test_effective_photos_dir_precedence(mock_runtime_root, reset_cache):
     assert effective_photos_dir(settings) == ("C:\\store", "runtime")
     
     # Store not set / Env set -> Env wins
-    rc._cached_config = {"shipping_photos_dir": None, "updated_at": None}
+    rc._cached_config = {"shipping_photos_dir": None, "updated_at": None, "shipping_photos_auto_copy_enabled": None, "shipping_photos_auto_copy_source": None, "shipping_photos_auto_copy_time": None}
     settings = Settings(shipping_photos_dir="C:\\env")
     assert effective_photos_dir(settings) == ("C:\\env", "env")
     

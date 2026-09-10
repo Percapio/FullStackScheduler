@@ -83,6 +83,23 @@ class Settings(BaseSettings):
     shipping_photos_archive_lan_max_files: int = 60
     shipping_photos_archive_lan_max_bytes: int = 750_000_000
     
+    # Phase 27 — Archive pipeline
+    shipping_photos_archive_read_chunk_bytes: int = 4_194_304
+    shipping_photos_archive_readahead_chunks: int = 1
+    shipping_photos_archive_reader_stall_seconds: float = 60.0
+
+    # Phase 27 — Auto-copy
+    shipping_photos_auto_copy_tick_seconds: float = 60.0
+    shipping_photos_auto_copy_lookback_days: int = 7
+    shipping_photos_auto_copy_lookback_max_days: int = 30
+    shipping_photos_auto_copy_quiet_seconds: float = 60.0
+    shipping_photos_auto_copy_max_files_per_run: int = 5000
+    shipping_photos_auto_copy_max_bytes_per_run: int = 20_000_000_000
+    shipping_photos_auto_copy_max_depth: int = 4
+    shipping_photos_auto_copy_run_deadline_seconds: float = 14_400.0
+    shipping_photos_auto_copy_copy_chunk_bytes: int = 1_048_576
+    shipping_photos_auto_copy_temp_reap_seconds: float = 86_400.0
+    
     # Touch-Up 27 — Archive handoff
     shipping_photos_archive_token_ttl_seconds: float = 300.0
     shipping_photos_archive_token_max: int = 32

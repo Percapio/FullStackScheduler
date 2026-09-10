@@ -19,6 +19,7 @@ class ArchiveTicket:
     selection: List[str]
     filename: str
     minted_loopback: bool
+    covers_full_listing: bool
     issued_at: float = 0.0
 
 def archive_attachment_name(date_folder: str, sub_folder: SubFolder) -> str:

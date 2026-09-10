@@ -95,3 +95,77 @@ export async function savePhotosDir(path: string): Promise<PhotosDirOutcome> {
         return { kind: 'network', message: err.message || String(err) }
     }
 }
+
+export interface AutoCopyRead {
+    enabled: boolean
+    source: string | null
+    source_configured: boolean
+    scheduled_time: string | null
+    editable: boolean
+    running: boolean
+    run_started_at: string | null
+    last_run_finished_at: string | null
+    last_run_outcome: string | null
+    last_run_files_copied: number
+    last_run_files_failed: number
+    last_run_dates_skipped: string[]
+    last_completed_date: string | null
+    last_error_kind: string
+}
+
+export type AutoCopyOutcome =
+    | { kind: 'ok'; data: AutoCopyRead }
+    | { kind: 'forbidden' }
+    | { kind: 'invalid'; reason: string }
+    | { kind: 'storage' }
+    | { kind: 'network'; message: string }
+    | { kind: 'conflict'; reason: string }
+
+export async function getAutoCopy(): Promise<AutoCopyOutcome> {
+    try {
+        const resp = await apiClient.get<AutoCopyRead>('/api/settings/auto-copy')
+        return { kind: 'ok', data: resp.data }
+    } catch (err: any) {
+        if (err.response?.status === 403) {
+            return { kind: 'forbidden' }
+        }
+        return { kind: 'network', message: err.message || String(err) }
+    }
+}
+
+export async function saveAutoCopy(enabled: boolean, source: string, scheduled_time: string): Promise<AutoCopyOutcome> {
+    try {
+        const resp = await apiClient.put<AutoCopyRead>('/api/settings/auto-copy', { enabled, source, scheduled_time })
+        return { kind: 'ok', data: resp.data }
+    } catch (err: any) {
+        if (err.response?.status === 403) {
+            return { kind: 'forbidden' }
+        }
+        if (err.response?.status === 422) {
+            const detail = err.response.data?.detail
+            if (detail && detail.kind) {
+                return { kind: 'invalid', reason: detail.kind }
+            }
+        }
+        if (err.response?.status === 500) {
+            return { kind: 'storage' }
+        }
+        return { kind: 'network', message: err.message || String(err) }
+    }
+}
+
+export async function runAutoCopyNow(): Promise<AutoCopyOutcome> {
+    try {
+        await apiClient.post('/api/settings/auto-copy/run')
+        return getAutoCopy()
+    } catch (err: any) {
+        if (err.response?.status === 403) {
+            return { kind: 'forbidden' }
+        }
+        if (err.response?.status === 409) {
+            const detail = err.response.data?.detail
+            return { kind: 'conflict', reason: detail?.kind || 'conflict' }
+        }
+        return { kind: 'network', message: err.message || String(err) }
+    }
+}

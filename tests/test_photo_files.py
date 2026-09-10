@@ -3,10 +3,12 @@ import os
 import zipfile
 import io
 import time
+import threading
+from collections import deque
 from pathlib import Path
 
 from backend.app.config import Settings
-from backend.app.services.photo_files import ( ROOT,
+from backend.app.services.photo_files import ( ROOT, ArchiveStreamSession,
     is_plausible_file_name,
     resolve_photo_file_path,
     PhotoFileIndex,
@@ -190,6 +192,24 @@ def test_file_index_invalidate(tmp_path):
     invalidate_file_index(ALL_FOLDERS())
     assert len(_file_indexes) == 0
 
+def mock_stream(date_folder, sub_folder, selection, idx, settings, covers_full_listing=False):
+    import threading
+    sem = threading.Semaphore(1)
+    session = ArchiveStreamSession(sem, settings)
+    
+    # We must run the generator and the worker thread.
+    import concurrent.futures
+    import zipfile
+    import io
+    
+    path = Path(settings.shipping_photos_dir) / date_folder
+    
+    # Actually session.start runs it in a thread.
+    session.start(path, idx.entries, settings)
+    
+    stream = stream_photo_archive(date_folder, sub_folder, selection, idx, settings, session, covers_full_listing=covers_full_listing)
+    return b"".join(stream)
+
 def test_archive_streaming(tmp_path):
     settings = Settings(
         shipping_photos_dir=str(tmp_path),
@@ -205,8 +225,7 @@ def test_archive_streaming(tmp_path):
     assert len(idx.entries) == 2
     assert idx.truncated is True
     
-    stream = stream_photo_archive("2023_01_01", ROOT, [], idx, settings)
-    data = b"".join(stream)
+    data = mock_stream("2023_01_01", ROOT, [], idx, settings, covers_full_listing=True)
     
     assert len(data) > 0
     zf = zipfile.ZipFile(io.BytesIO(data))
@@ -225,8 +244,7 @@ def test_archive_streaming_missing_file(tmp_path):
     
     (d / "a.jpg").unlink() # Delete before streaming
     
-    stream = stream_photo_archive("2023_01_01", ROOT, [], idx, settings)
-    data = b"".join(stream)
+    data = mock_stream("2023_01_01", ROOT, [], idx, settings, covers_full_listing=True)
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert "_MISSING.txt" in zf.namelist()
 
@@ -239,8 +257,7 @@ def test_archive_sets_zip64_file_size(tmp_path):
     
     idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
     
-    stream = stream_photo_archive("2023_01_01", ROOT, [], idx, settings)
-    data = b"".join(stream)
+    data = mock_stream("2023_01_01", ROOT, [], idx, settings, covers_full_listing=True)
     zf = zipfile.ZipFile(io.BytesIO(data))
     
     info = zf.getinfo("a.jpg")

@@ -7,6 +7,9 @@ vi.mock('@/api/settings', () => ({
   getPhotosDir: vi.fn(),
   browseDirectory: vi.fn(),
   savePhotosDir: vi.fn(),
+  getAutoCopy: vi.fn(),
+  saveAutoCopy: vi.fn(),
+  runAutoCopyNow: vi.fn()
 }))
 
 const mockPushToast = vi.fn()
@@ -17,6 +20,25 @@ vi.mock('@/composables/useToast', () => ({
 describe('SettingsModal.vue', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(settingsApi.getAutoCopy).mockResolvedValue({
+      kind: 'ok',
+      data: {
+        enabled: false,
+        source: null,
+        source_configured: false,
+        scheduled_time: null,
+        editable: true,
+        running: false,
+        run_started_at: null,
+        last_run_finished_at: null,
+        last_run_outcome: null,
+        last_run_files_copied: 0,
+        last_run_files_failed: 0,
+        last_run_dates_skipped: [],
+        last_completed_date: null,
+        last_error_kind: 'None'
+      }
+    })
   })
 
   it('editable: false renders read-only without path or tree', async () => {
@@ -66,7 +88,7 @@ describe('SettingsModal.vue', () => {
     await flushPromises()
 
     const inputs = wrapper.findAll('input[type="text"]')
-    expect(inputs.length).toBe(1)
+    expect(inputs.length).toBeGreaterThanOrEqual(1)
     expect((inputs[0].element as HTMLInputElement).value).toBe('C:\\test')
     
     expect(wrapper.text()).toContain('C:\\test')
@@ -110,8 +132,9 @@ describe('SettingsModal.vue', () => {
 
     await flushPromises()
 
-    const input = wrapper.find('input[type="text"]')
-    expect((input.element as HTMLInputElement).value).toBe('')
+    const inputs = wrapper.findAll('input[type="text"]')
+    expect(inputs.length).toBeGreaterThanOrEqual(1)
+    expect((inputs[0].element as HTMLInputElement).value).toBe('')
     expect(wrapper.text()).not.toContain('null')
   })
 

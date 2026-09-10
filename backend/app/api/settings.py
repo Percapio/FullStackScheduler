@@ -164,6 +164,26 @@ def put_photos_dir(
     except OSError:
         raise HTTPException(status_code=422, detail={"kind": "not_readable"})
 
+    # Containment check against auto-copy source
+    from ..services.runtime_config import load_runtime_config
+    config = load_runtime_config()
+    auto_copy_source = config.get("shipping_photos_auto_copy_source")
+    if auto_copy_source:
+        try:
+            resolved_dest = path_obj.resolve()
+            resolved_src = Path(auto_copy_source).resolve()
+            try:
+                resolved_dest.relative_to(resolved_src)
+                raise HTTPException(status_code=422, detail={"kind": "destination_inside_source"})
+            except ValueError:
+                try:
+                    resolved_src.relative_to(resolved_dest)
+                    raise HTTPException(status_code=422, detail={"kind": "source_inside_destination"})
+                except ValueError:
+                    pass
+        except OSError:
+            pass # ignore resolution errors during settings update
+
     # Get old path before save for logging
     old_dir, _ = effective_photos_dir(settings)
 
@@ -189,3 +209,144 @@ def put_photos_dir(
         editable=True,
         folder_count=folder_count
     )
+
+from ..services.photo_sync import get_photo_sync_state, get_worker_running, _run_photo_sync_locked
+import time
+
+class AutoCopyRead(BaseModel):
+    enabled: bool
+    source: Optional[str]
+    source_configured: bool
+    scheduled_time: Optional[str]
+    editable: bool
+    running: bool
+    run_started_at: Optional[str]
+    last_run_finished_at: Optional[str]
+    last_run_outcome: Optional[str]
+    last_run_files_copied: int
+    last_run_files_failed: int
+    last_run_dates_skipped: List[str]
+    last_completed_date: Optional[str]
+    last_error_kind: str
+
+@settings_router.get("/auto-copy", response_model=AutoCopyRead)
+def get_auto_copy(
+    is_loopback: bool = Depends(is_loopback_caller)
+):
+    from ..services.runtime_config import load_runtime_config
+    config = load_runtime_config()
+    state = get_photo_sync_state()
+    
+    return AutoCopyRead(
+        enabled=bool(config.get("shipping_photos_auto_copy_enabled")),
+        source=config.get("shipping_photos_auto_copy_source") if is_loopback else None,
+        source_configured=bool(config.get("shipping_photos_auto_copy_source")),
+        scheduled_time=config.get("shipping_photos_auto_copy_time"),
+        editable=is_loopback,
+        running=get_worker_running(),
+        run_started_at=state.get("last_run_started_at"),
+        last_run_finished_at=state.get("last_run_finished_at"),
+        last_run_outcome=state.get("last_run_outcome"),
+        last_run_files_copied=state.get("last_run_files_copied", 0),
+        last_run_files_failed=state.get("last_run_files_failed", 0),
+        last_run_dates_skipped=state.get("last_run_dates_skipped", []),
+        last_completed_date=state.get("last_completed_date"),
+        last_error_kind=state.get("last_error_kind", "None")
+    )
+
+class AutoCopyWrite(BaseModel):
+    enabled: bool
+    source: str
+    scheduled_time: str
+
+@settings_router.put("/auto-copy", response_model=AutoCopyRead, dependencies=[Depends(require_loopback)])
+def put_auto_copy(
+    payload: AutoCopyWrite,
+    settings: Settings = Depends(get_settings)
+):
+    import re
+    if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", payload.scheduled_time):
+        raise HTTPException(status_code=422, detail={"kind": "bad_time"})
+        
+    source_candidate = payload.source.strip()
+    if not source_candidate and payload.enabled:
+        raise HTTPException(status_code=422, detail={"kind": "no_source"})
+        
+    if source_candidate:
+        source_obj = Path(source_candidate)
+        if not source_obj.is_absolute():
+            raise HTTPException(status_code=422, detail={"kind": "not_absolute"})
+        if not source_obj.exists():
+            raise HTTPException(status_code=422, detail={"kind": "not_found"})
+        if not source_obj.is_dir():
+            raise HTTPException(status_code=422, detail={"kind": "not_a_dir"})
+        try:
+            os.scandir(source_obj).close()
+        except OSError:
+            raise HTTPException(status_code=422, detail={"kind": "not_readable"})
+            
+        dest_dir, _ = effective_photos_dir(settings)
+        if dest_dir:
+            dest_obj = Path(dest_dir)
+            try:
+                resolved_src = source_obj.resolve()
+                resolved_dest = dest_obj.resolve()
+                if resolved_src == resolved_dest:
+                    raise HTTPException(status_code=422, detail={"kind": "source_is_destination"})
+                try:
+                    resolved_dest.relative_to(resolved_src)
+                    raise HTTPException(status_code=422, detail={"kind": "destination_inside_source"})
+                except ValueError:
+                    pass
+                try:
+                    resolved_src.relative_to(resolved_dest)
+                    raise HTTPException(status_code=422, detail={"kind": "source_inside_destination"})
+                except ValueError:
+                    pass
+            except OSError:
+                pass
+                
+    from ..services.runtime_config import save_runtime_config
+    try:
+        from datetime import datetime
+        save_runtime_config({
+            "shipping_photos_auto_copy_enabled": payload.enabled,
+            "shipping_photos_auto_copy_source": source_candidate,
+            "shipping_photos_auto_copy_time": payload.scheduled_time
+        }, datetime.now)
+    except Exception:
+        raise HTTPException(status_code=500, detail={"kind": "storage"})
+        
+    return get_auto_copy(is_loopback=True)
+
+@settings_router.post("/auto-copy/run", dependencies=[Depends(require_loopback)])
+def run_auto_copy(settings: Settings = Depends(get_settings)):
+    from ..services.runtime_config import load_runtime_config
+    config = load_runtime_config()
+    if not config.get("shipping_photos_auto_copy_enabled"):
+        raise HTTPException(status_code=409, detail={"kind": "disabled"})
+        
+    import threading
+    dummy_event = threading.Event()
+    
+    # We run it in a background thread using the locking helper
+    def background_run():
+        import time
+        _run_photo_sync_locked(settings, dummy_event, time.monotonic)
+        
+    # Attempt to start. We can check if it's already running first to return 409 immediately.
+    if get_worker_running():
+        raise HTTPException(status_code=409, detail={"kind": "already_running"})
+        
+    t = threading.Thread(target=background_run, daemon=True, name="ManualPhotoSync")
+    t.start()
+    
+    # Allow thread to start and grab lock
+    time.sleep(0.01) 
+    
+    if not get_worker_running():
+        # Might have failed immediately or lock wasn't grabbed (should not happen if we got here)
+        pass
+        
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=202, content={})

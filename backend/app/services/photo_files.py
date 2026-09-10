@@ -1,3 +1,4 @@
+import threading
 import os
 import re
 import stat
@@ -378,16 +379,158 @@ def invalidate_file_index(target: Union[str, FolderKey, ALL_FOLDERS]) -> None:
 import logging
 logger = logging.getLogger(__name__)
 
+import queue
+
+ReadFailure = Literal["Unreadable", "Vanished"]
+AbandonCause = Literal["ConsumerStalled", "SessionReleased"]
+
+class ArchiveReadItem:
+    pass
+
+@dataclass
+class FileOpened(ArchiveReadItem):
+    entry: PhotoFileEntry
+
+@dataclass
+class FileChunk(ArchiveReadItem):
+    payload: bytes
+
+@dataclass
+class FileFinished(ArchiveReadItem):
+    entry: PhotoFileEntry
+
+@dataclass
+class FileUnreadable(ArchiveReadItem):
+    name: FileName
+    cause: ReadFailure
+
+class StreamFinished(ArchiveReadItem):
+    pass
+
+@dataclass
+class StreamAbandoned(ArchiveReadItem):
+    cause: AbandonCause
+
+class ArchiveStreamSession:
+    def __init__(self, permit: threading.Semaphore, settings: Settings):
+        self.queue = queue.Queue(maxsize=settings.shipping_photos_archive_readahead_chunks + 2)
+        self.cancel = threading.Event()
+        self.reader = None
+        self.permit = permit
+        self.released = False
+        self._lock = threading.Lock()
+        
+    def release(self) -> None:
+        with self._lock:
+            if self.released:
+                return
+            self.released = True
+            
+        self.cancel.set()
+        
+        # Drain the queue so blocked put wakes up
+        while True:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                break
+                
+        self.permit.release()
+
+    def start(self, folder_path: Path, target_entries: List[PhotoFileEntry], settings: Settings) -> None:
+        try:
+            self.reader = threading.Thread(
+                target=archive_reader_loop,
+                args=(self, folder_path, target_entries, settings),
+                daemon=True,
+                name="ArchiveReader"
+            )
+            self.reader.start()
+        except Exception:
+            self.release()
+            raise
+
+def archive_reader_loop(
+    session: ArchiveStreamSession,
+    folder_path: Path,
+    target_entries: List[PhotoFileEntry],
+    settings: Settings
+) -> None:
+    chunk_size = settings.shipping_photos_archive_read_chunk_bytes
+    stall_deadline = settings.shipping_photos_archive_reader_stall_seconds
+    
+    def put_with_stall(item: ArchiveReadItem) -> bool:
+        start_wait = time.monotonic()
+        while True:
+            if session.cancel.is_set():
+                return False
+            try:
+                session.queue.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                if time.monotonic() - start_wait > stall_deadline:
+                    return False
+
+    abandoned = False
+    for entry in target_entries:
+        if session.cancel.is_set():
+            abandoned = True
+            break
+            
+        filepath = folder_path / entry.name
+        try:
+            with open(filepath, "rb") as f:
+                if not put_with_stall(FileOpened(entry)):
+                    abandoned = True
+                    break
+                    
+                while True:
+                    if session.cancel.is_set():
+                        abandoned = True
+                        break
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    if not put_with_stall(FileChunk(chunk)):
+                        abandoned = True
+                        break
+                        
+                if abandoned:
+                    break
+                if not put_with_stall(FileFinished(entry)):
+                    abandoned = True
+                    break
+        except OSError as e:
+            if not put_with_stall(FileUnreadable(entry.name, "Unreadable")):
+                abandoned = True
+                break
+                
+    if abandoned:
+        cause = "SessionReleased" if session.cancel.is_set() else "ConsumerStalled"
+        try:
+            session.queue.put_nowait(StreamAbandoned(cause))
+        except queue.Full:
+            pass
+        session.release()
+    else:
+        try:
+            session.queue.put_nowait(StreamFinished())
+        except queue.Full:
+            pass
+
 def stream_photo_archive(
     date_folder: str,
     sub_folder: SubFolder,
     selection: List[FileName],
     index: PhotoFileIndex,
-    settings: Settings
+    settings: Settings,
+    session: ArchiveStreamSession,
+    covers_full_listing: bool = False
 ) -> Iterator[bytes]:
     
     if index.key != (date_folder, sub_folder):
         logger.error("index.key %r does not match (%r, %r)", index.key, date_folder, sub_folder)
+        session.release()
         return
         
     class FileLikeGenerator:
@@ -407,44 +550,44 @@ def stream_photo_archive(
             self.chunks = []
             return c
 
-    folder_res = resolve_photo_folder_path(date_folder, settings)
-    if folder_res[0] == "err":
-        return
-    folder_path = folder_res[1]
-    
-    if sub_folder != ROOT:
-        folder_path = folder_path / sub_folder
-
     buffer = FileLikeGenerator()
     missing_files = []
     
-    target_entries = index.entries if not selection else [index.by_name[s] for s in selection if s in index.by_name]
-    
     try:
         with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
-            for entry in target_entries:
-                filepath = folder_path / entry.name
-                try:
-                    with open(filepath, "rb") as f:
-                        zinfo = zipfile.ZipInfo(filename=entry.name)
-                        zinfo.file_size = entry.size_bytes   # drives the ZIP64 local-header decision
-                        _mt = time.localtime(entry.mtime_ns / 1e9)[:6]
-                        zinfo.date_time = _mt if _mt[0] >= 1980 else (1980, 1, 1, 0, 0, 0)
-                        with zf.open(zinfo, mode="w") as z_out:
-                            while True:
-                                chunk = f.read(65536)
-                                if not chunk:
-                                    break
-                                z_out.write(chunk)
-                                yield from buffer.get_chunks()
-                except OSError as e:
-                    logger.warning("Archive streaming skipped %s: %s", entry.name, e)
-                    missing_files.append(entry.name)
-
+            z_out = None
+            while True:
+                item = session.queue.get()
+                if isinstance(item, FileOpened):
+                    entry = item.entry
+                    zinfo = zipfile.ZipInfo(filename=entry.name)
+                    zinfo.file_size = entry.size_bytes
+                    _mt = time.localtime(entry.mtime_ns / 1e9)[:6]
+                    zinfo.date_time = _mt if _mt[0] >= 1980 else (1980, 1, 1, 0, 0, 0)
+                    z_out = zf.open(zinfo, mode="w")
+                elif isinstance(item, FileChunk):
+                    z_out.write(item.payload)
+                    yield from buffer.get_chunks()
+                elif isinstance(item, FileFinished):
+                    z_out.close()
+                    z_out = None
+                    yield from buffer.get_chunks()
+                elif isinstance(item, FileUnreadable):
+                    logger.warning("Archive streaming skipped %s: %s", item.name, item.cause)
+                    missing_files.append(item.name)
+                elif isinstance(item, StreamFinished):
+                    break
+                elif isinstance(item, StreamAbandoned):
+                    # Abort without closing ZipFile (no central directory)
+                    return
+                
             if missing_files:
+                target_entries = index.entries if not selection else [index.by_name[s] for s in selection if s in index.by_name]
+                target_names = [e.name for e in target_entries]
+                
                 zinfo = zipfile.ZipInfo(filename="_MISSING.txt")
                 missing_name = "_MISSING.txt"
-                if missing_name in [e.name for e in target_entries]:
+                if missing_name in target_names:
                     missing_name = f"_MISSING_{time.time_ns()}.txt"
                     zinfo.filename = missing_name
                 
@@ -452,7 +595,9 @@ def stream_photo_archive(
                 zf.writestr(zinfo, content)
                 yield from buffer.get_chunks()
                 
-            if not selection and index.truncated:
+            target_entries = index.entries if not selection else [index.by_name[s] for s in selection if s in index.by_name]
+            
+            if covers_full_listing and index.truncated:
                 zinfo = zipfile.ZipInfo(filename="_TRUNCATED.txt")
                 trunc_name = "_TRUNCATED.txt"
                 if trunc_name in [e.name for e in target_entries]:
@@ -465,4 +610,6 @@ def stream_photo_archive(
                 
         yield from buffer.get_chunks()
     finally:
-        pass
+        session.release()
+
+

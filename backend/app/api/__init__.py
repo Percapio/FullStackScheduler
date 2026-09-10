@@ -71,6 +71,17 @@ async def application_lifespan(app: FastAPI):
 
     task = asyncio.create_task(drain_task())
 
+    import threading
+    from ..services.photo_sync import photo_sync_worker_loop
+    sync_stop_event = threading.Event()
+    sync_thread = threading.Thread(
+        target=photo_sync_worker_loop,
+        args=(settings, sync_stop_event),
+        daemon=True,
+        name="PhotoSyncWorker"
+    )
+    sync_thread.start()
+
     yield
 
     await hub.close_all()
@@ -79,7 +90,9 @@ async def application_lifespan(app: FastAPI):
         await task
     except asyncio.CancelledError:
         pass
+    sync_stop_event.set()
     shutdown_warm_worker()
+
 
 
 def create_app() -> FastAPI:

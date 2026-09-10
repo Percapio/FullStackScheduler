@@ -104,43 +104,6 @@ def test_thumb_endpoint_success_headers(client, tmp_path, monkeypatch):
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Content-Security-Policy"] == "sandbox"
 
-def test_archive_endpoint_lan_limits(client, tmp_path):
-    (tmp_path / "2023_01_01").mkdir()
-    (tmp_path / "2023_01_01" / "f1.jpg").write_bytes(b"x")
-    (tmp_path / "2023_01_01" / "f2.jpg").write_bytes(b"y")
-    
-    # LAN caller (not loopback)
-    app.dependency_overrides[is_loopback_caller] = lambda: False
-    
-    # Too many files
-    response = client.post("/api/photos/archive", json={"date_folder": "2023_01_01", "selection": ["f1.jpg", "f2.jpg"]})
-    assert response.status_code == 403
-    assert response.json()["limit"] == "files"
-    
-    # Too many bytes
-    (tmp_path / "2023_01_01" / "f1.jpg").write_bytes(b"x" * 20)
-    _file_indexes.clear() # clear cache to re-scan
-    response = client.post("/api/photos/archive", json={"date_folder": "2023_01_01", "selection": ["f1.jpg"]})
-    assert response.status_code == 403
-    assert response.json()["limit"] == "bytes"
-
-def test_archive_endpoint_loopback(client, tmp_path):
-    (tmp_path / "2023_01_01").mkdir()
-    (tmp_path / "2023_01_01" / "f1.jpg").write_bytes(b"x")
-    (tmp_path / "2023_01_01" / "f2.jpg").write_bytes(b"y")
-    
-    # Loopback caller
-    app.dependency_overrides[is_loopback_caller] = lambda: True
-    
-    response = client.post("/api/photos/archive", json={"date_folder": "2023_01_01", "selection": ["f1.jpg", "f2.jpg"]})
-    assert response.status_code == 200
-    
-    import zipfile
-    import io
-    zf = zipfile.ZipFile(io.BytesIO(response.content))
-    names = zf.namelist()
-    assert "f1.jpg" in names
-    assert "f2.jpg" in names
 def test_files_endpoint_calls_enqueue_warm(client, tmp_path, monkeypatch):
     (tmp_path / "2023_01_01").mkdir()
     
@@ -191,7 +154,6 @@ import zipfile
 import threading
 from backend.app.api.deps import is_loopback_caller
 from backend.app.services.photo_files import _file_indexes
-from backend.app.api.photos import hold_permit_across_stream
 from backend.app.services.archive_tokens import issue_ticket, ArchiveTicket, _tickets
 
 def test_archive_token_lan_cap_files(client, tmp_path):
@@ -245,7 +207,6 @@ import zipfile
 import threading
 from backend.app.api.deps import is_loopback_caller
 from backend.app.services.photo_files import _file_indexes
-from backend.app.api.photos import hold_permit_across_stream
 from backend.app.services.archive_tokens import issue_ticket, ArchiveTicket, _tickets
 
 def test_archive_token_lan_cap_files(client, tmp_path):
@@ -327,21 +288,6 @@ def test_archive_download_loopback_token_rejected_from_lan(client, tmp_path):
     res2 = client.get(f"/api/photos/archive-download?token={token}")
     assert res2.status_code == 403
 
-def test_hold_permit_released_on_generator_close():
-    sem = threading.Semaphore(1)
-    sem.acquire()
-    
-    def gen():
-        yield b"chunk"
-        yield b"chunk2"
-        
-    iterator = hold_permit_across_stream(gen(), sem)
-    assert next(iterator) == b"chunk"
-    
-    iterator.close()
-    
-    assert sem.acquire(blocking=False) is True
-
 def test_archive_download_not_gzipped(client, tmp_path):
     (tmp_path / "2023_01_01").mkdir()
     (tmp_path / "2023_01_01" / "f1.jpg").write_bytes(b"x")
@@ -356,7 +302,7 @@ def test_archive_download_not_gzipped(client, tmp_path):
 def test_issue_ticket_stamps_clock_inside_lock():
     import backend.app.services.archive_tokens as at
     from backend.app.config import Settings
-    ticket = ArchiveTicket("2023_01_01", "", [], "file.zip", False, issued_at=999.0)
+    ticket = ArchiveTicket("2023_01_01", "", [], "file.zip", False, covers_full_listing=False, issued_at=999.0)
     
     at.clear_tickets()
     token = at.issue_ticket(ticket, Settings(), lambda: 100.0)
