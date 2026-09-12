@@ -383,7 +383,7 @@ def test_discard_clears_duplicate_group_key_on_discarded_row(session, batch):
 def test_restore_after_discard_in_duplicate_group(session, batch):
     """A discarded-then-restored row reappears in /errored with duplicate_group_key
     IS NULL.  The conflict surface does not own it; §3.6.2 invariant."""
-    from backend.app.services.staging import restore_staging_row
+    from backend.app.services.staging import restore_staging_row_with_actions
 
     row_a = _make_dup_row(session, batch, source_row_number=1)
     row_b = _make_dup_row(session, batch, source_row_number=2)
@@ -395,7 +395,7 @@ def test_restore_after_discard_in_duplicate_group(session, batch):
     with patch("backend.app.services.staging.transform_staging_row", return_value=mock_outcome):
         discard_staging_row(session, row_a)
 
-    restore_staging_row(session, row_a)
+    restore_staging_row_with_actions(session, row_a, actions=[])
 
     session.refresh(row_a)
     assert row_a.discarded_at is None

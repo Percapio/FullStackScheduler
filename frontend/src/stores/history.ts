@@ -38,12 +38,16 @@ export const useHistoryStore = defineStore('history', () => {
   // alone does not close the concurrent case.
   let secondOpsRequestSeq = 0
 
+  let gridLoadSeq = 0
+
   const hasPrev   = computed(() => offset.value > 0)
   const hasNext   = computed(() => offset.value + rows.value.length < total.value)
   const pageStart = computed(() => total.value === 0 ? 0 : offset.value + 1)
   const pageEnd   = computed(() => offset.value + rows.value.length)
 
   async function load() {
+    gridLoadSeq += 1
+    const issued = gridLoadSeq
     loading.value = true
     error.value = null
     try {
@@ -52,13 +56,17 @@ export const useHistoryStore = defineStore('history', () => {
         offset.value,
         searchQuery.value.trim() || null,
       )
+      if (issued !== gridLoadSeq) return
       rows.value  = res.rows
       total.value = res.total
       inspected.value = null
     } catch {
+      if (issued !== gridLoadSeq) return
       error.value = 'Could not load shipped jobs. Check that the backend is running and retry.'
     } finally {
-      loading.value = false
+      if (issued === gridLoadSeq) {
+        loading.value = false
+      }
     }
   }
 

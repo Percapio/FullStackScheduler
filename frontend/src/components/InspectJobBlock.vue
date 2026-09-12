@@ -282,9 +282,20 @@ function classificationLabel(assembly: any): string {
 
 function buildTypeLabel(job: JobReadExpanded): string {
   const bt = buildLabel(job.build_type)
+  const qual = (job.build_qualifier ?? '').trim().toUpperCase()
   const rr = (job.repeat_reference ?? '').trim()
-  if (bt && rr) return `${bt} ${rr}`
-  if (bt) return bt
+
+  if (bt) {
+    let s = bt
+    if (rr) s += ` ${rr}`
+    if (qual) s += ` · ${qual}`
+    return s
+  }
+  
+  if (qual) {
+    return rr ? `${qual} ${rr}` : qual
+  }
+
   if (rr) return rr
   return '—'
 }

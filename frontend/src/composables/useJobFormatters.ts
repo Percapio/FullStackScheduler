@@ -71,19 +71,5 @@ export function useJobFormatters(clock: Clock = systemClock) {
     return `<div class="font-medium text-slate-800 dark:text-slate-100"><ul class="list-disc pl-5">${listItems}</ul></div>`
   }
 
-  /** Compose the operator-visible label for a job.
-   *
-   * Format: `${partNumber}${identitySuffix(job)}[ ${buildLabel(build_type)}]`
-   * Matches what operators read in the workbook (audit #16).
-   */
-  function jobLabel(partNumber: string, job: JobReadExpanded): string {
-    const parts: string[] = []
-    if (job.split_suffix) parts.push(job.split_suffix)
-    if (job.repeat_reference) parts.push(`RONC ${job.repeat_reference}`)
-    const suffix = parts.length ? ' ' + parts.join(' · ') : ''
-    const build  = buildLabel(job.build_type)
-    return `${partNumber}${suffix}${build ? ' ' + build : ''}`
-  }
-
-  return { formatDate, formatShortDate, isShippingToday, buildLabel, identitySuffix, jobLabel, renderNotes }
+  return { formatDate, formatShortDate, isShippingToday, buildLabel, identitySuffix, renderNotes }
 }

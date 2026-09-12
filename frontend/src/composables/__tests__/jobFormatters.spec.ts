@@ -28,17 +28,23 @@ describe('useJobFormatters', () => {
     })
   })
 
-  describe('jobLabel', () => {
-    const { jobLabel } = useJobFormatters()
+  describe('buildLabel', () => {
+    const { buildLabel } = useJobFormatters()
     
-    it('with both', () => {
-      expect(
-        jobLabel('128764', job({
-          split_suffix: '-1par',
-          repeat_reference: '12345',
-          build_type: 'ronc',
-        })),
-      ).toBe('128764 -1par · RONC 12345 RONC')
+    it('omits build label for build_type=new', () => {
+      expect(buildLabel('new')).toBe('')
+    })
+
+    it('omits build label for null build_type', () => {
+      expect(buildLabel(null)).toBe('')
+    })
+
+    it('renders ronc as RONC', () => {
+      expect(buildLabel('ronc')).toBe('RONC')
+    })
+
+    it('renders rowc as ROWC', () => {
+      expect(buildLabel('rowc')).toBe('ROWC')
     })
   })
 

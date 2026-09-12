@@ -186,7 +186,7 @@ describe('Phase 23 pre-flight greps', () => {
   it('RONC in composables/useJobFormatters.ts', () => {
     const formatters = readRaw(join(SRC, 'composables', 'useJobFormatters.ts'))
     const hits = (formatters.match(/RONC/g) ?? []).length
-    expect(hits).toBe(1)
+    expect(hits).toBe(0)
   })
 
   it(':key="index" in SecondOpsEntryModal.vue', () => {

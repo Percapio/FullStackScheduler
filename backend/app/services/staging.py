@@ -610,11 +610,7 @@ def discard_staging_row(session: Session, row: ImportStagingRow) -> None:
         session.commit()
 
 
-def restore_staging_row(session: Session, row: ImportStagingRow) -> None:
-    if row.discarded_at is None:
-        raise StagingRestoreError(f"Row {row.id} is not discarded.")
-    row.discarded_at = None
-    session.commit()
+
 
 
 def apply_correction(

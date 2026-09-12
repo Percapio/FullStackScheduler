@@ -200,7 +200,7 @@ def test_existing_six_columns_render_unchanged(session: Session):
         generate_csv_rows(stream_history_for_export(session, None, 500), columns, ",")
     )
 
-    assert "Ship Date,Job,Qty,ROWC/RONC,Mfg Notes,Customer" in output
+    assert "Ship Date,Job,Qty,Build,Mfg Notes,Customer" in output
     assert "2026-08-01,CSV-2,10,,,ACME" in output
 
 
@@ -221,3 +221,29 @@ def test_export_endpoint_accepts_the_second_ops_column(client, session):
 def test_export_columns_endpoint_lists_second_ops(client):
     keys = [column["key"] for column in client.get("/api/jobs/history/export-columns").json()]
     assert "second_ops" in keys
+
+def test_export_classifier_qualifier_owned_reference(session: Session):
+    from backend.app.models import BuildQualifier
+    job = _make_shipped_job(session, part_number="RMA-1")
+    job.build_qualifier = BuildQualifier.rma
+    job.repeat_reference = "1234"
+    session.commit()
+    assert HISTORY_EXPORT_COLUMNS_BY_KEY["build_type"].render(job) == "RMA 1234"
+    assert "RONC" not in HISTORY_EXPORT_COLUMNS_BY_KEY["job"].render(job)
+
+def test_export_classifier_orphaned_reference(session: Session):
+    job = _make_shipped_job(session, part_number="ORPHAN-1")
+    job.repeat_reference = "1234"
+    session.commit()
+    assert HISTORY_EXPORT_COLUMNS_BY_KEY["build_type"].render(job) == "1234"
+
+def test_export_classifier_split_suffix_with_repeat_reference(session: Session):
+    job = _make_shipped_job(session, part_number="SPLIT-1")
+    job.split_suffix = "-1par"
+    job.repeat_reference = "1234"
+    job.build_type = BuildType.ronc
+    session.commit()
+    # Ensure Job cell contains no repeat vocabulary
+    assert HISTORY_EXPORT_COLUMNS_BY_KEY["job"].render(job) == "SPLIT-1 · -1par"
+    assert HISTORY_EXPORT_COLUMNS_BY_KEY["build_type"].render(job) == "RONC 1234"
+

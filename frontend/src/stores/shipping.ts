@@ -62,6 +62,8 @@ export const useShippingStore = defineStore('shipping', () => {
   // B's audit and PUT it to B.
   let secondOpsRequestSeq = 0
 
+  let gridLoadSeq = 0
+
   const discardedHasPrev  = computed(() => discardedOffset.value > 0)
   const discardedHasNext  = computed(
     () => discardedOffset.value + discardedJobs.value.length < discardedTotal.value,
@@ -74,30 +76,37 @@ export const useShippingStore = defineStore('shipping', () => {
   )
 
   async function load() {
+    gridLoadSeq += 1
+    const issued = gridLoadSeq
     loading.value = true
     error.value = null
     try {
-      const { rows, total } = await fetchShippingJobs(500)
-      jobs.value = rows
+      const page = await fetchShippingJobs(500)
+      if (issued !== gridLoadSeq) return
+      
+      jobs.value = page.rows
       if (inspected.value !== null) {
-        const found = rows.find(j => j.id === inspected.value!.id)
+        const found = page.rows.find(j => j.id === inspected.value!.id)
         if (!found) {
           inspected.value = null
         } else {
           applyEdited(found)
         }
       }
-      if (total > rows.length) {
+      if (page.total > page.rows.length) {
         useToast().show(
-          `Showing ${rows.length} of ${total} open jobs. Contact admin if the full list is needed.`,
+          `Showing ${page.rows.length} of ${page.total} open jobs. Contact admin if the full list is needed.`,
           'error',
           8000,
         )
       }
     } catch {
+      if (issued !== gridLoadSeq) return
       error.value = 'Could not load open jobs. Check that the backend is running and retry.'
     } finally {
-      loading.value = false
+      if (issued === gridLoadSeq) {
+        loading.value = false
+      }
     }
   }
 

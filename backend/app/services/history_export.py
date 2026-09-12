@@ -47,22 +47,35 @@ def neutralise_formula_prefix(cell_text: str) -> str:
         return f"'{cell_text}"
     return cell_text
 
-def _render_job(job: Job) -> str:
+def render_job_identity(job: Job) -> str:
     part_number = job.assembly.part_number if job.assembly else ""
-    suffixes = []
     if job.split_suffix:
-        suffixes.append(job.split_suffix)
-    if job.repeat_reference:
-        suffixes.append(f"RONC {job.repeat_reference}")
-    if suffixes:
-        suffix_str = " · ".join(suffixes)
-        return f"{part_number} · {suffix_str}"
+        return f"{part_number} · {job.split_suffix}"
     return part_number
 
-def _render_build_type(job: Job) -> str:
-    if not job.build_type or job.build_type.value == "new":
-        return ""
-    return job.build_type.value.upper()
+def render_job_classifier(job: Job) -> str:
+    bt = ""
+    if job.build_type and job.build_type.value != "new":
+        bt = job.build_type.value.upper()
+    qual = ""
+    if getattr(job, "build_qualifier", None) and job.build_qualifier.value:
+        qual = job.build_qualifier.value.upper()
+    rr = (job.repeat_reference or "").strip()
+
+    if bt:
+        s = bt
+        if rr:
+            s += f" {rr}"
+        if qual:
+            s += f" · {qual}"
+        return s
+    
+    if qual:
+        return f"{qual} {rr}" if rr else qual
+
+    if rr:
+        return rr
+    return ""
 
 def _render_second_ops(job: Job) -> str:
     """Render the 2nd OPS status for one exported job.
@@ -101,7 +114,7 @@ HISTORY_EXPORT_COLUMNS: tuple[HistoryExportColumn, ...] = (
     HistoryExportColumn(
         key="job",
         header="Job",
-        render=_render_job,
+        render=render_job_identity,
     ),
     HistoryExportColumn(
         key="quantity",
@@ -110,8 +123,8 @@ HISTORY_EXPORT_COLUMNS: tuple[HistoryExportColumn, ...] = (
     ),
     HistoryExportColumn(
         key="build_type",
-        header="ROWC/RONC",
-        render=_render_build_type,
+        header="Build",
+        render=render_job_classifier,
     ),
     HistoryExportColumn(
         key="mfg_notes",

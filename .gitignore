@@ -34,3 +34,6 @@ symbol_map.json
 /test_*
 /patch_*
 /fix_*
+
+scratch.py
+warm_results.txt
