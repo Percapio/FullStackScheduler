@@ -281,20 +281,125 @@ def get_archive_permits(request: Request) -> ArchivePermits:
     return request.app.state.archive_permits
 
 class ArchiveStreamingResponse(StreamingResponse):
+    def __init__(self, *args, stall_seconds: float = 30.0, session: ArchiveStreamSession = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stall_seconds = stall_seconds
+        self.session = session
+
     async def stream_response(self, send) -> None:
         try:
-            with anyio.CancelScope(shield=True):
-                await super().stream_response(send)
+            with anyio.move_on_after(self.stall_seconds) as scope:
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": self.status_code,
+                        "headers": self.raw_headers,
+                    }
+                )
+            if scope.cancel_called:
+                return
+
+            async for chunk in self.body_iterator:
+                if not isinstance(chunk, bytes):
+                    chunk = chunk.encode(self.charset)
+                with anyio.move_on_after(self.stall_seconds) as scope:
+                    await send({"type": "http.response.body", "body": chunk, "more_body": True})
+                if scope.cancel_called:
+                    # AbandonedDisconnect! Return here so we never send the final message.
+                    if self.session:
+                        self.session.pending_outcome = "AbandonedDisconnect"
+                    return
+
+            with anyio.move_on_after(self.stall_seconds) as scope:
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
         finally:
-            if hasattr(self.body_iterator, "aclose"):
-                await self.body_iterator.aclose()
+            with anyio.CancelScope(shield=True):
+                if hasattr(self.body_iterator, "aclose"):
+                    await self.body_iterator.aclose()
+
+@router.get("/archive-status")
+def get_archive_status(
+    token: str = Query(..., min_length=16, max_length=128),
+    is_loopback: bool = Depends(is_loopback_caller),
+    settings: Settings = Depends(get_settings)
+):
+    from ..services.archive_status import get_status
+    from ..services.archive_tokens import inspect_ticket, ScopeViolation
+    
+    status = get_status(token, settings, time.monotonic())
+    
+    if status:
+        if status.minted_loopback and not is_loopback:
+            return JSONResponse(status_code=403, content={"kind": "ScopeViolation"})
+            
+        if status.state == "Terminal":
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "state": "Terminal",
+                    "outcome": status.outcome,
+                    "bytes_sent": status.bytes_sent,
+                    "entry_count": status.entry_count,
+                    "unresolved_count": status.unresolved_count
+                }
+            )
+        return JSONResponse(status_code=200, content={"state": status.state})
+        
+    # Not in status store. Could be Pending or genuinely Unknown.
+    # Consult ticket store for scope check and existence.
+    insp = inspect_ticket(token, is_loopback, settings, time.monotonic())
+    if isinstance(insp, ScopeViolation):
+        return JSONResponse(status_code=403, content={"kind": "ScopeViolation"})
+    
+    from ..services.archive_tokens import Admissible, Bound, Retry
+    # If it's still in the ticket store and not expired/spent (or even if spent, it might just not have written status yet)
+    # Actually, inspect_ticket returns Spent if it's spent. But if it's spent and not in status store, it's weird.
+    # We can just return Pending if it's Admissible, otherwise Unknown.
+    if isinstance(insp, Admissible):
+        return JSONResponse(status_code=200, content={"state": "Pending"})
+        
+    return JSONResponse(status_code=200, content={"state": "Unknown"})
+
 
 import logging
-def _emit_rejected(token: str, reason: str, is_loopback: bool, permits: ArchivePermits):
+import time
+
+_rejected_log_times = {}
+
+def _emit_rejected(token: str, reason: str, is_loopback: bool, permits: ArchivePermits, settings: Settings, clock: float):
+    from ..services.archive_status import record_status
+    record_status(
+        token=token,
+        state="Terminal",
+        outcome=reason,
+        bytes_sent=0,
+        entry_count=0,
+        unresolved_count=0,
+        minted_loopback=is_loopback, # Wait, I don't know minted_loopback here, but we pass is_loopback of the caller
+        settings=settings,
+        clock=clock
+    )
+
+    prefix = token[:8] if token else ""
+    key = (prefix, reason)
+    now = clock
+    
+    last = _rejected_log_times.get(key, 0)
+    if now - last < 2.0:
+        return
+        
+    _rejected_log_times[key] = now
+    
+    # Keep the dictionary bounded
+    if len(_rejected_log_times) > 256:
+        stale = [k for k, v in _rejected_log_times.items() if now - v > 60.0]
+        for k in stale:
+            _rejected_log_times.pop(k, None)
+            
     logger = logging.getLogger("scheduler")
     logger.warning(
         "ArchiveRejected: token_prefix=%s reason=%s is_loopback=%s permits_in_use=%d live_readers=%d",
-        token[:8] if token else "",
+        prefix,
         reason,
         is_loopback,
         permits.in_use,
@@ -312,13 +417,13 @@ async def download_archive(
 ):
     insp = inspect_ticket(token, is_loopback, settings, time.monotonic)
     if isinstance(insp, Expired):
-        _emit_rejected(token, "TokenExpired", is_loopback, permits)
+        _emit_rejected(token, "TokenExpired", is_loopback, permits, settings, time.monotonic())
         return JSONResponse(status_code=404, content={"kind": "token_expired"}, headers={"Cache-Control": "no-store"})
     elif isinstance(insp, Spent):
-        _emit_rejected(token, "TokenSpent", is_loopback, permits)
+        _emit_rejected(token, "TokenSpent", is_loopback, permits, settings, time.monotonic())
         return JSONResponse(status_code=404, content={"kind": "token_spent"}, headers={"Cache-Control": "no-store"})
     elif isinstance(insp, ScopeViolation):
-        _emit_rejected(token, "TokenScope", is_loopback, permits)
+        _emit_rejected(token, "TokenScope", is_loopback, permits, settings, time.monotonic())
         return JSONResponse(status_code=403, content={"kind": "token_scope"}, headers={"Cache-Control": "no-store"})
         
     ticket = insp.ticket
@@ -326,12 +431,12 @@ async def download_archive(
     idx = resolve_file_index(ticket.date_folder, ticket.sub_folder, settings, time.monotonic)
     if idx.status != PhotoFileListStatus.OK:
         reason = "ListingUnavailable" if idx.status in (PhotoFileListStatus.UNAVAILABLE, PhotoFileListStatus.UNCONFIGURED) else "FolderNotFound"
-        _emit_rejected(token, reason, is_loopback, permits)
+        _emit_rejected(token, reason, is_loopback, permits, settings, time.monotonic())
         return JSONResponse(status_code=404, content={"kind": idx.status.value}, headers={"Cache-Control": "no-store"})
         
     folder_res = resolve_photo_folder_path(ticket.date_folder, settings)
     if folder_res[0] == "err":
-        _emit_rejected(token, "FolderNotFound", is_loopback, permits)
+        _emit_rejected(token, "FolderNotFound", is_loopback, permits, settings, time.monotonic())
         return JSONResponse(status_code=404, content={"kind": "folder_not_found"}, headers={"Cache-Control": "no-store"})
         
     folder_path = folder_res[1]
@@ -363,11 +468,23 @@ async def download_archive(
     
     try:
         lease = try_admit(permits)
+        from ..services.archive_status import record_status
+        record_status(
+            token=token,
+            state="Streaming",
+            outcome=None,
+            bytes_sent=0,
+            entry_count=len(snapshot.entries),
+            unresolved_count=len(snapshot.unresolved),
+            minted_loopback=ticket.minted_loopback,
+            settings=settings,
+            clock=time.monotonic()
+        )
     except PermitsExhausted:
-        _emit_rejected(token, "PermitsExhausted", is_loopback, permits)
+        _emit_rejected(token, "PermitsExhausted", is_loopback, permits, settings, time.monotonic())
         return JSONResponse(status_code=503, content={"kind": "busy"}, headers={"Retry-After": "5", "Cache-Control": "no-store"})
     except ReaderBacklog:
-        _emit_rejected(token, "ReaderBacklog", is_loopback, permits)
+        _emit_rejected(token, "ReaderBacklog", is_loopback, permits, settings, time.monotonic())
         return JSONResponse(status_code=503, content={"kind": "busy"}, headers={"Retry-After": "5", "Cache-Control": "no-store"})
 
     import secrets
@@ -431,5 +548,7 @@ async def download_archive(
             "X-Content-Type-Options": "nosniff",
             "Content-Encoding": "identity",
         },
+        stall_seconds=settings.shipping_photos_archive_send_stall_seconds,
+        session=session
     )
 

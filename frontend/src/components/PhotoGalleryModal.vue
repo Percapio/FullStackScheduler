@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch, ref, onBeforeUnmount } from 'vue'
+import { computed, watch, ref } from 'vue'
 import { usePhotoGallery } from '@/composables/usePhotoGallery'
 
 const props = defineProps<{
@@ -9,10 +9,7 @@ const props = defineProps<{
 const state = computed(() => props.gallery.state.value)
 const isOpen = computed(() => state.value.state !== 'closed')
 
-const downloadError = ref<string | null>(null)
-const preparing = ref(false)
-const handedOff = ref(false)
-let handoffTimer: ReturnType<typeof setTimeout> | undefined
+// state reset is handled by composable now
 
 const galleryGeneration = ref(0)
 const loadedImages = ref<Set<string>>(new Set())
@@ -29,8 +26,7 @@ watch(() => (state.value.state === 'ready' ? `${state.value.date_folder}/${state
 })
 
 watch(() => state.value.state, () => {
-  downloadError.value = null
-  handedOff.value = false
+  // state reset is handled by composable now
 })
 
 const previewableCount = computed(() => {
@@ -44,26 +40,61 @@ const resolvedCount = computed(() => {
   return loadedImages.value.size + failedImages.value.size
 })
 
+
+
+const downloadProgress = computed(() => props.gallery.downloadProgress.value)
+
 function close() {
   props.gallery.closeGallery()
 }
 
 async function onDownload() {
-  downloadError.value = null
-  handedOff.value = false
-  preparing.value = true
-  const err = await props.gallery.downloadSelection()
-  preparing.value = false
-  if (err) {
-    downloadError.value = err
-    return
-  }
-  handedOff.value = true
-  clearTimeout(handoffTimer)
-  handoffTimer = setTimeout(() => { handedOff.value = false }, 6000)
+  await props.gallery.downloadSelection()
 }
 
-onBeforeUnmount(() => clearTimeout(handoffTimer))
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+const progressMessage = computed(() => {
+  const p = downloadProgress.value;
+  if (p.kind === 'Idle') return null;
+  if (p.kind === 'Minting') return { type: 'info', text: 'Preparing...' };
+  if (p.kind === 'HandedOff') return { type: 'info', text: 'Download started — check your browser\'s downloads.' };
+  
+  if (p.kind === 'Failed') {
+    const r = p.reason;
+    let text = r;
+    if (r === 'PermitsExhausted' || r === 'ReaderBacklog') text = 'Another download is in progress. Try again in a few seconds.';
+    else if (r === 'TokenExpired' || r === 'TicketRefused') text = 'The download link expired. Select the photos again.';
+    else if (r === 'TokenSpent') text = 'That download has already been used. Select the photos again.';
+    else if (r === 'TokenScope') text = 'This download can only be started from the machine that created it.';
+    else if (r === 'FolderNotFound' || r === 'ListingUnavailable') text = 'The photo folder is no longer available.';
+    else if (r === 'FailedStart') text = 'The server could not start the download. Nothing was saved.';
+    else if (r === 'AbandonedDisconnect') text = 'The download was interrupted. The saved file is incomplete.';
+    else if (r === 'AbandonedBudget') text = 'The download took too long and was stopped. The saved file is incomplete.';
+    else if (r === 'AbandonedStall' || r === 'FailedFraming') text = 'The download failed on the server. The saved file is incomplete.';
+    else if (r === 'PollUnknown') text = 'The download was started but its result is not known. Check your Downloads folder.';
+    else if (r === 'PollAbandoned') text = 'The download is still running or the server stopped responding. Check your Downloads folder.';
+    return { type: 'error', text };
+  }
+  
+  if (p.kind === 'Succeeded') {
+      if (p.unresolved === 0) {
+          return { type: 'success', text: `Saved. (${formatBytes(p.bytes)})` };
+      } else {
+          return { type: 'success', text: `Saved, but ${p.unresolved} files could not be read. The archive lists them in _MISSING.` };
+      }
+  }
+  
+  return null;
+})
+
+
 
 function thumbUrl(filename: string, date_folder: string, sub_folder: string, version: string) {
   return `/api/photos/thumb/${encodeURIComponent(filename)}?date_folder=${encodeURIComponent(date_folder)}&sub_folder=${encodeURIComponent(sub_folder)}&v=${encodeURIComponent(version)}`
@@ -211,9 +242,12 @@ function retryImage(filename: string, e: Event) {
               </div>
 
               <div class="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
-                <div v-if="downloadError" class="text-sm text-red-600 mb-2">{{ downloadError }}</div>
-                <div v-if="handedOff" class="text-sm text-emerald-600 mb-2">
-                  Download started — check your browser's downloads.
+                <div v-if="progressMessage" class="text-sm mb-2" :class="{
+                  'text-red-600': progressMessage.type === 'error',
+                  'text-emerald-600': progressMessage.type === 'success',
+                  'text-blue-600': progressMessage.type === 'info'
+                }">
+                  {{ progressMessage.text }}
                 </div>
                 
                 <div class="flex items-center justify-between">
@@ -224,10 +258,10 @@ function retryImage(filename: string, e: Event) {
                   
                   <button
                     @click="onDownload"
-                    :disabled="preparing || (state.selection.size === 0 && state.entries.length > 0)"
+                    :disabled="downloadProgress.kind === 'Minting' || (state.selection.size === 0 && state.entries.length > 0)"
                     class="px-4 py-2 bg-blue-600 text-white rounded font-medium disabled:opacity-50 hover:bg-blue-700"
                   >
-                    {{ preparing ? 'Preparing…' : 'Download' }}
+                    {{ downloadProgress.kind === 'Minting' ? 'Preparing…' : 'Download' }}
                   </button>
                 </div>
               </div>

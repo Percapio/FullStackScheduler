@@ -37,3 +37,7 @@ symbol_map.json
 
 scratch.py
 warm_results.txt
+
+rewrite_photo_files.py
+rewrite_photos_api.py
+rewrite_tests.py

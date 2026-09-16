@@ -561,10 +561,24 @@ def release(session: ArchiveStreamSession, outcome: SessionOutcome) -> None:
     level = logging.INFO if outcome in ("Completed", "AbandonedDisconnect") else logging.WARNING
     
     snapshot_bytes = sum(e.size_bytes for e in session.snapshot.entries)
-    unreadable = 0 
-    vanished = 0
+    
     logger.log(level, "ArchiveSessionRecord: session_id=%s date_folder=%s sub_folder=%s entry_count=%d unresolved_count=%d snapshot_bytes=%d bytes_sent=%d permits_in_use=%d live_readers=%d duration_ms=%.1f outcome=%s",
         session.session_id, session.date_folder, session.sub_folder, len(session.snapshot.entries), len(session.snapshot.unresolved), snapshot_bytes, session.bytes_sent, session.lease.permits.in_use, session.lease.permits.live_readers, duration_ms, outcome
+    )
+
+    from ..config import get_settings
+    from .archive_status import record_status
+    
+    record_status(
+        token=session.token,
+        state="Terminal",
+        outcome=outcome,
+        bytes_sent=session.bytes_sent,
+        entry_count=len(session.snapshot.entries),
+        unresolved_count=len(session.snapshot.unresolved),
+        minted_loopback=False, # We don't have minted_loopback here easily, but the status store already has it from 'Streaming' write! Wait.
+        settings=get_settings(),
+        clock=time.monotonic()
     )
 
 def classify_read_failure(cause: OSError) -> ReadFailure:

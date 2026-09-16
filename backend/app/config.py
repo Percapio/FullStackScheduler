@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     shipping_photos_archive_credit_poll_seconds: float = 0.1
     shipping_photos_archive_max_live_readers: int = 4
 
+    # Phase 31 — Archive disconnect detection and status
+    shipping_photos_archive_send_stall_seconds: float = 30.0
+    shipping_photos_archive_status_grace_seconds: float = 300.0
+    shipping_photos_archive_status_max: int = 64
+
     # Phase 27 — Auto-copy
     shipping_photos_auto_copy_tick_seconds: float = 60.0
     shipping_photos_auto_copy_lookback_days: int = 7

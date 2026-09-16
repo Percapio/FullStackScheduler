@@ -143,3 +143,23 @@ export async function requestArchiveTicket(
 export function archiveDownloadUrl(token: string): string {
     return `${baseURL}/api/photos/archive-download?token=${encodeURIComponent(token)}`;
 }
+
+export type ArchiveStatusOutcome =
+    | { state: 'Pending' | 'Streaming' | 'Unknown' | 'ScopeViolation' }
+    | { state: 'Terminal'; outcome: string; bytes_sent: number; entry_count: number; unresolved_count: number }
+    | { state: 'NetworkError'; message: string };
+
+export async function fetchArchiveStatus(token: string, signal?: AbortSignal): Promise<ArchiveStatusOutcome> {
+    try {
+        const res = await apiClient.get('/api/photos/archive-status', { 
+            params: { token },
+            signal
+        });
+        return res.data;
+    } catch (e: any) {
+        if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') {
+            throw e;
+        }
+        return { state: 'NetworkError', message: e.message || 'Network error' };
+    }
+}
