@@ -86,7 +86,10 @@ class Settings(BaseSettings):
     # Phase 27 — Archive pipeline
     shipping_photos_archive_read_chunk_bytes: int = 4_194_304
     shipping_photos_archive_readahead_chunks: int = 1
-    shipping_photos_archive_reader_stall_seconds: float = 60.0
+    shipping_photos_archive_reader_stall_seconds: float = 300.0
+    shipping_photos_archive_session_budget_seconds: float = 1800.0
+    shipping_photos_archive_credit_poll_seconds: float = 0.1
+    shipping_photos_archive_max_live_readers: int = 4
 
     # Phase 27 — Auto-copy
     shipping_photos_auto_copy_tick_seconds: float = 60.0

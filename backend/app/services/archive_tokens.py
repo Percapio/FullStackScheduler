@@ -4,7 +4,7 @@ import secrets
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 from ..config import Settings
 
@@ -19,8 +19,31 @@ class ArchiveTicket:
     selection: List[str]
     filename: str
     minted_loopback: bool
-    covers_full_listing: bool
     issued_at: float = 0.0
+    bound_session_id: Optional[str] = None
+    spent: bool = False
+    is_retry: bool = False
+
+@dataclass(frozen=True)
+class Admissible:
+    ticket: ArchiveTicket
+
+class Expired:
+    pass
+
+class Spent:
+    pass
+
+class ScopeViolation:
+    pass
+
+@dataclass(frozen=True)
+class Bound:
+    ticket: ArchiveTicket
+
+@dataclass(frozen=True)
+class Retry:
+    ticket: ArchiveTicket
 
 def archive_attachment_name(date_folder: str, sub_folder: SubFolder) -> str:
     import hashlib
@@ -37,17 +60,10 @@ def archive_attachment_name(date_folder: str, sub_folder: SubFolder) -> str:
     
     return f"Photos_{date_folder}_{slug}.zip"
 
-
 _lock = threading.Lock()
 _tickets: "OrderedDict[str, ArchiveTicket]" = OrderedDict()
 
-
 def _purge_expired(now: float, ttl: float) -> None:
-    """Evicts every ticket older than ttl, stopping at the first survivor.
-    The early exit is sound only because issued_at is stamped under _lock by
-    issue_ticket, which makes insertion order non-decreasing in issued_at.
-    pre:  caller holds _lock
-    post: no ticket with now - issued_at >= ttl remains"""
     while _tickets:
         _, ticket = next(iter(_tickets.items()))
         if now - ticket.issued_at >= ttl:
@@ -55,19 +71,11 @@ def _purge_expired(now: float, ttl: float) -> None:
         else:
             break
 
-
 def issue_ticket(
     ticket: ArchiveTicket,
     settings: Settings,
     clock: Callable[[], float],
 ) -> str:
-    """Stores ticket under a fresh opaque token.
-    post: the stored ticket carries issued_at == the clock reading taken
-          inside _lock, so _tickets stays ordered by issue time
-    
-    Note: This store assumes one worker process, exactly as the existing 
-    _file_indexes and _archive_semaphore globals already do. Uvicorn must 
-    continue to run with workers=1."""
     token = secrets.token_urlsafe(32)
     with _lock:
         now = clock()
@@ -77,25 +85,67 @@ def issue_ticket(
             _tickets.popitem(last=False)
     return token
 
-
-def redeem_ticket(
+def inspect_ticket(
     token: str,
+    is_loopback: bool,
     settings: Settings,
     clock: Callable[[], float],
-) -> Optional[ArchiveTicket]:
-    """Look up a ticket WITHOUT consuming it."""
+) -> Union[Admissible, Expired, Spent, ScopeViolation]:
     now = clock()
     ttl = settings.shipping_photos_archive_token_ttl_seconds
     with _lock:
         _purge_expired(now, ttl)
         ticket = _tickets.get(token)
         if ticket is None or now - ticket.issued_at >= ttl:
-            _tickets.pop(token, None)
-            return None
-        return ticket
+            return Expired()
+        if ticket.spent:
+            return Spent()
+        if ticket.minted_loopback and not is_loopback:
+            return ScopeViolation()
+        return Admissible(ticket)
 
+def bind_ticket(
+    token: str,
+    session_id: str,
+    settings: Settings,
+    clock: Callable[[], float]
+) -> Union[Bound, Retry, Expired, Spent]:
+    now = clock()
+    ttl = settings.shipping_photos_archive_token_ttl_seconds
+    with _lock:
+        _purge_expired(now, ttl)
+        ticket = _tickets.get(token)
+        if ticket is None or now - ticket.issued_at >= ttl:
+            return Expired()
+        if ticket.spent:
+            return Spent()
+        if ticket.bound_session_id is not None:
+            return Spent()
+        
+        new_ticket = replace(ticket, bound_session_id=session_id)
+        _tickets[token] = new_ticket
+        if ticket.is_retry:
+            return Retry(new_ticket)
+        else:
+            return Bound(new_ticket)
+
+def settle_ticket(
+    token: str,
+    session_id: str,
+    bytes_sent: int
+) -> None:
+    with _lock:
+        ticket = _tickets.get(token)
+        if ticket is None:
+            return
+        if ticket.bound_session_id != session_id:
+            return
+        if bytes_sent > 0:
+            new_ticket = replace(ticket, spent=True)
+        else:
+            new_ticket = replace(ticket, bound_session_id=None, is_retry=True)
+        _tickets[token] = new_ticket
 
 def clear_tickets() -> None:
-    """Test hook, mirroring photo_files._file_indexes.clear() usage in tests."""
     with _lock:
         _tickets.clear()

@@ -193,22 +193,40 @@ def test_file_index_invalidate(tmp_path):
     assert len(_file_indexes) == 0
 
 def mock_stream(date_folder, sub_folder, selection, idx, settings, covers_full_listing=False):
+    import asyncio
     import threading
-    sem = threading.Semaphore(1)
-    session = ArchiveStreamSession(sem, settings)
-    
-    # We must run the generator and the worker thread.
-    import concurrent.futures
-    import zipfile
-    import io
-    
+    from backend.app.services.photo_files import ArchiveTransport, ArchivePermits, SessionLease, ArchiveSnapshot, ArchiveStreamSession, stream_photo_archive, archive_reader_loop
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+    transport = ArchiveTransport(settings.shipping_photos_archive_readahead_chunks + 2, loop)
+    permits = ArchivePermits(1, 1)
+    lease = SessionLease(permits)
+    snapshot = ArchiveSnapshot(entries=idx.entries, unresolved=[], covers_full_listing=covers_full_listing, index_truncated=idx.truncated, scanned_at=idx.scanned_at)
+    session = ArchiveStreamSession("mock_id", transport, lease, snapshot, "mock_token", date_folder, sub_folder)
+
     path = Path(settings.shipping_photos_dir) / date_folder
     
-    # Actually session.start runs it in a thread.
-    session.start(path, idx.entries, settings)
+    session.reader = threading.Thread(
+        target=archive_reader_loop,
+        args=(session, path, snapshot, settings),
+        daemon=True,
+        name="ArchiveReader"
+    )
+    session.reader.start()
     
-    stream = stream_photo_archive(date_folder, sub_folder, selection, idx, settings, session, covers_full_listing=covers_full_listing)
-    return b"".join(stream)
+    async def collect():
+        stream = stream_photo_archive(date_folder, sub_folder, snapshot, settings, session)
+        chunks = []
+        async for chunk in stream:
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    return loop.run_until_complete(collect())
 
 def test_archive_streaming(tmp_path):
     settings = Settings(

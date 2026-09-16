@@ -1,200 +1,17 @@
-import math
-import time
-from typing import Literal
+import re
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+path = Path(r"d:\Dev\Scheduler\Schedule\backend\app\api\photos.py")
+content = path.read_text(encoding="utf-8")
 
-from ..config import Settings, get_settings
-from ..services.shipping_photos import (
-    PHOTO_FOLDER_PATTERN,
-    PhotoDirectoryStatus,
-    PhotoFolderIndex,
-    RateLimited,
-    open_photo_folder,
-    probe_missing_folders,
-    resolve_folder_index,
-)
+idx = content.find("ARCHIVE_SELECTION_PARSE_CEILING = 10_000")
+prefix = content[:idx]
 
-router = APIRouter()
-
-class PhotoFolderIndexRead(BaseModel):
-    status: Literal["unconfigured", "unavailable", "ok"]
-    folders: list[str]
-    truncated: bool
-
-@router.get("/available-dates", response_model=PhotoFolderIndexRead)
-def get_available_dates(
-    probe: list[str] = Query(default=[]),
-    settings: Settings = Depends(get_settings)
-) -> PhotoFolderIndexRead:
-    idx = resolve_folder_index(settings, time.monotonic)
-    
-    if idx.status == PhotoDirectoryStatus.OK and probe:
-        # Probe miss logic
-        folders = probe_missing_folders(set(probe), idx, settings)
-    else:
-        folders = idx.folder_names
-        
-    return PhotoFolderIndexRead(
-        status=idx.status.value,
-        folders=sorted(folders) if idx.status == PhotoDirectoryStatus.OK else [],
-        truncated=idx.truncated
-    )
-
-class PhotoOpenRequest(BaseModel):
-    date_folder: str = Field(pattern=PHOTO_FOLDER_PATTERN.pattern)
-
-from .deps import require_loopback, is_loopback_caller
-
-@router.post("/open", dependencies=[Depends(require_loopback)])
-def open_photo_folder_endpoint(
-    req: PhotoOpenRequest,
-    settings: Settings = Depends(get_settings)
-):
-    res = open_photo_folder(req.date_folder, settings, time.monotonic)
-    
-    if res[0] == "ok":
-        return {"opened": res[1]}
-        
-    failure = res[1]
-    
-    if failure == "unconfigured":
-        return JSONResponse(status_code=409, content={"kind": "unconfigured"})
-    elif failure == "unavailable":
-        return JSONResponse(status_code=409, content={"kind": "unavailable"})
-    elif failure == "invalid_name":
-        # Should be caught by Pydantic pattern, but just in case
-        return JSONResponse(status_code=422, content={"kind": "invalid_name"})
-    elif failure == "not_found":
-        return JSONResponse(status_code=404, content={"kind": "not_found", "date_folder": req.date_folder})
-    elif failure == "shell_error":
-        return JSONResponse(status_code=500, content={"kind": "shell_error"})
-    elif isinstance(failure, RateLimited):
-        wait = max(1, math.ceil(failure.remaining_seconds))
-        return JSONResponse(
-            status_code=429,
-            content={"kind": "rate_limited", "retry_after_seconds": wait},
-            headers={"Retry-After": str(wait)}
-        )
-
-from typing import List, Optional
-import threading
-from fastapi import Request
-from fastapi.responses import FileResponse, StreamingResponse
-from ..services.photo_files import (
-    resolve_file_index, resolve_photo_file_path, stream_photo_archive, PhotoFileListStatus
-)
-from ..services.photo_thumbnails import generate_once, acquire_thumbnail_permit
-
-class PhotoFileEntryRead(BaseModel):
-    name: str
-    size_bytes: int
-    mtime_ns: int
-    version: str
-    previewable: bool
-
-class PhotoFileListRead(BaseModel):
-    status: Literal["unconfigured", "unavailable", "not_found", "ok"]
-    folders: List[str]
-    entries: List[PhotoFileEntryRead]
-    truncated: bool
-    folders_truncated: bool
-
-@router.get("/files", response_model=PhotoFileListRead)
-def list_files(
-    date_folder: str = Query(..., pattern=PHOTO_FOLDER_PATTERN.pattern),
-    sub_folder: str = Query(default="", max_length=255, pattern="^[^/\\\\]*$"),
-    settings: Settings = Depends(get_settings)
-):
-    idx = resolve_file_index(date_folder, sub_folder, settings, time.monotonic)
-    try:
-        from ..services.photo_warm import enqueue_warm
-        enqueue_warm(date_folder, sub_folder, settings)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to enqueue warm worker: {e}")
-        
-    entries = []
-    if idx.status == PhotoFileListStatus.OK:
-        entries = [
-            PhotoFileEntryRead(
-                name=e.name,
-                size_bytes=e.size_bytes,
-                mtime_ns=e.mtime_ns,
-                version=e.version,
-                previewable=e.previewable
-            ) for e in idx.entries
-        ]
-    return PhotoFileListRead(
-        status=idx.status.value,
-        folders=idx.folders if idx.status == PhotoFileListStatus.OK else [],
-        entries=entries,
-        truncated=idx.truncated,
-        folders_truncated=idx.folders_truncated if idx.status == PhotoFileListStatus.OK else False
-    )
-
-@router.get("/file/{filename}")
-def get_file(
-    filename: str,
-    date_folder: str = Query(..., pattern=PHOTO_FOLDER_PATTERN.pattern),
-    sub_folder: str = Query(default="", max_length=255, pattern="^[^/\\\\]*$"),
-    settings: Settings = Depends(get_settings)
-):
-    idx = resolve_file_index(date_folder, sub_folder, settings, time.monotonic)
-    res = resolve_photo_file_path(date_folder, sub_folder, filename, idx, settings)
-    
-    if res[0] == "err":
-        return JSONResponse(status_code=404, content={"kind": res[1]})
-        
-    return FileResponse(
-        res[1],
-        headers={
-            "Cache-Control": "private, max-age=31536000, immutable",
-            "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "sandbox",
-            "Content-Encoding": "identity"
-        },
-    )
-
-
-from ..services.photo_thumbnails import generate_once
-
-@router.get("/thumb/{filename}")
-def get_thumb(
-    filename: str,
-    date_folder: str = Query(..., pattern=PHOTO_FOLDER_PATTERN.pattern),
-    sub_folder: str = Query(default="", max_length=255, pattern="^[^/\\\\]*$"),
-    settings: Settings = Depends(get_settings)
-):
-    idx = resolve_file_index(date_folder, sub_folder, settings, time.monotonic)
-    
-    res = generate_once(date_folder, sub_folder, filename, idx, "interactive", settings)
-    if res[0] == "err":
-        if res[1] == "not_previewable":
-            return JSONResponse(status_code=415, content={"kind": res[1]}, headers={"Cache-Control": "no-store"})
-        elif res[1] in ("unavailable", "cache_unavailable", "saturated", "timeout"):
-            return JSONResponse(status_code=503, content={"kind": res[1]}, headers={"Retry-After": "1", "Cache-Control": "no-store"})
-        else:
-            return JSONResponse(status_code=404, content={"kind": res[1]}, headers={"Cache-Control": "no-store"})
-            
-    return FileResponse(
-        res[1].path,
-            media_type=res[1].media_type,
-            headers={
-                "Cache-Control": "private, max-age=31536000, immutable",
-                "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "sandbox",
-                "Content-Encoding": "identity"
-            }
-        )
-
-ARCHIVE_SELECTION_PARSE_CEILING = 10_000
+new_content = prefix + """ARCHIVE_SELECTION_PARSE_CEILING = 10_000
 
 class ArchiveRequest(BaseModel):
     date_folder: str = Field(pattern=PHOTO_FOLDER_PATTERN.pattern)
-    sub_folder: str = Field(default="", max_length=255, pattern="^[^/\\\\]*$")
+    sub_folder: str = Field(default="", max_length=255, pattern="^[^/\\\\\\\\]*$")
     selection: List[str] = Field(default_factory=list, max_length=ARCHIVE_SELECTION_PARSE_CEILING)
 
 from ..services.archive_tokens import issue_ticket, inspect_ticket, bind_ticket, ArchiveTicket, archive_attachment_name, Admissible, Expired, Spent, ScopeViolation, Bound, Retry
@@ -433,3 +250,7 @@ async def download_archive(
         },
     )
 
+"""
+
+path.write_text(new_content, encoding="utf-8")
+print("Done")
