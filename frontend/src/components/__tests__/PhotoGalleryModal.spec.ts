@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick, ref } from 'vue'
 import PhotoGalleryModal from '../PhotoGalleryModal.vue'
+import type { DownloadProgress, usePhotoGallery } from '@/composables/usePhotoGallery'
 
 // Patch 05 section 8.4.
 
@@ -11,7 +12,12 @@ function entry(name: string, previewable = true, version = 'v1'): Entry {
     return { name, size_bytes: 10, mtime_ns: 1, version, previewable }
 }
 
-function makeGallery(date_folder: string, entries: Entry[]) {
+type GalleryApi = ReturnType<typeof usePhotoGallery>
+
+// Typed against the composable's published return type (Phase 32 §5): a member
+// added to the composable and missing here is a type error at this literal, not
+// nine unrelated tests failing on undefined.
+function makeGallery(date_folder: string, entries: Entry[], progress: DownloadProgress = { kind: 'Idle' }) {
     const state = ref<any>({
         state: 'ready',
         date_folder,
@@ -22,15 +28,20 @@ function makeGallery(date_folder: string, entries: Entry[]) {
         folders_truncated: false,
         selection: new Set<string>()
     })
-    return {
-        state,
+    const downloadProgress = ref<DownloadProgress>(progress)
+    const gallery: GalleryApi = {
+        state: state as unknown as GalleryApi['state'],
+        downloadProgress: downloadProgress as unknown as GalleryApi['downloadProgress'],
         openGallery: vi.fn(),
+        navigateTo: vi.fn(),
+        navigateUp: vi.fn(),
         closeGallery: vi.fn(),
         toggleSelection: vi.fn(),
         selectAll: vi.fn(),
         clearSelection: vi.fn(),
-        downloadSelection: vi.fn().mockResolvedValue(null)
+        downloadSelection: vi.fn().mockResolvedValue(undefined)
     }
+    return { ...gallery, state, downloadProgress }
 }
 
 function mountGallery(gallery: any): VueWrapper<any> {
@@ -191,5 +202,18 @@ describe('PhotoGalleryModal', () => {
 
         const labels = wrapper.findAll('button').map(b => b.text())
         expect(labels).toContain('Download')
+    })
+
+    it.each<[DownloadProgress, string]>([
+        [{ kind: 'Preparing', filename: 'p.zip' }, 'Preparing the download…'],
+        [{ kind: 'Downloading', filename: 'p.zip' }, "Download started — check your browser's downloads."],
+        [{ kind: 'Failed', reason: 'SourceChanged', filename: 'p.zip' }, 'The photos changed while the download was running. Download again.'],
+        [{ kind: 'Failed', reason: 'PreflightStalled', filename: 'p.zip' }, 'The photo folder is not responding. Try again in a minute.'],
+        [{ kind: 'Succeeded', filename: 'p.zip', bytes: 2048, entries: 3, missing: 2 }, 'Saved, but 2 files could not be included. The archive lists them in _MISSING.'],
+        [{ kind: 'Succeeded', filename: 'p.zip', bytes: 2048, entries: 3, missing: 0 }, 'Saved. (2 KB)'],
+    ])('renders the %o state as its message', (progress, text) => {
+        const gallery = makeGallery('2023_01_01', [entry('a.jpg')], progress)
+        const wrapper = mountGallery(gallery)
+        expect(wrapper.text()).toContain(text)
     })
 })

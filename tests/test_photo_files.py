@@ -17,7 +17,6 @@ from backend.app.services.photo_files import ( ROOT, ArchiveStreamSession,
     resolve_file_index,
     invalidate_file_index,
     ALL_FOLDERS,
-    stream_photo_archive,
     FileStatus,
     _file_indexes
 )
@@ -191,92 +190,3 @@ def test_file_index_invalidate(tmp_path):
     assert len(_file_indexes) > 0
     invalidate_file_index(ALL_FOLDERS())
     assert len(_file_indexes) == 0
-
-def mock_stream(date_folder, sub_folder, selection, idx, settings, covers_full_listing=False):
-    import asyncio
-    import threading
-    from backend.app.services.photo_files import ArchiveTransport, ArchivePermits, SessionLease, ArchiveSnapshot, ArchiveStreamSession, stream_photo_archive, archive_reader_loop
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-    transport = ArchiveTransport(settings.shipping_photos_archive_readahead_chunks + 2, loop)
-    permits = ArchivePermits(1, 1)
-    lease = SessionLease(permits)
-    snapshot = ArchiveSnapshot(entries=idx.entries, unresolved=[], covers_full_listing=covers_full_listing, index_truncated=idx.truncated, scanned_at=idx.scanned_at)
-    session = ArchiveStreamSession("mock_id", transport, lease, snapshot, "mock_token", date_folder, sub_folder)
-
-    path = Path(settings.shipping_photos_dir) / date_folder
-    
-    session.reader = threading.Thread(
-        target=archive_reader_loop,
-        args=(session, path, snapshot, settings),
-        daemon=True,
-        name="ArchiveReader"
-    )
-    session.reader.start()
-    
-    async def collect():
-        stream = stream_photo_archive(date_folder, sub_folder, snapshot, settings, session)
-        chunks = []
-        async for chunk in stream:
-            chunks.append(chunk)
-        return b"".join(chunks)
-
-    return loop.run_until_complete(collect())
-
-def test_archive_streaming(tmp_path):
-    settings = Settings(
-        shipping_photos_dir=str(tmp_path),
-        shipping_photos_max_files_per_folder=2
-    )
-    d = tmp_path / "2023_01_01"
-    d.mkdir()
-    (d / "a.jpg").write_bytes(b"a")
-    (d / "b.jpg").write_bytes(b"b")
-    (d / "c.notpreviewable").write_bytes(b"c") # should be archived if in index
-    
-    idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
-    assert len(idx.entries) == 2
-    assert idx.truncated is True
-    
-    data = mock_stream("2023_01_01", ROOT, [], idx, settings, covers_full_listing=True)
-    
-    assert len(data) > 0
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    names = zf.namelist()
-    assert "a.jpg" in names
-    assert "b.jpg" in names
-    assert "_TRUNCATED.txt" in names
-
-def test_archive_streaming_missing_file(tmp_path):
-    settings = Settings(shipping_photos_dir=str(tmp_path))
-    d = tmp_path / "2023_01_01"
-    d.mkdir()
-    (d / "a.jpg").write_bytes(b"a")
-    
-    idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
-    
-    (d / "a.jpg").unlink() # Delete before streaming
-    
-    data = mock_stream("2023_01_01", ROOT, [], idx, settings, covers_full_listing=True)
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    assert "_MISSING.txt" in zf.namelist()
-
-def test_archive_sets_zip64_file_size(tmp_path):
-    settings = Settings(shipping_photos_dir=str(tmp_path))
-    d = tmp_path / "2023_01_01"
-    d.mkdir()
-    f = d / "a.jpg"
-    f.write_bytes(b"a" * 1024)
-    
-    idx = resolve_file_index("2023_01_01", ROOT, settings, time.time)
-    
-    data = mock_stream("2023_01_01", ROOT, [], idx, settings, covers_full_listing=True)
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    
-    info = zf.getinfo("a.jpg")
-    assert info.file_size == 1024

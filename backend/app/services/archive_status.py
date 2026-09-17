@@ -1,22 +1,31 @@
-import time
-from typing import Literal, Optional, Union
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Callable, Literal, Optional, Union, get_args
+
 from ..config import Settings
+
+Clock = Callable[[], float]
 
 SessionOutcome = Literal[
     "Completed", "AbandonedDisconnect", "AbandonedBudget",
     "AbandonedStall", "FailedFraming", "TicketRefused",
-    "FailedStart"
+    "FailedStart", "FolderNotFound", "ListingUnavailable",
+    "SourceChanged", "PreflightStalled"
 ]
 
 RejectionReason = Literal[
-    "TokenExpired", "TokenSpent", "TokenScope", "FolderNotFound",
-    "ListingUnavailable", "PermitsExhausted", "ReaderBacklog"
+    "TokenExpired", "TokenSpent", "TokenScope",
+    "PermitsExhausted", "ReaderBacklog"
 ]
 
 TerminalReason = Union[SessionOutcome, RejectionReason]
-StatusState = Literal["Pending", "Streaming", "Terminal"]
+StatusState = Literal["Pending", "Preparing", "Streaming", "Terminal"]
+
+SESSION_OUTCOMES = frozenset(get_args(SessionOutcome))
+REJECTION_REASONS = frozenset(get_args(RejectionReason))
+SECOND_REQUEST_OUTCOMES = REJECTION_REASONS | {"TicketRefused"}
+
 
 @dataclass
 class SessionStatus:
@@ -28,9 +37,10 @@ class SessionStatus:
     minted_loopback: bool
     recorded_at: float
 
-import threading
+
 _status_lock = threading.Lock()
-_status_store: OrderedDict[str, SessionStatus] = OrderedDict()
+_status_store: "OrderedDict[str, SessionStatus]" = OrderedDict()
+
 
 def record_status(
     token: str,
@@ -41,16 +51,26 @@ def record_status(
     unresolved_count: int,
     minted_loopback: bool,
     settings: Settings,
-    clock: float
+    clock: Clock
 ) -> None:
+    """Records one state transition against a token.
+
+    An existing Terminal record is never overwritten by another terminal or
+    streaming write. A rejection, or a lost bind race, never replaces a live
+    session's Preparing or Streaming record: it belongs to a second request, and
+    the session's own outcome must still land. Preparing is written only after
+    a successful bind, so it starts the token's authoritative redemption and
+    replaces whatever an earlier one left (Phase 32 §6.2).
+    """
     with _status_lock:
-        if token in _status_store:
-            existing = _status_store[token]
-            if existing.state == "Terminal":
+        now = clock()
+        existing = _status_store.get(token)
+        if existing is not None:
+            if existing.state == "Terminal" and state != "Preparing":
                 return
-            if state == "Streaming" and existing.state == "Terminal":
+            if outcome in SECOND_REQUEST_OUTCOMES and existing.state in ("Preparing", "Streaming"):
                 return
-            minted_loopback = existing.minted_loopback
+            minted_loopback = existing.minted_loopback or minted_loopback
 
         _status_store[token] = SessionStatus(
             state=state,
@@ -59,39 +79,33 @@ def record_status(
             entry_count=entry_count,
             unresolved_count=unresolved_count,
             minted_loopback=minted_loopback,
-            recorded_at=clock
+            recorded_at=now
         )
         _status_store.move_to_end(token)
 
-        # Evict LRU
         if len(_status_store) > settings.shipping_photos_archive_status_max:
-            # We don't sweep on read, but we can do a lazy sweep on insert
-            ttl = settings.shipping_photos_archive_token_ttl_seconds
-            grace = settings.shipping_photos_archive_status_grace_seconds
-            limit_time = clock - ttl - grace
-            
-            # Find an expired one to drop
-            dropped = False
-            for k, v in list(_status_store.items()):
-                if v.recorded_at < limit_time:
-                    _status_store.pop(k)
-                    dropped = True
+            limit_time = now - settings.shipping_photos_archive_token_ttl_seconds - settings.shipping_photos_archive_status_grace_seconds
+            for key, status in list(_status_store.items()):
+                if status.recorded_at < limit_time:
+                    _status_store.pop(key)
                     break
-                    
-            if not dropped:
-                # Evict least recently written
+            else:
                 _status_store.popitem(last=False)
 
-def get_status(token: str, settings: Settings, clock: float) -> Optional[SessionStatus]:
+
+def get_status(token: str, settings: Settings, clock: Clock) -> Optional[SessionStatus]:
     with _status_lock:
-        if token not in _status_store:
+        now = clock()
+        status = _status_store.get(token)
+        if status is None:
             return None
-        
-        status = _status_store[token]
         ttl = settings.shipping_photos_archive_token_ttl_seconds
         grace = settings.shipping_photos_archive_status_grace_seconds
-        
-        if clock > status.recorded_at + ttl + grace:
+        if now > status.recorded_at + ttl + grace:
             return None
-            
         return status
+
+
+def clear_status() -> None:
+    with _status_lock:
+        _status_store.clear()

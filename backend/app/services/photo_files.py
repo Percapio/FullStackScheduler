@@ -3,7 +3,6 @@ import os
 import re
 import stat
 import time
-import zipfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from enum import Enum
@@ -375,50 +374,35 @@ def invalidate_file_index(target: Union[str, FolderKey, ALL_FOLDERS]) -> None:
                 _file_indexes.pop(k, None)
         else: # FolderKey
             _file_indexes.pop(target, None)
-
 import logging
 logger = logging.getLogger(__name__)
 
 
-import asyncio
-import queue
-import time
-from typing import AsyncIterator
-import threading
-from dataclasses import dataclass
-from typing import List, Union, Literal, Optional
-import zipfile
+# =============================================================================
+# Archive redemption (Phase 30, 31, 32)
+# =============================================================================
 
-ReadFailure = Literal["Unreadable", "Vanished"]
+import asyncio
+import secrets
+import zlib
+from typing import Any, AsyncIterator
+
+import anyio
+
+from .archive_zip import (
+    ArchivePlan, CentralHeader, DataDescriptor, ExcludedEntry, InlineContent,
+    LocalHeader, MemberSpec, dos_timestamp, encode_record, end_records,
+    first_free_name, inline_member, lay_out, missing_manifest, truncated_notice,
+)
+
+ExclusionCause = Literal["Vanished", "Unreadable", "OutsideFolder", "NotRegularFile"]
+DivergenceCause = Literal["Vanished", "Unreadable", "Replaced", "Truncated", "Extended"]
 AbandonCause = Literal["ConsumerStalled", "SessionReleased"]
 
-class ArchiveReadItem:
-    pass
+DIRECTORY_FRAME_BYTES = 1 << 20
 
-@dataclass
-class FileOpened(ArchiveReadItem):
-    entry: PhotoFileEntry
 
-@dataclass
-class FileChunk(ArchiveReadItem):
-    payload: bytes
-
-@dataclass
-class FileFinished(ArchiveReadItem):
-    entry: PhotoFileEntry
-
-@dataclass
-class FileUnreadable(ArchiveReadItem):
-    name: FileName
-    cause: ReadFailure
-    entry_was_open: bool
-
-class StreamFinished(ArchiveReadItem):
-    pass
-
-@dataclass
-class StreamAbandoned(ArchiveReadItem):
-    cause: AbandonCause
+# ---- Snapshot (§6.3) --------------------------------------------------------
 
 @dataclass
 class ArchiveSnapshot:
@@ -428,53 +412,300 @@ class ArchiveSnapshot:
     index_truncated: bool
     scanned_at: float
 
+
+def build_snapshot(selection: List[FileName], index: PhotoFileIndex) -> ArchiveSnapshot:
+    """Everything one redemption considers, from exactly one index resolution.
+
+    covers_full_listing is membership, not a count: every listing entry must be
+    selected, and unresolved names do not count toward it (N4).
+    """
+    if not selection:
+        entries = list(index.entries)
+        unresolved: List[FileName] = []
+    else:
+        entries = []
+        unresolved = []
+        seen: Set[FileName] = set()
+        for name in selection:
+            if name in seen:
+                continue
+            seen.add(name)
+            if name in index.by_name:
+                entries.append(index.by_name[name])
+            else:
+                unresolved.append(name)
+    selected = {e.name for e in entries}
+    covers_full_listing = all(e.name in selected for e in index.entries)
+    return ArchiveSnapshot(
+        entries=entries,
+        unresolved=unresolved,
+        covers_full_listing=covers_full_listing,
+        index_truncated=index.truncated,
+        scanned_at=index.scanned_at,
+    )
+
+
+# ---- Identity and probing (§7.2) --------------------------------------------
+
+@dataclass(frozen=True)
+class FileIdentity:
+    size: int
+    mtime_ns: int
+    file_id: Optional[Tuple[int, int]]
+
+
+def identity_from_stat(st: os.stat_result) -> FileIdentity:
+    file_id = (st.st_dev, st.st_ino) if st.st_ino else None
+    return FileIdentity(size=st.st_size, mtime_ns=st.st_mtime_ns, file_id=file_id)
+
+
+def same_identity(expected: FileIdentity, observed: FileIdentity) -> bool:
+    if expected.size != observed.size or expected.mtime_ns != observed.mtime_ns:
+        return False
+    if expected.file_id is not None and observed.file_id is not None:
+        return expected.file_id == observed.file_id
+    return True
+
+
+def divergence_between(expected: FileIdentity, observed: FileIdentity) -> DivergenceCause:
+    if expected.file_id is not None and observed.file_id is not None and expected.file_id != observed.file_id:
+        return "Replaced"
+    if observed.size > expected.size:
+        return "Extended"
+    if observed.size < expected.size:
+        return "Truncated"
+    return "Replaced"
+
+
+@dataclass(frozen=True)
+class ProbedEntry:
+    entry: PhotoFileEntry
+    resolved: Path
+    identity: FileIdentity
+
+
+@dataclass(frozen=True)
+class Admitted:
+    probed: ProbedEntry
+
+
+@dataclass(frozen=True)
+class Excluded:
+    cause: ExclusionCause
+
+
+ProbeResult = Union[Admitted, Excluded]
+
+
+def _default_open(path: Path):
+    return open(path, "rb")
+
+
+def probe_entry(
+    folder: Path,
+    entry: PhotoFileEntry,
+    resolve: Callable[[Path], Path] = lambda p: p.resolve(),
+    stat_fn: Callable[[Path], os.stat_result] = os.stat,
+    open_fn: Callable[[Path], Any] = _default_open,
+    attempts: int = 2
+) -> ProbeResult:
+    """Establishes whether one entry can be archived and exactly what it contributes.
+
+    folder must already be fully resolved. Containment, regular-file, open, and
+    identity checks run in that order; an identity mismatch re-probes once.
+    """
+    try:
+        resolved = resolve(folder / entry.name)
+    except FileNotFoundError:
+        return Excluded("Vanished")
+    except OSError:
+        return Excluded("Unreadable")
+    try:
+        resolved.relative_to(folder)
+    except ValueError:
+        return Excluded("OutsideFolder")
+
+    try:
+        path_stat = stat_fn(resolved)
+    except FileNotFoundError:
+        return Excluded("Vanished")
+    except OSError:
+        return Excluded("Unreadable")
+    if not stat.S_ISREG(path_stat.st_mode):
+        return Excluded("NotRegularFile")
+
+    try:
+        handle = open_fn(resolved)
+    except FileNotFoundError:
+        return Excluded("Vanished")
+    except OSError:
+        return Excluded("Unreadable")
+    try:
+        handle_identity = identity_from_stat(os.fstat(handle.fileno()))
+    except OSError:
+        return Excluded("Unreadable")
+    finally:
+        handle.close()
+
+    if not same_identity(identity_from_stat(path_stat), handle_identity):
+        if attempts > 1:
+            return probe_entry(folder, entry, resolve, stat_fn, open_fn, attempts - 1)
+        return Excluded("Unreadable")
+    return Admitted(ProbedEntry(entry=entry, resolved=resolved, identity=handle_identity))
+
+
+# ---- The plan (§9) ----------------------------------------------------------
+
+@dataclass(frozen=True)
+class AdmittedFile:
+    probed: ProbedEntry
+
+
+def build_archive_plan(
+    snapshot: ArchiveSnapshot,
+    probes: List[ProbeResult],
+    max_files_per_folder: int
+) -> ArchivePlan:
+    """Builds the plan. No I/O, no clock, no randomness."""
+    if len(probes) != len(snapshot.entries):
+        raise ValueError("one probe result per snapshot entry is required")
+
+    excluded: List[ExcludedEntry] = [ExcludedEntry(name, "Vanished") for name in snapshot.unresolved]
+    specs: List[MemberSpec] = []
+    for entry, probe in zip(snapshot.entries, probes):
+        if isinstance(probe, Admitted):
+            identity = probe.probed.identity
+            specs.append(MemberSpec(entry.name, identity.size, dos_timestamp(identity.mtime_ns), AdmittedFile(probe.probed)))
+        else:
+            excluded.append(ExcludedEntry(entry.name, probe.cause))
+
+    taken = [spec.name for spec in specs]
+    if excluded:
+        manifest_name = first_free_name("_MISSING", taken)
+        specs.append(inline_member(manifest_name, missing_manifest(excluded)))
+        taken.append(manifest_name)
+    if snapshot.covers_full_listing and snapshot.index_truncated:
+        specs.append(inline_member(first_free_name("_TRUNCATED", taken), truncated_notice(max_files_per_folder)))
+
+    return lay_out(specs, excluded)
+
+
+# ---- Transport (Phase 30 §4.2) ----------------------------------------------
+
+class ArchiveReadItem:
+    pass
+
+
+@dataclass
+class MemberBegin(ArchiveReadItem):
+    index: int
+
+
+@dataclass
+class MemberChunk(ArchiveReadItem):
+    payload: bytes
+
+
+@dataclass
+class MemberEnd(ArchiveReadItem):
+    index: int
+
+
+class StreamFinished(ArchiveReadItem):
+    pass
+
+
+@dataclass
+class StreamAbandoned(ArchiveReadItem):
+    cause: AbandonCause
+
+
+@dataclass
+class SourceDiverged(ArchiveReadItem):
+    name: FileName
+    cause: DivergenceCause
+
+
+TERMINAL_ITEMS = (StreamFinished, StreamAbandoned, SourceDiverged)
+
+
 class ArchiveTransport:
     def __init__(self, data_credits: int, loop: asyncio.AbstractEventLoop):
-        self.items = asyncio.Queue()
+        self.items: asyncio.Queue = asyncio.Queue()
         self.data_credits = threading.Semaphore(data_credits)
         self.terminal_credit = threading.Semaphore(1)
         self.cancel_mirror = asyncio.Event()
         self.loop = loop
 
-def publish(transport: ArchiveTransport, item: ArchiveReadItem, cancel: threading.Event, poll_seconds: float) -> bool:
+
+PublishResult = Literal["Published", "Cancelled", "Stalled"]
+
+
+def publish(
+    transport: ArchiveTransport,
+    item: ArchiveReadItem,
+    cancel: threading.Event,
+    poll_seconds: float,
+    stall_seconds: float = float("inf")
+) -> PublishResult:
+    """Blocks the reader until a credit is free, then publishes without blocking.
+
+    Stalled when no credit came back within stall_seconds of this call: the
+    consumer has stopped taking (reader_stall_seconds, Phase 27 §3.3).
+    """
+    deadline = time.monotonic() + stall_seconds
     while True:
         if cancel.is_set():
-            return False
+            return "Cancelled"
         if transport.data_credits.acquire(timeout=poll_seconds):
             try:
                 transport.loop.call_soon_threadsafe(transport.items.put_nowait, item)
             except RuntimeError:
-                pass
-            return True
+                return "Cancelled"
+            return "Published"
+        if time.monotonic() >= deadline:
+            return "Stalled"
 
-def publish_terminal(transport: ArchiveTransport, item: Union[StreamFinished, StreamAbandoned]) -> None:
+
+def publish_terminal(transport: ArchiveTransport, item: ArchiveReadItem) -> None:
     if transport.terminal_credit.acquire(blocking=False):
         try:
             transport.loop.call_soon_threadsafe(transport.items.put_nowait, item)
         except RuntimeError:
             pass
 
-async def take(transport: ArchiveTransport) -> Union[ArchiveReadItem, None]:
-    take_task = asyncio.create_task(transport.items.get())
-    cancel_task = asyncio.create_task(transport.cancel_mirror.wait())
-    done, pending = await asyncio.wait([take_task, cancel_task], return_when=asyncio.FIRST_COMPLETED)
-    
-    if cancel_task in done:
-        take_task.cancel()
-        while not transport.items.empty():
-            transport.items.get_nowait()
+
+async def take(transport: ArchiveTransport) -> Optional[ArchiveReadItem]:
+    """Next item, or None once teardown began. Selects on the cancel mirror, so
+    a reader that publishes nothing never blocks the emitter past release."""
+    if transport.cancel_mirror.is_set():
         return None
-        
+    take_task = asyncio.ensure_future(transport.items.get())
+    cancel_task = asyncio.ensure_future(transport.cancel_mirror.wait())
+    try:
+        await asyncio.wait([take_task, cancel_task], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        cancel_task.cancel()
+        if not take_task.done():
+            take_task.cancel()
+    if not take_task.done() or take_task.cancelled():
+        return None
     item = take_task.result()
-    if not isinstance(item, (StreamFinished, StreamAbandoned)):
+    if transport.cancel_mirror.is_set():
+        return None
+    if not isinstance(item, TERMINAL_ITEMS):
         transport.data_credits.release()
     return item
+
 
 def signal_cancel(transport: ArchiveTransport) -> None:
     try:
         transport.loop.call_soon_threadsafe(transport.cancel_mirror.set)
     except RuntimeError:
         pass
+
+
+# ---- Permits ----------------------------------------------------------------
 
 class ArchivePermits:
     def __init__(self, capacity: int, reader_ceiling: int):
@@ -484,14 +715,21 @@ class ArchivePermits:
         self.live_readers = 0
         self.guard = threading.Lock()
 
+
 class SessionLease:
     def __init__(self, permits: ArchivePermits):
         self.permits = permits
         self.permit_returned = False
         self.reader_returned = False
 
-class PermitsExhausted(Exception): pass
-class ReaderBacklog(Exception): pass
+
+class PermitsExhausted(Exception):
+    pass
+
+
+class ReaderBacklog(Exception):
+    pass
+
 
 def try_admit(permits: ArchivePermits) -> SessionLease:
     with permits.guard:
@@ -503,285 +741,504 @@ def try_admit(permits: ArchivePermits) -> SessionLease:
         permits.live_readers += 1
         return SessionLease(permits)
 
+
 def return_permit(lease: SessionLease) -> None:
-    if not lease.permit_returned:
-        with lease.permits.guard:
+    with lease.permits.guard:
+        if not lease.permit_returned:
             lease.permits.in_use -= 1
-        lease.permit_returned = True
+            lease.permit_returned = True
+
 
 def return_reader_slot(lease: SessionLease) -> None:
-    if not lease.reader_returned:
-        with lease.permits.guard:
+    with lease.permits.guard:
+        if not lease.reader_returned:
             lease.permits.live_readers -= 1
-        lease.reader_returned = True
+            lease.reader_returned = True
+
+
+# ---- Session ----------------------------------------------------------------
 
 SessionOutcome = Literal[
-    "Completed", "FailedFraming", "AbandonedDisconnect", 
-    "AbandonedBudget", "AbandonedStall", "FailedStart", "TicketRefused"
+    "Completed", "AbandonedDisconnect", "AbandonedBudget", "AbandonedStall",
+    "FailedFraming", "TicketRefused", "FailedStart", "FolderNotFound",
+    "ListingUnavailable", "SourceChanged", "PreflightStalled"
 ]
 
+
 class ArchiveStreamSession:
-    def __init__(self, session_id: str, transport: ArchiveTransport, lease: SessionLease, snapshot: ArchiveSnapshot, token: str, date_folder: str, sub_folder: str):
+    def __init__(
+        self,
+        session_id: str,
+        transport: ArchiveTransport,
+        lease: SessionLease,
+        token: str,
+        date_folder: str,
+        sub_folder: SubFolder,
+        selection: List[FileName],
+        minted_loopback: bool,
+        settings: Settings
+    ):
         self.session_id = session_id
         self.transport = transport
         self.cancel = threading.Event()
         self.lease = lease
-        self.snapshot = snapshot
         self.token = token
         self.date_folder = date_folder
         self.sub_folder = sub_folder
-        self.reader = None
+        self.selection = selection
+        self.minted_loopback = minted_loopback
+        self.settings = settings
+        self.reader: Optional[threading.Thread] = None
+        self.snapshot: Optional[ArchiveSnapshot] = None
+        self.plan: Optional[ArchivePlan] = None
+        self.plan_outcome: Optional["PreflightResult"] = None
+        self.preflight_signal = asyncio.Event()
+        self.preflight_units = 0
+        self.preflight_ms: Optional[float] = None
+        self.divergence_cause: Optional[DivergenceCause] = None
         self.bytes_sent = 0
-        self.pending_outcome = None
-        self.budget_handle = None
+        self.outcome: Optional[SessionOutcome] = None
+        self.budget_handle: Optional[asyncio.TimerHandle] = None
         self.released = False
         self.guard = threading.Lock()
         self.start_time = time.monotonic()
 
+
+def record_outcome(session: ArchiveStreamSession, outcome: SessionOutcome) -> Literal["Recorded", "AlreadyRecorded"]:
+    """Records why the session ended. First writer wins (§4)."""
+    with session.guard:
+        if session.outcome is not None:
+            return "AlreadyRecorded"
+        session.outcome = outcome
+        return "Recorded"
+
+
+def _cancel_budget(session: ArchiveStreamSession) -> None:
+    handle = session.budget_handle
+    if handle is None:
+        return
+    try:
+        session.transport.loop.call_soon_threadsafe(handle.cancel)
+    except RuntimeError:
+        handle.cancel()
+
+
 def release(session: ArchiveStreamSession, outcome: SessionOutcome) -> None:
+    """Surrenders the permit, settles the ticket, disarms the budget, and records
+    the outcome. Idempotent, synchronous, and never awaits (Phase 30 §4.3)."""
+    record_outcome(session, outcome)
     with session.guard:
         if session.released:
             return
         session.released = True
-        
+    final_outcome = session.outcome
+
     session.cancel.set()
     signal_cancel(session.transport)
-    
-    if session.budget_handle:
-        session.budget_handle.cancel()
-        
+    _cancel_budget(session)
     return_permit(session.lease)
-    
+
     from .archive_tokens import settle_ticket
     settle_ticket(session.token, session.session_id, session.bytes_sent)
-    
+
+    plan = session.plan
+    snapshot = session.snapshot
+    if plan is not None:
+        entry_count = plan.file_member_count
+        missing_count = len(plan.excluded)
+    elif snapshot is not None:
+        entry_count = len(snapshot.entries)
+        missing_count = len(snapshot.unresolved)
+    else:
+        entry_count = 0
+        missing_count = 0
+
     duration_ms = (time.monotonic() - session.start_time) * 1000.0
-    import logging
-    logger = logging.getLogger("scheduler")
-    level = logging.INFO if outcome in ("Completed", "AbandonedDisconnect") else logging.WARNING
-    
-    snapshot_bytes = sum(e.size_bytes for e in session.snapshot.entries)
-    
-    logger.log(level, "ArchiveSessionRecord: session_id=%s date_folder=%s sub_folder=%s entry_count=%d unresolved_count=%d snapshot_bytes=%d bytes_sent=%d permits_in_use=%d live_readers=%d duration_ms=%.1f outcome=%s",
-        session.session_id, session.date_folder, session.sub_folder, len(session.snapshot.entries), len(session.snapshot.unresolved), snapshot_bytes, session.bytes_sent, session.lease.permits.in_use, session.lease.permits.live_readers, duration_ms, outcome
+    level = logging.INFO if final_outcome in ("Completed", "AbandonedDisconnect") else logging.WARNING
+    logging.getLogger("scheduler").log(
+        level,
+        "ArchiveSessionRecord: session_id=%s date_folder=%s sub_folder=%s entry_count=%d unresolved_count=%d "
+        "declared_bytes=%s bytes_sent=%d preflight_ms=%s excluded_count=%d divergence_cause=%s "
+        "permits_in_use=%d live_readers=%d duration_ms=%.1f outcome=%s",
+        session.session_id, session.date_folder, session.sub_folder, entry_count, missing_count,
+        plan.declared_bytes if plan is not None else None, session.bytes_sent,
+        f"{session.preflight_ms:.1f}" if session.preflight_ms is not None else None,
+        len(plan.excluded) if plan is not None else 0, session.divergence_cause,
+        session.lease.permits.in_use, session.lease.permits.live_readers, duration_ms, final_outcome
     )
 
-    from ..config import get_settings
     from .archive_status import record_status
-    
     record_status(
         token=session.token,
         state="Terminal",
-        outcome=outcome,
+        outcome=final_outcome,
         bytes_sent=session.bytes_sent,
-        entry_count=len(session.snapshot.entries),
-        unresolved_count=len(session.snapshot.unresolved),
-        minted_loopback=False, # We don't have minted_loopback here easily, but the status store already has it from 'Streaming' write! Wait.
-        settings=get_settings(),
-        clock=time.monotonic()
+        entry_count=entry_count,
+        unresolved_count=missing_count,
+        minted_loopback=session.minted_loopback,
+        settings=session.settings,
+        clock=time.monotonic
     )
 
-def classify_read_failure(cause: OSError) -> ReadFailure:
+
+# ---- Preflight on the reader (§6, §7) ---------------------------------------
+
+@dataclass(frozen=True)
+class PlanReady:
+    plan: ArchivePlan
+
+
+@dataclass(frozen=True)
+class PlanRefused:
+    reason: Literal["FolderNotFound", "ListingUnavailable"]
+    kind: str
+
+
+@dataclass(frozen=True)
+class PlanFailed:
+    pass
+
+
+@dataclass(frozen=True)
+class PlanStalled:
+    pass
+
+
+@dataclass(frozen=True)
+class PlanCancelled:
+    pass
+
+
+PreflightResult = Union[PlanReady, PlanRefused, PlanFailed]
+
+
+def _note_progress(session: ArchiveStreamSession) -> None:
+    session.preflight_units += 1
+    try:
+        session.transport.loop.call_soon_threadsafe(session.preflight_signal.set)
+    except RuntimeError:
+        pass
+
+
+def _publish_plan(session: ArchiveStreamSession, result: PreflightResult) -> bool:
+    if session.cancel.is_set():
+        return False
+    session.plan_outcome = result
+    try:
+        session.transport.loop.call_soon_threadsafe(session.preflight_signal.set)
+    except RuntimeError:
+        return False
+    return True
+
+
+def resolve_archive_folder(
+    date_folder: str,
+    sub_folder: SubFolder,
+    settings: Settings
+) -> Union[Tuple[Literal["ok"], PhotoFileIndex, Path], Tuple[Literal["err"], PlanRefused]]:
+    index = resolve_file_index(date_folder, sub_folder, settings, time.monotonic)
+    if index.status != PhotoFileListStatus.OK:
+        reason = "ListingUnavailable" if index.status in (PhotoFileListStatus.UNAVAILABLE, PhotoFileListStatus.UNCONFIGURED) else "FolderNotFound"
+        return "err", PlanRefused(reason, index.status.value)
+
+    folder_res = resolve_photo_folder_path(date_folder, settings)
+    if folder_res[0] == "err":
+        reason = "ListingUnavailable" if folder_res[1] in ("unavailable", "unconfigured") else "FolderNotFound"
+        return "err", PlanRefused(reason, "folder_not_found")
+
+    root = folder_res[1]
+    try:
+        resolved_root = root.resolve()
+        resolved_folder = resolved_root if sub_folder == ROOT else (root / sub_folder).resolve()
+        resolved_folder.relative_to(resolved_root)
+    except ValueError:
+        return "err", PlanRefused("FolderNotFound", "folder_not_found")
+    except OSError:
+        return "err", PlanRefused("ListingUnavailable", "unavailable")
+    return "ok", index, resolved_folder
+
+
+def run_preflight(session: ArchiveStreamSession) -> Optional[PreflightResult]:
+    """Resolves, snapshots, probes, and plans. None when cancelled part-way."""
+    settings = session.settings
+    if session.cancel.is_set():
+        return None
+    resolution = resolve_archive_folder(session.date_folder, session.sub_folder, settings)
+    _note_progress(session)
+    if resolution[0] == "err":
+        return resolution[1]
+    _, index, folder = resolution
+
+    snapshot = build_snapshot(session.selection, index)
+    session.snapshot = snapshot
+
+    probes: List[ProbeResult] = []
+    for entry in snapshot.entries:
+        if session.cancel.is_set():
+            return None
+        probes.append(probe_entry(folder, entry))
+        _note_progress(session)
+
+    plan = build_archive_plan(snapshot, probes, settings.shipping_photos_max_files_per_folder)
+    session.plan = plan
+    return PlanReady(plan)
+
+
+def archive_reader_main(session: ArchiveStreamSession) -> None:
+    """The reader thread: preflight, then stream. The only archive code that
+    touches the share. Returns its reader slot on every exit."""
+    started = time.monotonic()
+    try:
+        try:
+            result = run_preflight(session)
+        except Exception:
+            logger.exception("Archive preflight failed: session_id=%s", session.session_id)
+            result = PlanFailed()
+        session.preflight_ms = (time.monotonic() - started) * 1000.0
+        if result is None or not _publish_plan(session, result):
+            return
+        if isinstance(result, PlanReady):
+            try:
+                stream_admitted_members(session, result.plan)
+            except Exception:
+                logger.exception("Archive reader failed: session_id=%s", session.session_id)
+                publish_terminal(session.transport, StreamAbandoned("ConsumerStalled"))
+                release(session, "AbandonedStall")
+    finally:
+        return_reader_slot(session.lease)
+
+
+@dataclass(frozen=True)
+class PlanDisconnected:
+    pass
+
+
+async def _await_disconnect(receive: Callable[[], Any]) -> None:
+    while True:
+        message = await receive()
+        if message["type"] == "http.disconnect":
+            return
+
+
+async def await_plan(
+    session: ArchiveStreamSession,
+    receive: Callable[[], Any],
+    stall_seconds: float
+) -> Union[PlanReady, PlanRefused, PlanFailed, PlanStalled, PlanCancelled, PlanDisconnected]:
+    """Waits for the reader's plan, bounding the gap between units of progress.
+
+    Selects on the ASGI receive channel as well. With no response in progress a
+    pending receive resumes reading, so a client that leaves is observed within
+    one read (Phase 32 §7.3).
+    """
+    signal = session.preflight_signal
+    cancelled = session.transport.cancel_mirror
+    disconnect_task = asyncio.ensure_future(_await_disconnect(receive))
+    try:
+        while True:
+            if cancelled.is_set() or session.released:
+                return PlanCancelled()
+            if session.plan_outcome is not None:
+                return session.plan_outcome
+            if disconnect_task.done():
+                return PlanDisconnected()
+            signal.clear()
+            signal_task = asyncio.ensure_future(signal.wait())
+            cancel_task = asyncio.ensure_future(cancelled.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    [signal_task, cancel_task, disconnect_task],
+                    timeout=stall_seconds,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                signal_task.cancel()
+                cancel_task.cancel()
+            if not done:
+                if session.plan_outcome is not None:
+                    continue
+                return PlanStalled()
+    finally:
+        if not disconnect_task.done():
+            disconnect_task.cancel()
+            try:
+                await disconnect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+# ---- Streaming the plan (§10) -----------------------------------------------
+
+def _diverge(session: ArchiveStreamSession, name: FileName, cause: DivergenceCause) -> None:
+    invalidate_file_index((session.date_folder, session.sub_folder))
+    publish_terminal(session.transport, SourceDiverged(name, cause))
+
+
+def _abandon(session: ArchiveStreamSession, published: PublishResult) -> None:
+    if published == "Stalled":
+        publish_terminal(session.transport, StreamAbandoned("ConsumerStalled"))
+        release(session, "AbandonedStall")
+    else:
+        publish_terminal(session.transport, StreamAbandoned("SessionReleased"))
+
+
+def classify_read_failure(cause: OSError) -> Literal["Vanished", "Unreadable"]:
     if isinstance(cause, FileNotFoundError):
         return "Vanished"
     return "Unreadable"
 
-def archive_reader_loop(
-    session: ArchiveStreamSession,
-    folder_path: Path,
-    snapshot: ArchiveSnapshot,
-    settings: Settings
-) -> None:
-    try:
-        chunk_size = settings.shipping_photos_archive_read_chunk_bytes
-        poll_seconds = settings.shipping_photos_archive_credit_poll_seconds
-        
-        abandoned = False
-        
-        for name in snapshot.unresolved:
-            if not publish(session.transport, FileUnreadable(name, "Vanished", False), session.cancel, poll_seconds):
-                abandoned = True
-                break
-        
-        if not abandoned:
-            for entry in snapshot.entries:
-                if session.cancel.is_set():
-                    abandoned = True
-                    break
-                    
-                filepath = folder_path / entry.name
-                entry_was_open = False
-                try:
-                    with open(filepath, "rb") as f:
-                        entry_was_open = True
-                        if not publish(session.transport, FileOpened(entry), session.cancel, poll_seconds):
-                            abandoned = True
-                            break
-                            
-                        while True:
-                            if session.cancel.is_set():
-                                abandoned = True
-                                break
-                            chunk = f.read(chunk_size)
-                            if not chunk:
-                                break
-                            if not publish(session.transport, FileChunk(chunk), session.cancel, poll_seconds):
-                                abandoned = True
-                                break
-                                
-                        if abandoned:
-                            break
-                        if not publish(session.transport, FileFinished(entry), session.cancel, poll_seconds):
-                            abandoned = True
-                            break
-                except OSError as e:
-                    cause = classify_read_failure(e)
-                    if not publish(session.transport, FileUnreadable(entry.name, cause, entry_was_open), session.cancel, poll_seconds):
-                        abandoned = True
-                        break
-                        
-        if abandoned:
-            cause = "SessionReleased" if session.cancel.is_set() else "ConsumerStalled"
-            publish_terminal(session.transport, StreamAbandoned(cause))
-            if cause == "ConsumerStalled":
-                release(session, "AbandonedStall")
-            else:
-                release(session, "AbandonedDisconnect")
+
+def stream_admitted_members(session: ArchiveStreamSession, plan: ArchivePlan) -> None:
+    """Streams exactly the bytes the plan admitted, or reports that the source moved."""
+    settings = session.settings
+    chunk_bytes = settings.shipping_photos_archive_read_chunk_bytes
+    poll_seconds = settings.shipping_photos_archive_credit_poll_seconds
+    stall_seconds = settings.shipping_photos_archive_reader_stall_seconds
+
+    def send(item: ArchiveReadItem) -> PublishResult:
+        return publish(session.transport, item, session.cancel, poll_seconds, stall_seconds)
+
+    for index, member in enumerate(plan.members):
+        if not isinstance(member.source, AdmittedFile):
+            continue
+        if session.cancel.is_set():
+            _abandon(session, "Cancelled")
+            return
+        probed = member.source.probed
+        name = probed.entry.name
+        try:
+            with open(probed.resolved, "rb") as handle:
+                observed = identity_from_stat(os.fstat(handle.fileno()))
+                if not same_identity(probed.identity, observed):
+                    _diverge(session, name, divergence_between(probed.identity, observed))
+                    return
+                published = send(MemberBegin(index))
+                if published != "Published":
+                    _abandon(session, published)
+                    return
+                remaining = member.size
+                while remaining > 0:
+                    if session.cancel.is_set():
+                        _abandon(session, "Cancelled")
+                        return
+                    block = handle.read(min(chunk_bytes, remaining))
+                    if not block:
+                        _diverge(session, name, "Truncated")
+                        return
+                    remaining -= len(block)
+                    published = send(MemberChunk(block))
+                    if published != "Published":
+                        _abandon(session, published)
+                        return
+                if handle.read(1):
+                    _diverge(session, name, "Extended")
+                    return
+                published = send(MemberEnd(index))
+                if published != "Published":
+                    _abandon(session, published)
+                    return
+        except OSError as failure:
+            _diverge(session, name, classify_read_failure(failure))
+            return
+    publish_terminal(session.transport, StreamFinished())
+
+
+def _stop_on(session: ArchiveStreamSession, item: Optional[ArchiveReadItem]) -> None:
+    if item is None or isinstance(item, StreamAbandoned):
+        return
+    if isinstance(item, SourceDiverged):
+        session.divergence_cause = item.cause
+        record_outcome(session, "SourceChanged")
+        return
+    record_outcome(session, "FailedFraming")
+
+
+async def emit_archive(session: ArchiveStreamSession, plan: ArchivePlan) -> AsyncIterator[bytes]:
+    """Frames the plan onto the response. Touches no filesystem.
+
+    Records Completed only after the final frame's send has returned, and only
+    when every declared byte was sent.
+    """
+    crcs: List[int] = []
+    for index, member in enumerate(plan.members):
+        yield encode_record(LocalHeader(member))
+        if isinstance(member.source, InlineContent):
+            if member.source.content:
+                yield member.source.content
+            crc = member.source.crc
         else:
-            publish_terminal(session.transport, StreamFinished())
-    finally:
-        return_reader_slot(session.lease)
-
-async def stream_photo_archive(
-    date_folder: str,
-    sub_folder: SubFolder,
-    snapshot: ArchiveSnapshot,
-    settings: Settings,
-    session: ArchiveStreamSession
-) -> AsyncIterator[bytes]:
-    
-    class FileLikeGenerator:
-        def __init__(self):
-            self.chunks = []
-            self.offset = 0
-        def write(self, data: bytes):
-            self.chunks.append(data)
-            self.offset += len(data)
-            return len(data)
-        def tell(self):
-            return self.offset
-        def flush(self):
-            pass
-        def get_chunks(self) -> list[bytes]:
-            c = self.chunks
-            self.chunks = []
-            return c
-
-    buffer = FileLikeGenerator()
-    missing_files_vanished = []
-    missing_files_unreadable = []
-    
-    try:
-        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
-            z_out = None
+            item = await take(session.transport)
+            if not (isinstance(item, MemberBegin) and item.index == index):
+                _stop_on(session, item)
+                return
+            crc = 0
+            payload_count = 0
             while True:
                 item = await take(session.transport)
-                if item is None:
-                    if z_out is not None:
-                        z_out.close()
-                        z_out = None
+                if isinstance(item, MemberChunk):
+                    payload_count += len(item.payload)
+                    if payload_count > member.size:
+                        record_outcome(session, "FailedFraming")
+                        return
+                    crc = zlib.crc32(item.payload, crc)
+                    yield item.payload
+                    continue
+                if isinstance(item, MemberEnd) and item.index == index:
                     break
-                    
-                if isinstance(item, FileOpened):
-                    if z_out is not None:
-                        z_out.close()
-                    entry = item.entry
-                    zinfo = zipfile.ZipInfo(filename=entry.name)
-                    zinfo.file_size = entry.size_bytes
-                    _mt = time.localtime(entry.mtime_ns / 1e9)[:6]
-                    zinfo.date_time = _mt if _mt[0] >= 1980 else (1980, 1, 1, 0, 0, 0)
-                    z_out = zf.open(zinfo, mode="w")
-                elif isinstance(item, FileChunk):
-                    z_out.write(item.payload)
-                    chunks = buffer.get_chunks()
-                    if chunks:
-                        for chunk in chunks:
-                            yield chunk
-                            session.bytes_sent += len(chunk)
-                elif isinstance(item, FileFinished):
-                    z_out.close()
-                    z_out = None
-                    chunks = buffer.get_chunks()
-                    if chunks:
-                        for chunk in chunks:
-                            yield chunk
-                            session.bytes_sent += len(chunk)
-                elif isinstance(item, FileUnreadable):
-                    if item.entry_was_open and z_out is not None:
-                        z_out.close()
-                        z_out = None
-                    if item.cause == "Vanished":
-                        missing_files_vanished.append(item.name)
-                    else:
-                        missing_files_unreadable.append(item.name)
-                elif isinstance(item, StreamFinished):
-                    session.pending_outcome = "Completed"
-                    break
-                elif isinstance(item, StreamAbandoned):
-                    if z_out is not None:
-                        z_out.close()
-                        z_out = None
-                    session.pending_outcome = item.cause
-                    break
-            
-            target_names = [e.name for e in snapshot.entries] + snapshot.unresolved
-            if missing_files_vanished or missing_files_unreadable:
-                zinfo = zipfile.ZipInfo(filename="_MISSING.txt")
-                missing_name = "_MISSING.txt"
-                if missing_name in target_names:
-                    missing_name = f"_MISSING_{time.time_ns()}.txt"
-                    zinfo.filename = missing_name
-                
-                lines = ["The following files are missing or incomplete in this archive:"]
-                for n in missing_files_vanished:
-                    lines.append(f"  {n} — moved or deleted before the archive was built")
-                for n in missing_files_unreadable:
-                    lines.append(f"  {n} — could not be read from the photos folder")
-                    
-                zf.writestr(zinfo, "\\n".join(lines))
-                chunks = buffer.get_chunks()
-                if chunks:
-                    for chunk in chunks:
-                        yield chunk
-                        session.bytes_sent += len(chunk)
-                        
-            if snapshot.covers_full_listing and snapshot.index_truncated:
-                zinfo = zipfile.ZipInfo(filename="_TRUNCATED.txt")
-                trunc_name = "_TRUNCATED.txt"
-                if trunc_name in target_names:
-                    trunc_name = f"_TRUNCATED_{time.time_ns()}.txt"
-                    zinfo.filename = trunc_name
-                
-                content = f"Listing was truncated to {settings.shipping_photos_max_files_per_folder} files."
-                zf.writestr(zinfo, content)
-                chunks = buffer.get_chunks()
-                if chunks:
-                    for chunk in chunks:
-                        yield chunk
-                        session.bytes_sent += len(chunk)
-                        
-        chunks = buffer.get_chunks()
-        if chunks:
-            if session.pending_outcome == "Completed":
-                for chunk in chunks:
-                    yield chunk
-                    session.bytes_sent += len(chunk)
-            
-    except Exception:
-        session.pending_outcome = "FailedFraming"
-    finally:
-        outcome = session.pending_outcome or "AbandonedDisconnect"
-        if outcome == "ConsumerStalled": outcome = "AbandonedStall"
-        elif outcome == "SessionReleased": outcome = "AbandonedDisconnect"
-            
-        release(session, outcome)
+                _stop_on(session, item)
+                return
+            if payload_count != member.size:
+                record_outcome(session, "FailedFraming")
+                return
+        crcs.append(crc)
+        yield encode_record(DataDescriptor(member, crc))
+
+    directory = bytearray()
+    for member, crc in zip(plan.members, crcs):
+        directory += encode_record(CentralHeader(member, crc))
+    for record in end_records(plan):
+        directory += encode_record(record)
+    for start in range(0, len(directory), DIRECTORY_FRAME_BYTES):
+        yield bytes(directory[start:start + DIRECTORY_FRAME_BYTES])
+
+    if session.bytes_sent == plan.declared_bytes:
+        record_outcome(session, "Completed")
+    else:
+        record_outcome(session, "FailedFraming")
+
+
+# ---- The response seam (§3) -------------------------------------------------
+
+AsgiSend = Callable[[dict], Any]
+
+
+async def send_frame(
+    session: ArchiveStreamSession,
+    send: AsgiSend,
+    frame: bytes,
+    stall_seconds: float
+) -> Literal["Sent", "Refused", "Stalled"]:
+    """Hands one frame to the transport only if it fits inside the declared length."""
+    if session.plan is None or session.bytes_sent + len(frame) > session.plan.declared_bytes:
+        record_outcome(session, "FailedFraming")
+        return "Refused"
+    with anyio.move_on_after(stall_seconds) as scope:
+        await send({"type": "http.response.body", "body": frame, "more_body": True})
+    if scope.cancel_called:
+        record_outcome(session, "AbandonedDisconnect")
+        return "Stalled"
+    session.bytes_sent += len(frame)
+    return "Sent"
+
+
+async def finish_response(
+    session: ArchiveStreamSession,
+    send: AsgiSend,
+    stall_seconds: float
+) -> Literal["Finished", "Withheld"]:
+    """Sends the terminal body message if and only if the archive is whole."""
+    if session.outcome != "Completed" or session.plan is None or session.bytes_sent != session.plan.declared_bytes:
+        return "Withheld"
+    with anyio.move_on_after(stall_seconds):
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+    return "Finished"

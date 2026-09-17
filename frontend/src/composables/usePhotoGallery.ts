@@ -1,5 +1,11 @@
 import { ref, readonly } from 'vue';
-import { fetchPhotoFiles, requestArchiveTicket, archiveDownloadUrl, type PhotoFileEntry } from '../api/photos';
+import {
+    fetchPhotoFiles, requestArchiveTicket, archiveDownloadUrl, fetchArchiveStatus,
+    type PhotoFileEntry, type ArchiveStatusOutcome, type ArchiveTicketOutcome
+} from '../api/photos';
+import { isServerFailureReason, type DownloadProgress, type FailureReason } from './archiveProgress';
+
+export type { DownloadProgress } from './archiveProgress';
 
 export type GalleryState =
     | { state: 'closed' }
@@ -27,8 +33,28 @@ function handOffToBrowser(url: string) {
     frame.src = url;
 }
 
+// Phase 31 §6.3: 1 s for the first 15 s after hand-off, then 10 s, capped at the
+// server's session budget. The switch is on elapsed time, not on observed state.
+export const FAST_POLL_WINDOW_SECONDS = 15;
+export const FAST_POLL_MS = 1000;
+export const SLOW_POLL_MS = 10000;
+export const POLL_BUDGET_SECONDS = 1800;
+
 const state = ref<GalleryState>({ state: 'closed' });
 let requestSeq: number = 0;
+
+const downloadProgress = ref<DownloadProgress>({ kind: 'Idle' });
+let downloadPollSeq = 0;
+let activeDownloadPoll: AbortController | null = null;
+
+function mintFailureReason(outcome: Exclude<ArchiveTicketOutcome, { kind: 'ok' }>): FailureReason {
+    switch (outcome.kind) {
+        case 'lan_cap_exceeded': return 'LanCapExceeded';
+        case 'busy': return 'PermitsExhausted';
+        case 'not_found': return 'FolderNotFound';
+        case 'network': return 'NetworkError';
+    }
+}
 
 export function usePhotoGallery() {
     const loadFolder = async (date_folder: string, sub_folder: string) => {
@@ -36,11 +62,11 @@ export function usePhotoGallery() {
         const currentSeq = requestSeq;
         state.value = { state: 'loading', date_folder, sub_folder, seq: currentSeq };
         const outcome = await fetchPhotoFiles(date_folder, sub_folder);
-        
+
         if (state.value.state !== 'loading' || state.value.seq !== currentSeq) {
             return; // superseded
         }
-        
+
         if (outcome.kind === 'ok') {
             if (outcome.status === 'ok') {
                 state.value = {
@@ -72,7 +98,7 @@ export function usePhotoGallery() {
     };
 
     const openGallery = (date_folder: string) => loadFolder(date_folder, "");
-    
+
     const navigateTo = (folder_name: string) => {
         if (state.value.state !== 'ready' || state.value.sub_folder !== "") return;
         loadFolder(state.value.date_folder, folder_name);
@@ -82,11 +108,11 @@ export function usePhotoGallery() {
         if (state.value.state !== 'ready') return;
         loadFolder(state.value.date_folder, "");
     };
-    
+
     const closeGallery = () => {
         state.value = { state: 'closed' };
     };
-    
+
     const toggleSelection = (filename: string) => {
         if (state.value.state !== 'ready') return;
         const s = new Set(state.value.selection);
@@ -97,7 +123,7 @@ export function usePhotoGallery() {
         }
         state.value = { ...state.value, selection: s };
     };
-    
+
     const selectAll = () => {
         if (state.value.state !== 'ready') return;
         state.value = {
@@ -105,115 +131,95 @@ export function usePhotoGallery() {
             selection: new Set(state.value.entries.map(e => e.name))
         };
     };
-    
+
     const clearSelection = () => {
         if (state.value.state !== 'ready') return;
         state.value = { ...state.value, selection: new Set() };
     };
-    
-    type FailureReason = string; // Will hold terminal reasons or 'PollAbandoned'
-    
-    type DownloadProgress =
-        | { kind: 'Idle' }
-        | { kind: 'Minting' }
-        | { kind: 'HandedOff', filename: string }
-        | { kind: 'Failed', reason: FailureReason, filename: string | null }
-        | { kind: 'Succeeded', filename: string, bytes: number, entries: number, unresolved: number };
 
-    const downloadProgress = ref<DownloadProgress>({ kind: 'Idle' });
-    let downloadPollSeq = 0;
-
+    // Mints, hands off, then polls the status endpoint until a terminal state.
+    // Exactly one terminal transition per invocation; a second invocation
+    // aborts the first poll's in-flight request and silences it (Phase 31 §6.4).
     const downloadSelection = async (): Promise<void> => {
         if (state.value.state !== 'ready') return;
-        
+
         downloadPollSeq += 1;
         const currentSeq = downloadPollSeq;
-        let abortController = new AbortController();
-        
-        // Expose abort mechanism if needed, but supersession handles it
-        // We actually want to store abortController so we can abort previous poll
-        // Let's use a module-level variable for it
-        if ((window as any)._activeDownloadPoll) {
-            (window as any)._activeDownloadPoll.abort();
-        }
-        (window as any)._activeDownloadPoll = abortController;
+        activeDownloadPoll?.abort();
+        const abortController = new AbortController();
+        activeDownloadPoll = abortController;
 
         const selection = Array.from(state.value.selection);
         const date_folder = state.value.date_folder;
         const sub_folder = state.value.sub_folder;
-        
+
         downloadProgress.value = { kind: 'Minting' };
         const outcome = await requestArchiveTicket(date_folder, sub_folder, selection);
-        
+
         if (downloadPollSeq !== currentSeq) return;
 
         if (outcome.kind !== 'ok') {
-            let reason = 'FailedStart';
-            if (outcome.kind === 'lan_cap_exceeded' || outcome.kind === 'busy') {
-                reason = 'PermitsExhausted';
-            } else if (outcome.kind === 'not_found') {
-                reason = 'FolderNotFound';
-            }
-            downloadProgress.value = { kind: 'Failed', reason, filename: null };
+            downloadProgress.value = { kind: 'Failed', reason: mintFailureReason(outcome), filename: null };
             return;
         }
 
         const filename = outcome.filename;
         const token = outcome.token;
         handOffToBrowser(archiveDownloadUrl(token));
-        downloadProgress.value = { kind: 'HandedOff', filename };
+        downloadProgress.value = { kind: 'Preparing', filename };
 
         const startTime = performance.now();
-        const budgetSeconds = 1800; // Same as backend budget
-        
+
         while (true) {
             if (downloadPollSeq !== currentSeq) return;
-            
+
             const elapsedSeconds = (performance.now() - startTime) / 1000;
-            if (elapsedSeconds > budgetSeconds) {
-                downloadProgress.value = { kind: 'Failed', reason: 'PollAbandoned', filename };
+            if (elapsedSeconds > POLL_BUDGET_SECONDS) {
+                downloadProgress.value = { kind: 'Failed', reason: 'PollAbandoned', lost: 'GaveUp', filename };
                 return;
             }
-            
-            const cadenceMs = elapsedSeconds <= 15 ? 1000 : 10000;
-            await new Promise(r => setTimeout(r, cadenceMs));
-            
+
+            const cadenceMs = elapsedSeconds < FAST_POLL_WINDOW_SECONDS ? FAST_POLL_MS : SLOW_POLL_MS;
+            await new Promise(resolve => setTimeout(resolve, cadenceMs));
+
             if (downloadPollSeq !== currentSeq) return;
-            
+
+            let status: ArchiveStatusOutcome;
             try {
-                const { fetchArchiveStatus } = await import('../api/photos');
-                const status = await fetchArchiveStatus(token, abortController.signal);
-                
-                if (downloadPollSeq !== currentSeq) return;
-                
-                if (status.state === 'Terminal') {
-                    if (status.outcome === 'Completed') {
-                        downloadProgress.value = {
-                            kind: 'Succeeded',
-                            filename,
-                            bytes: status.bytes_sent,
-                            entries: status.entry_count,
-                            unresolved: status.unresolved_count
-                        };
-                    } else {
-                        downloadProgress.value = { kind: 'Failed', reason: status.outcome, filename };
-                    }
-                    return;
-                } else if (status.state === 'Unknown' && elapsedSeconds > 15) {
-                    downloadProgress.value = { kind: 'Failed', reason: 'PollAbandoned', filename };
-                    return;
+                status = await fetchArchiveStatus(token, abortController.signal);
+            } catch {
+                return;
+            }
+
+            if (downloadPollSeq !== currentSeq) return;
+
+            if (status.state === 'Terminal') {
+                if (status.outcome === 'Completed') {
+                    downloadProgress.value = {
+                        kind: 'Succeeded',
+                        filename,
+                        bytes: status.bytes_sent,
+                        entries: status.entry_count,
+                        missing: status.unresolved_count
+                    };
+                } else if (isServerFailureReason(status.outcome)) {
+                    downloadProgress.value = { kind: 'Failed', reason: status.outcome, filename };
+                } else {
+                    downloadProgress.value = { kind: 'Failed', reason: 'PollAbandoned', lost: 'Unknown', filename };
                 }
-                // Pending, Streaming, or Unknown within fast window: keep polling
-            } catch (e: any) {
-                if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') {
-                    return; // Superseded
-                }
-                // Log and keep polling on network error? Or abort?
-                // Let's keep polling, network might recover
+                return;
+            }
+
+            const polledAtSeconds = (performance.now() - startTime) / 1000;
+            if (status.state === 'Streaming') {
+                downloadProgress.value = { kind: 'Downloading', filename };
+            } else if (status.state === 'Unknown' && polledAtSeconds >= FAST_POLL_WINDOW_SECONDS) {
+                downloadProgress.value = { kind: 'Failed', reason: 'PollAbandoned', lost: 'Unknown', filename };
+                return;
             }
         }
     };
-    
+
     return {
         state: readonly(state),
         downloadProgress: readonly(downloadProgress),

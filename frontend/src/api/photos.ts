@@ -145,7 +145,7 @@ export function archiveDownloadUrl(token: string): string {
 }
 
 export type ArchiveStatusOutcome =
-    | { state: 'Pending' | 'Streaming' | 'Unknown' | 'ScopeViolation' }
+    | { state: 'Pending' | 'Preparing' | 'Streaming' | 'Unknown' | 'ScopeViolation' }
     | { state: 'Terminal'; outcome: string; bytes_sent: number; entry_count: number; unresolved_count: number }
     | { state: 'NetworkError'; message: string };
 

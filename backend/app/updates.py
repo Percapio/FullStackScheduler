@@ -56,7 +56,9 @@ class EventPublisher:
                 logger.warning(f"WebSocket publish queue full; dropping {event.type} event. (Dropped {self._dropped_consecutive} consecutive)")
             return DroppedQueueFull(event_type=event.type, consecutive=self._dropped_consecutive)
 
-@dataclass
+# eq=False keeps identity hashing: the hub holds connections in a set, and a
+# default dataclass sets __hash__ to None. Two sockets are never "equal" by value.
+@dataclass(eq=False)
 class WebSocketConnection:
     socket: WebSocket
     client_id: Optional[ClientId]

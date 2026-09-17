@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, watch, ref } from 'vue'
 import { usePhotoGallery } from '@/composables/usePhotoGallery'
+import { progressMessage as describeProgress } from '@/composables/archiveProgress'
 
 const props = defineProps<{
   gallery: ReturnType<typeof usePhotoGallery>
@@ -52,47 +53,7 @@ async function onDownload() {
   await props.gallery.downloadSelection()
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
-}
-
-const progressMessage = computed(() => {
-  const p = downloadProgress.value;
-  if (p.kind === 'Idle') return null;
-  if (p.kind === 'Minting') return { type: 'info', text: 'Preparing...' };
-  if (p.kind === 'HandedOff') return { type: 'info', text: 'Download started — check your browser\'s downloads.' };
-  
-  if (p.kind === 'Failed') {
-    const r = p.reason;
-    let text = r;
-    if (r === 'PermitsExhausted' || r === 'ReaderBacklog') text = 'Another download is in progress. Try again in a few seconds.';
-    else if (r === 'TokenExpired' || r === 'TicketRefused') text = 'The download link expired. Select the photos again.';
-    else if (r === 'TokenSpent') text = 'That download has already been used. Select the photos again.';
-    else if (r === 'TokenScope') text = 'This download can only be started from the machine that created it.';
-    else if (r === 'FolderNotFound' || r === 'ListingUnavailable') text = 'The photo folder is no longer available.';
-    else if (r === 'FailedStart') text = 'The server could not start the download. Nothing was saved.';
-    else if (r === 'AbandonedDisconnect') text = 'The download was interrupted. The saved file is incomplete.';
-    else if (r === 'AbandonedBudget') text = 'The download took too long and was stopped. The saved file is incomplete.';
-    else if (r === 'AbandonedStall' || r === 'FailedFraming') text = 'The download failed on the server. The saved file is incomplete.';
-    else if (r === 'PollUnknown') text = 'The download was started but its result is not known. Check your Downloads folder.';
-    else if (r === 'PollAbandoned') text = 'The download is still running or the server stopped responding. Check your Downloads folder.';
-    return { type: 'error', text };
-  }
-  
-  if (p.kind === 'Succeeded') {
-      if (p.unresolved === 0) {
-          return { type: 'success', text: `Saved. (${formatBytes(p.bytes)})` };
-      } else {
-          return { type: 'success', text: `Saved, but ${p.unresolved} files could not be read. The archive lists them in _MISSING.` };
-      }
-  }
-  
-  return null;
-})
+const progressMessage = computed(() => describeProgress(downloadProgress.value))
 
 
 

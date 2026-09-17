@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     shipping_photos_archive_status_grace_seconds: float = 300.0
     shipping_photos_archive_status_max: int = 64
 
+    # Phase 32 — Preflight and declared length
+    shipping_photos_archive_preflight_stall_seconds: float = 30.0
+
     # Phase 27 — Auto-copy
     shipping_photos_auto_copy_tick_seconds: float = 60.0
     shipping_photos_auto_copy_lookback_days: int = 7
