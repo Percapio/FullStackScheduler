@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from datetime import datetime, tzinfo
 
 from fastapi import Depends, Query, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -26,6 +27,14 @@ def get_session() -> Iterator[Session]:
         yield s
     finally:
         s.close()
+
+
+def get_wall_clock() -> Callable[[tzinfo], datetime]:
+    """Return the clock used for server-chosen download filenames.
+
+    A dependency so tests can pin the time: datetime.now takes the zone.
+    """
+    return datetime.now
 
 
 def get_session_factory() -> Callable[[], Session]:

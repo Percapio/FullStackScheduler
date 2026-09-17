@@ -2,7 +2,13 @@ import os
 import sys
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Excel refuses row heights above this. A property of the file format, not a setting.
+EXCEL_ROW_HEIGHT_MAX_POINTS: float = 409.0
 
 def _runtime_root() -> Path:
     # Frozen: folder containing the .exe (writable, persistent).
@@ -10,6 +16,23 @@ def _runtime_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
+
+
+def bundled_resource_path(resource_name: str) -> Path:
+    """Absolute path of a bundled, read-only resource.
+
+    Pre:    resource_name is a bare file name with no path separators. Callers pass
+            a compile-time constant; no request data reaches this function.
+    Post:   <sys._MEIPASS>/backend/app/resources/<resource_name> in a frozen build,
+            <repo>/backend/app/resources/<resource_name> otherwise. Existence is not
+            checked. Scheduler.spec bundles the directory at the same relative path,
+            so dev and frozen layouts agree.
+    Raises: never.
+    """
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+        return bundle_root / "backend" / "app" / "resources" / resource_name
+    return Path(__file__).resolve().parent / "resources" / resource_name
 
 def _default_database_url() -> str:
     if getattr(sys, "frozen", False):
@@ -112,8 +135,34 @@ class Settings(BaseSettings):
     ws_send_timeout_seconds: float = 5.0
     ws_heartbeat_seconds: float = 30.0
     ws_drain_restart_backoff_seconds: float = 10.0
-    
+
+    # Phase 33 — Shipping log. The two the client needs (max jobs, template
+    # readiness) are echoed on the candidates response, never copied client-side.
+    shipping_log_candidate_max: int = Field(default=500, ge=1)       # = MAX_PAGE_ROWS
+    shipping_log_max_jobs: int = Field(default=200, ge=1)
+    shipping_log_box_gap_rows: int = Field(default=1, ge=0)
+    # Landscape Letter (612 pt) minus the template's 0.75 in top and bottom margins.
+    shipping_log_page_body_points: float = Field(default=504.0, gt=0)
+    shipping_log_notes_chars_per_line: int = Field(default=90, ge=1)  # Calibri 11 in a 67.7-wide column
+    shipping_log_notes_line_points: float = Field(default=15.0, gt=0)
+    shipping_log_notes_row_max_points: float = Field(
+        default=EXCEL_ROW_HEIGHT_MAX_POINTS, gt=0, le=EXCEL_ROW_HEIGHT_MAX_POINTS
+    )
+    # Zone for server-chosen download filenames (CSV export, shipping log).
+    display_timezone: str = "America/Los_Angeles"
+
     model_config = SettingsConfigDict(env_prefix="SCHEDULER_", env_file=".env", extra="ignore")
+
+    @field_validator("display_timezone")
+    @classmethod
+    def _require_known_zone(cls, value: str) -> str:
+        # Fail at construction (startup), not on the first export that formats a filename.
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+            # OSError: a key naming a tzdata directory ("America") or an over-long path.
+            raise ValueError(f"display_timezone is not a known IANA zone: {value!r}") from exc
+        return value
 
     def model_post_init(self, __ctx) -> None:
         if not self.database_url:

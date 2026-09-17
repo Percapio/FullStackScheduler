@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import { fetchAvailableDates, openPhotoFolder, type PhotoDirectoryStatus, type PhotoOpenOutcome } from '../api/photos';
+import { fetchAvailableDates, type PhotoDirectoryStatus } from '../api/photos';
 
 export function usePhotos() {
     const directoryStatus = ref<PhotoDirectoryStatus | 'unknown'>('unknown');
@@ -34,24 +34,11 @@ export function usePhotos() {
         lastFetchFailed.value = false;
     }
 
-    async function openPhotos(date_folder: string): Promise<PhotoOpenOutcome> {
-        const result = await openPhotoFolder(date_folder);
-        
-        if (result.kind === 'not_found') {
-            folders.value = folders.value.filter(f => f !== date_folder);
-        } else if (result.kind === 'unconfigured' || result.kind === 'unavailable') {
-            directoryStatus.value = result.kind;
-        }
-        
-        return result;
-    }
-
     return {
         directoryStatus,
         folders,
         lastFetchFailed,
         loadPhotoIndex,
-        resetPhotoState,
-        openPhotos
+        resetPhotoState
     };
 }

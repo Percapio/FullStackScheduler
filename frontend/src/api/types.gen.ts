@@ -523,6 +523,11 @@ export interface paths {
         /**
          * Set Canonical
          * @description Apply a canonical part_number override to all non-deleted rows in a group.
+         *
+         *     Operator-authored split suffixes (source 'operator') are preserved; every
+         *     other row's suffix is recomputed from its cell text and marked 'computed'.
+         *     Every row's suffix is computed and validated before any row is mutated, so a
+         *     422 leaves the whole group untouched.
          */
         put: operations["set_canonical_api_ingest__batch_id__canonical__parsed_part_number__put"];
         post?: never;
@@ -542,12 +547,28 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Revert Split Suffix
+         * @description Discard an operator-authored split suffix and return the row to computed provenance.
+         *
+         *     The suffix is recomputed from the cell text and the row's current part-number
+         *     override, which is left unchanged.  Idempotent: a row without an operator
+         *     suffix (source 'computed' or null) is returned unchanged with 200.  The
+         *     recomputed suffix is validated here because PUT /canonical skips suffix
+         *     computation for operator rows, so this pairing may never have been checked.
+         */
+        delete: operations["revert_split_suffix_api_ingest__batch_id__staging_row__row_id__split_suffix_delete"];
         options?: never;
         head?: never;
         /**
          * Patch Split Suffix
-         * @description Override the split_suffix on a specific staging row.
+         * @description Set an operator-authored split suffix on one row.
+         *
+         *     When the row has no part-number override, it is seeded from the parsed part
+         *     number in the same commit (effective_decomposition honours a suffix override
+         *     only alongside a part-number override).  A null or blank split_suffix means
+         *     "this row explicitly has no suffix", not "undo my suffix" — that is
+         *     DELETE /split-suffix.
          */
         patch: operations["patch_split_suffix_api_ingest__batch_id__staging_row__row_id__split_suffix_patch"];
         trace?: never;
@@ -604,6 +625,12 @@ export interface paths {
         /**
          * Confirm Review
          * @description Run Stage 4..6 against the surviving staging rows and finalize the batch.
+         *
+         *     Refuses with 409 while any 'pending' row remains, and with a structured 409
+         *     (code 'identity_collision') while any two surviving rows share an effective
+         *     identity — confirming then would let Stage 5 overwrite one row's Job with
+         *     another's.  On either refusal nothing is written and the batch stays
+         *     awaiting_review.
          */
         post: operations["confirm_review_api_ingest__batch_id__confirm_post"];
         delete?: never;
@@ -669,6 +696,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/photos/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Files */
+        get: operations["list_files_api_photos_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/photos/file/{filename}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get File */
+        get: operations["get_file_api_photos_file__filename__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/photos/thumb/{filename}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Thumb */
+        get: operations["get_thumb_api_photos_thumb__filename__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/photos/archive-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Archive Token */
+        post: operations["create_archive_token_api_photos_archive_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/photos/archive-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Archive Status */
+        get: operations["get_archive_status_api_photos_archive_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/photos/archive-download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Archive */
+        get: operations["download_archive_api_photos_archive_download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/photos-dir": {
         parameters: {
             query?: never;
@@ -704,10 +833,113 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/auto-copy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Auto Copy */
+        get: operations["get_auto_copy_api_settings_auto_copy_get"];
+        /** Put Auto Copy */
+        put: operations["put_auto_copy_api_settings_auto_copy_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/auto-copy/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Auto Copy */
+        post: operations["run_auto_copy_api_settings_auto_copy_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/shipping-log/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Shipping Log Candidates
+         * @description List the planned jobs a shipping log may be generated from.
+         *
+         *     The population is the Shipping view's, in its order, capped at
+         *     shipping_log_candidate_max with the cap reported through `truncated`.
+         *     No authorization gate: GET /api/jobs/shipping already serves the same data
+         *     to LAN clients.
+         */
+        get: operations["list_shipping_log_candidates_api_shipping_log_candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/shipping-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Shipping Log
+         * @description Generate a shipping log workbook for the selected planned jobs.
+         *
+         *     Read-only: no job state changes. All-or-nothing: any ineligible ID fails the
+         *     whole request with every offending ID listed. A sync handler on purpose:
+         *     openpyxl is CPU-bound and runs in the threadpool, off the event loop.
+         *
+         *     200 the .xlsx.
+         *     409 { kind: "ineligible_jobs", jobs: [{ job_id, reason }] }.
+         *     422 { kind: "selection_size", requested, max }, or FastAPI's default body.
+         *     500 { kind: "internal" }; logged with job count and template SHA-256 only.
+         *     503 { kind: "template_unavailable" }; the reason is in the startup log only,
+         *         because it can contain filesystem paths.
+         */
+        post: operations["create_shipping_log_api_shipping_log_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ArchiveRequest */
+        ArchiveRequest: {
+            /** Date Folder */
+            date_folder: string;
+            /**
+             * Sub Folder
+             * @default
+             */
+            sub_folder: string;
+            /** Selection */
+            selection?: string[];
+        };
         /** AssemblyRead */
         AssemblyRead: {
             /** Part Number */
@@ -808,6 +1040,46 @@ export interface components {
             quantity_needed?: string | null;
             /** Quantity On Hand */
             quantity_on_hand?: string | null;
+        };
+        /** AutoCopyRead */
+        AutoCopyRead: {
+            /** Enabled */
+            enabled: boolean;
+            /** Source */
+            source: string | null;
+            /** Source Configured */
+            source_configured: boolean;
+            /** Scheduled Time */
+            scheduled_time: string | null;
+            /** Editable */
+            editable: boolean;
+            /** Running */
+            running: boolean;
+            /** Run Started At */
+            run_started_at: string | null;
+            /** Last Run Finished At */
+            last_run_finished_at: string | null;
+            /** Last Run Outcome */
+            last_run_outcome: string | null;
+            /** Last Run Files Copied */
+            last_run_files_copied: number;
+            /** Last Run Files Failed */
+            last_run_files_failed: number;
+            /** Last Run Dates Skipped */
+            last_run_dates_skipped: string[];
+            /** Last Completed Date */
+            last_completed_date: string | null;
+            /** Last Error Kind */
+            last_error_kind: string;
+        };
+        /** AutoCopyWrite */
+        AutoCopyWrite: {
+            /** Enabled */
+            enabled: boolean;
+            /** Source */
+            source: string;
+            /** Scheduled Time */
+            scheduled_time: string;
         };
         /** Body_ingest_upload_api_ingest_post */
         Body_ingest_upload_api_ingest_post: {
@@ -1193,6 +1465,35 @@ export interface components {
          * @enum {string}
          */
         JobStatus: "planned" | "shipped";
+        /** PhotoFileEntryRead */
+        PhotoFileEntryRead: {
+            /** Name */
+            name: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Mtime Ns */
+            mtime_ns: number;
+            /** Version */
+            version: string;
+            /** Previewable */
+            previewable: boolean;
+        };
+        /** PhotoFileListRead */
+        PhotoFileListRead: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "unconfigured" | "unavailable" | "not_found" | "ok";
+            /** Folders */
+            folders: string[];
+            /** Entries */
+            entries: components["schemas"]["PhotoFileEntryRead"][];
+            /** Truncated */
+            truncated: boolean;
+            /** Folders Truncated */
+            folders_truncated: boolean;
+        };
         /** PhotoFolderIndexRead */
         PhotoFolderIndexRead: {
             /**
@@ -1390,6 +1691,108 @@ export interface components {
             lines?: components["schemas"]["AuditBomFields"][];
             /** Unexpected Inclusions */
             unexpected_inclusions?: string | null;
+        };
+        /**
+         * ShippingLogCandidate
+         * @description One job the shipping log may be generated from.
+         *
+         *     Deliberately narrow: JobReadExpanded carries notes, 2nd OPS state and every
+         *     raw field, and the selection modal needs identity, quantity and due date.
+         *     The full identity is carried because the printed B # is the part number
+         *     alone, so two splits of one part print identically (Decision 4).
+         */
+        ShippingLogCandidate: {
+            /** Job Id */
+            job_id: number;
+            /** Part Number */
+            part_number: string;
+            /** Split Suffix */
+            split_suffix: string | null;
+            build_type: components["schemas"]["BuildType"] | null;
+            /** Repeat Reference */
+            repeat_reference: string | null;
+            build_qualifier: components["schemas"]["BuildQualifier"] | null;
+            /** Quantity */
+            quantity: number;
+            /** Resolved Ship Date */
+            resolved_ship_date: string | null;
+            /** Ship Date Text */
+            ship_date_text: string | null;
+            /** Customer Name */
+            customer_name: string;
+        };
+        /**
+         * ShippingLogCandidateList
+         * @description GET /api/shipping-log/candidates.
+         *
+         *     max_jobs_per_log and template_ready echo server state so the client holds
+         *     no copy of either.
+         */
+        ShippingLogCandidateList: {
+            /** Candidates */
+            candidates: components["schemas"]["ShippingLogCandidate"][];
+            /** Total */
+            total: number;
+            /** Truncated */
+            truncated: boolean;
+            /** Max Jobs Per Log */
+            max_jobs_per_log: number;
+            /** Template Ready */
+            template_ready: boolean;
+        };
+        /**
+         * ShippingLogErrorBody
+         * @description 503 template_unavailable, or 500 internal. Never carries a reason or path.
+         */
+        ShippingLogErrorBody: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "template_unavailable" | "internal";
+        };
+        /**
+         * ShippingLogIneligibleBody
+         * @description 409 body: the whole request failed; nothing was generated.
+         */
+        ShippingLogIneligibleBody: {
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "ineligible_jobs";
+            /** Jobs */
+            jobs: components["schemas"]["ShippingLogIneligibleJob"][];
+        };
+        /** ShippingLogIneligibleJob */
+        ShippingLogIneligibleJob: {
+            /** Job Id */
+            job_id: number;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "not_found" | "discarded" | "superseded" | "shipped";
+        };
+        /** ShippingLogRequest */
+        ShippingLogRequest: {
+            /** Job Ids */
+            job_ids: number[];
+        };
+        /**
+         * ShippingLogSelectionSizeBody
+         * @description 422 body: zero unique IDs, or more than max.
+         */
+        ShippingLogSelectionSizeBody: {
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "selection_size";
+            /** Requested */
+            requested: number;
+            /** Max */
+            max: number;
         };
         /**
          * StagingRestoreAction
@@ -2359,7 +2762,9 @@ export interface operations {
             query?: {
                 force?: boolean;
             };
-            header?: never;
+            header?: {
+                "X-Client-Id"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -2457,6 +2862,38 @@ export interface operations {
                 };
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revert_split_suffix_api_ingest__batch_id__staging_row__row_id__split_suffix_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: number;
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -2583,7 +3020,9 @@ export interface operations {
     confirm_review_api_ingest__batch_id__confirm_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Client-Id"?: string | null;
+            };
             path: {
                 batch_id: number;
             };
@@ -2706,6 +3145,201 @@ export interface operations {
             };
         };
     };
+    list_files_api_photos_files_get: {
+        parameters: {
+            query: {
+                date_folder: string;
+                sub_folder?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoFileListRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_file_api_photos_file__filename__get: {
+        parameters: {
+            query: {
+                date_folder: string;
+                sub_folder?: string;
+            };
+            header?: never;
+            path: {
+                filename: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_thumb_api_photos_thumb__filename__get: {
+        parameters: {
+            query: {
+                date_folder: string;
+                sub_folder?: string;
+            };
+            header?: never;
+            path: {
+                filename: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_archive_token_api_photos_archive_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArchiveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_archive_status_api_photos_archive_status_get: {
+        parameters: {
+            query: {
+                token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_archive_api_photos_archive_download_get: {
+        parameters: {
+            query: {
+                token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_photos_dir_api_settings_photos_dir_get: {
         parameters: {
             query?: never;
@@ -2787,6 +3421,159 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_auto_copy_api_settings_auto_copy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCopyRead"];
+                };
+            };
+        };
+    };
+    put_auto_copy_api_settings_auto_copy_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutoCopyWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoCopyRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_auto_copy_api_settings_auto_copy_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    list_shipping_log_candidates_api_shipping_log_candidates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShippingLogCandidateList"];
+                };
+            };
+        };
+    };
+    create_shipping_log_api_shipping_log_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShippingLogRequest"];
+            };
+        };
+        responses: {
+            /** @description The shipping log workbook. The filename is in Content-Disposition; X-Shipping-Log-Clipped lists job IDs whose notes won't print in full. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                };
+            };
+            /** @description At least one job is not eligible. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShippingLogIneligibleBody"];
+                };
+            };
+            /** @description selection_size; a body that fails the schema gets FastAPI's default 422 body. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShippingLogSelectionSizeBody"];
+                };
+            };
+            /** @description Database or workbook stamping failure. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShippingLogErrorBody"];
+                };
+            };
+            /** @description The template is missing from this build. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShippingLogErrorBody"];
                 };
             };
         };

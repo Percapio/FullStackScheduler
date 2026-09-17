@@ -3,8 +3,7 @@ import { usePhotos } from '../usePhotos';
 import * as photosApi from '../../api/photos';
 
 vi.mock('../../api/photos', () => ({
-    fetchAvailableDates: vi.fn(),
-    openPhotoFolder: vi.fn()
+    fetchAvailableDates: vi.fn()
 }));
 
 describe('usePhotos', () => {
@@ -70,36 +69,6 @@ describe('usePhotos', () => {
         
         expect(lastFetchFailed.value).toBe(true);
         expect(directoryStatus.value).toBe('unknown');
-    });
-
-    it('open_photos not_found removes exactly that name', async () => {
-        const fetchSpy = vi.mocked(photosApi.fetchAvailableDates);
-        fetchSpy.mockResolvedValueOnce({ kind: 'ok', status: 'ok', folders: ['A', 'B'], truncated: false });
-        
-        const { loadPhotoIndex, openPhotos, folders } = usePhotos();
-        await loadPhotoIndex(['A', 'B']);
-        
-        const openSpy = vi.mocked(photosApi.openPhotoFolder);
-        openSpy.mockResolvedValueOnce({ kind: 'not_found', date_folder: 'A' });
-        
-        await openPhotos('A');
-        
-        expect(folders.value).toEqual(['B']);
-    });
-
-    it('open_photos unconfigured updates directoryStatus', async () => {
-        const fetchSpy = vi.mocked(photosApi.fetchAvailableDates);
-        fetchSpy.mockResolvedValueOnce({ kind: 'ok', status: 'ok', folders: ['A'], truncated: false });
-        
-        const { loadPhotoIndex, openPhotos, directoryStatus } = usePhotos();
-        await loadPhotoIndex(['A']);
-        
-        const openSpy = vi.mocked(photosApi.openPhotoFolder);
-        openSpy.mockResolvedValueOnce({ kind: 'unconfigured' });
-        
-        await openPhotos('A');
-        
-        expect(directoryStatus.value).toBe('unconfigured');
     });
 
     it('resetPhotoState returns to initial values', async () => {

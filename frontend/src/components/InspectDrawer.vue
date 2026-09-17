@@ -87,7 +87,6 @@ const {
   lastFetchFailed: photoFetchFailed,
   loadPhotoIndex,
   resetPhotoState,
-  openPhotos
 } = usePhotos()
 
 const photoProbeKey = computed(() => {
@@ -239,7 +238,6 @@ watch(() => props.anchor, (newAnchor) => {
             :editLocked="editingJobId !== null && editingJobId !== job.id"
             :photoFolders="photoFolders"
             :photoStatus="photoStatus"
-            :openPhotosCallback="openPhotos"
             :openGalleryCallback="gallery.openGallery"
             @editStarted="onEditStarted"
             @editEnded="onEditEnded"

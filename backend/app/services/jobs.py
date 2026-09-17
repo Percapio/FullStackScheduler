@@ -95,14 +95,37 @@ def list_jobs(
     return list(rows), total
 
 
+def build_shipping_query() -> Select:
+    """Build the SELECT that defines the Shipping-view population.
+
+    The Shipping grid and the shipping-log candidates and eligibility checks
+    all compose from this one builder, so the populations cannot drift apart.
+
+    Pre:   none.
+    Post:  returns a Select over Job with superseded_at IS NULL,
+           discarded_at IS NULL and status != shipped, ordered
+           resolved_ship_date ASC NULLS LAST, id ASC.
+           Carries no limit, offset or load options.
+    Raises: never.
+    """
+    return (
+        _active_jobs_base()
+        .where(Job.status != JobStatus.shipped)
+        .order_by(Job.resolved_ship_date.asc().nullslast(), Job.id.asc())
+    )
+
+
+def count_shipping_population(session: Session) -> int:
+    return _count(session, build_shipping_query().order_by(None))
+
+
 def list_shipping(
     session: Session, *, limit: int, offset: int,
 ) -> tuple[list[Job], int]:
-    base = _active_jobs_base().where(Job.status != JobStatus.shipped)
-    total = _count(session, base)
+    total = count_shipping_population(session)
     rows = session.scalars(
-        base.options(*JOB_EXPAND_OPTIONS)
-        .order_by(Job.resolved_ship_date.asc().nullslast(), Job.id.asc())
+        build_shipping_query()
+        .options(*JOB_EXPAND_OPTIONS)
         .limit(limit)
         .offset(offset)
     ).unique().all()

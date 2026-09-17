@@ -10,6 +10,7 @@ Architecture
 */__pycache__
 *.db
 *.xlsx
+!backend/app/resources/*.xlsx
 *.log
 *.csv
 

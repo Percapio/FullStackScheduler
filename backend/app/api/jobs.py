@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime, tzinfo
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
@@ -16,7 +19,7 @@ from ..schemas import (
 )
 from ..services import jobs as jobs_service
 from ..services import second_ops as second_ops_service
-from .deps import HistoryPageParams, PageParams, get_pagination, get_session, ErroredPageParams, HistoryExportParams, get_session_factory
+from .deps import HistoryPageParams, PageParams, get_pagination, get_session, ErroredPageParams, HistoryExportParams, get_session_factory, get_wall_clock
 
 router = APIRouter()
 
@@ -81,17 +84,17 @@ def list_history_export_columns():
 def export_history_csv(
     params: HistoryExportParams = Depends(),
     session_factory=Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
+    now_in: Callable[[tzinfo], datetime] = Depends(get_wall_clock),
 ):
     from fastapi.responses import StreamingResponse
-    from datetime import datetime
     from zoneinfo import ZoneInfo
     from ..services.history_export import generate_csv_rows, HISTORY_EXPORT_COLUMNS_BY_KEY, DELIMITER_CHARACTERS
-    from ..config import get_settings
 
     def _stream():
         session = session_factory()
         try:
-            chunk_rows = get_settings().export_chunk_rows
+            chunk_rows = settings.export_chunk_rows
             job_iterator = jobs_service.stream_history_for_export(
                 session, search=params.search, chunk_rows=chunk_rows
             )
@@ -102,7 +105,7 @@ def export_history_csv(
         finally:
             session.close()
 
-    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    now = now_in(ZoneInfo(settings.display_timezone))
     filename = f"history-export-{now.strftime('%Y%m%d-%H%M%S')}.csv"
     return StreamingResponse(
         _stream(),

@@ -64,7 +64,6 @@ function mountBlock(
       editLocked: false,
       photoFolders: [],
       photoStatus: 'unknown',
-      openPhotosCallback: vi.fn(),
       openGalleryCallback: vi.fn(),
       ...extraProps
     },
@@ -260,30 +259,64 @@ describe('InspectJobBlock', () => {
   })
 
   describe('photos integration', () => {
-    it('disables photos button with empty folders array', () => {
+    it('has no Folder button', () => {
+      mountBlock(makeJob({ shipped_at: '2023-07-24' }), {
+        photoStatus: 'ok',
+        photoFolders: ['2023_07_24']
+      })
+      expect(document.body.querySelector('[data-testid="inspect-photos-btn"]')).toBeNull()
+      expect(bodyHtml()).not.toContain('Folder')
+    })
+
+    it('disables gallery button with empty folders array', () => {
       mountBlock(makeJob({ shipped_at: '2023-07-24' }), {
         photoStatus: 'ok',
         photoFolders: []
       })
-      const btn = document.body.querySelector('[data-testid="inspect-photos-btn"]') as HTMLButtonElement
+      const btn = document.body.querySelector('[data-testid="inspect-gallery-btn"]') as HTMLButtonElement
       expect(btn.disabled).toBe(true)
       expect(btn.title).toContain('No photos folder')
     })
 
-    it('enables photos button when available and calls open callback', async () => {
-      const openPhotosCallback = vi.fn().mockResolvedValue({ kind: 'ok' })
+    it.each([
+      ['unconfigured', 'Shipping photos directory is not configured'],
+      ['unavailable', 'Shipping photos directory is unreachable'],
+      ['unknown', 'Could not check for photos'],
+    ] as const)('disables gallery button when directory is %s', (photoStatus, tooltip) => {
+      mountBlock(makeJob({ shipped_at: '2023-07-24' }), {
+        photoStatus,
+        photoFolders: ['2023_07_24']
+      })
+      const btn = document.body.querySelector('[data-testid="inspect-gallery-btn"]') as HTMLButtonElement
+      expect(btn.disabled).toBe(true)
+      expect(btn.title).toBe(tooltip)
+    })
+
+    it('disables gallery button for an unshipped job', () => {
+      mountBlock(makeJob({ status: 'planned', shipped_at: null }), {
+        photoStatus: 'ok',
+        photoFolders: ['2023_07_24']
+      })
+      const btn = document.body.querySelector('[data-testid="inspect-gallery-btn"]') as HTMLButtonElement
+      expect(btn.disabled).toBe(true)
+      expect(btn.title).toBe('Job has not shipped')
+    })
+
+    it('enables gallery button when available and calls gallery callback', async () => {
+      const openGalleryCallback = vi.fn().mockResolvedValue(undefined)
       const w = mountBlock(makeJob({ shipped_at: '2023-07-24' }), {
         photoStatus: 'ok',
         photoFolders: ['2023_07_24'],
-        openPhotosCallback
+        openGalleryCallback
       })
-      
-      const btn = document.body.querySelector('[data-testid="inspect-photos-btn"]') as HTMLButtonElement
+
+      const btn = document.body.querySelector('[data-testid="inspect-gallery-btn"]') as HTMLButtonElement
       expect(btn.disabled).toBe(false)
-      
+      expect(btn.title).toBe('View photos in gallery')
+
       btn.click()
       await w.vm.$nextTick()
-      expect(openPhotosCallback).toHaveBeenCalledWith('2023_07_24')
+      expect(openGalleryCallback).toHaveBeenCalledWith('2023_07_24')
     })
   })
 })

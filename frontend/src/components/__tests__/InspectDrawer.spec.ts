@@ -40,7 +40,6 @@ vi.mock('@/api/history', () => ({
 
 vi.mock('@/api/photos', () => ({
   fetchAvailableDates: vi.fn().mockResolvedValue({ kind: 'ok', status: 'ok', folders: [], truncated: false }),
-  openPhotoFolder: vi.fn(),
   photo_folder_for: vi.fn((job) => job.shipped_at ? job.shipped_at.replace(/-/g, '_') : null),
 }))
 
@@ -155,6 +154,19 @@ describe('InspectDrawer', () => {
   })
 
   describe('photos integration', () => {
+    it('binds the gallery callback and no folder-open callback', async () => {
+      const anchorJob = makeJob({ id: 42 })
+      vi.mocked(fetchJobLineage).mockResolvedValue([anchorJob])
+
+      const w = mountDrawer(anchorJob)
+      await flushPromises()
+
+      const block = w.findComponent(InspectJobBlock)
+      expect(typeof block.props('openGalleryCallback')).toBe('function')
+      expect(block.props()).not.toHaveProperty('openPhotosCallback')
+      expect(block.attributes()).not.toHaveProperty('openphotoscallback')
+    })
+
     it('fetches photos after lineage resolves', async () => {
       const fetchPhotos = (await import('@/api/photos')).fetchAvailableDates as any
       fetchPhotos.mockClear()

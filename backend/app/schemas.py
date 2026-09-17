@@ -498,3 +498,67 @@ class JobDiscardRequest(BaseModel):
     """
 
     reason: str = Field(min_length=1, max_length=500)
+
+
+# ---- shipping log (Phase 33) -------------------------------------------------
+
+
+class ShippingLogCandidate(BaseModel):
+    """One job the shipping log may be generated from.
+
+    Deliberately narrow: JobReadExpanded carries notes, 2nd OPS state and every
+    raw field, and the selection modal needs identity, quantity and due date.
+    The full identity is carried because the printed B # is the part number
+    alone, so two splits of one part print identically (Decision 4).
+    """
+
+    job_id: int
+    part_number: str
+    split_suffix: str | None
+    build_type: BuildType | None
+    repeat_reference: str | None
+    build_qualifier: BuildQualifier | None
+    quantity: int
+    resolved_ship_date: date | None
+    ship_date_text: str | None
+    customer_name: str
+
+
+class ShippingLogCandidateList(BaseModel):
+    """GET /api/shipping-log/candidates.
+
+    max_jobs_per_log and template_ready echo server state so the client holds
+    no copy of either.
+    """
+
+    candidates: list[ShippingLogCandidate]
+    total: int
+    truncated: bool
+    max_jobs_per_log: int
+    template_ready: bool
+
+
+class ShippingLogIneligibleJob(BaseModel):
+    job_id: int
+    reason: Literal["not_found", "discarded", "superseded", "shipped"]
+
+
+class ShippingLogIneligibleBody(BaseModel):
+    """409 body: the whole request failed; nothing was generated."""
+
+    kind: Literal["ineligible_jobs"]
+    jobs: list[ShippingLogIneligibleJob]
+
+
+class ShippingLogSelectionSizeBody(BaseModel):
+    """422 body: zero unique IDs, or more than max."""
+
+    kind: Literal["selection_size"]
+    requested: int
+    max: int
+
+
+class ShippingLogErrorBody(BaseModel):
+    """503 template_unavailable, or 500 internal. Never carries a reason or path."""
+
+    kind: Literal["template_unavailable", "internal"]

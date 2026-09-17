@@ -26,18 +26,26 @@ DELIMITER_CHARACTERS = {
     DelimiterToken.pipe: "|",
 }
 
-def flatten_operator_notes(raw_notes: str | None) -> str:
+def strip_operator_markup(raw_notes: str | None) -> list[str]:
+    """Tokenise operator notes into their printable lines.
+
+    Shared by the CSV export (joined with " | ") and the shipping log (joined
+    with line feeds, because its target is a wrapped multi-line cell).
+    Post:   paired ~~...~~ spans removed (an unpaired ~~ survives as literal
+            text); ** and * removed; each line trimmed; empty lines dropped.
+            [] for None.
+    Raises: never.
+    """
     if raw_notes is None:
-        return ""
-    # 1. Remove paired ~~...~~ non-greedily
+        return []
     text = re.sub(r'~~[\s\S]*?~~', '', raw_notes)
-    # 2. Unpaired ~~ survives as literal text
-    # 3. Strip ** and *
     text = text.replace('**', '').replace('*', '')
-    # 4. Lines trimmed, empty lines dropped, joined with " | "
     lines = [line.strip() for line in text.splitlines()]
-    survivors = [line for line in lines if line]
-    return " | ".join(survivors)
+    return [line for line in lines if line]
+
+
+def flatten_operator_notes(raw_notes: str | None) -> str:
+    return " | ".join(strip_operator_markup(raw_notes))
 
 def neutralise_formula_prefix(cell_text: str) -> str:
     if not cell_text:

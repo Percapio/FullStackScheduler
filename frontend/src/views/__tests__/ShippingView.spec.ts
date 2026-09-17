@@ -393,3 +393,66 @@ describe('ShippingView — 2nd OPS column', () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Create Shipping Log entry point (Phase 33)
+// ---------------------------------------------------------------------------
+
+const mockFetchCandidates = vi.fn()
+vi.mock('@/api/shippingLog', () => ({
+  fetchShippingLogCandidates: (...args: unknown[]) => mockFetchCandidates(...args),
+  generateShippingLog: vi.fn(),
+}))
+
+describe('ShippingView — Create Shipping Log', () => {
+  beforeEach(() => {
+    mockFetchCandidates.mockReset()
+    mockFetchCandidates.mockResolvedValue({
+      kind: 'ok',
+      list: { candidates: [], total: 0, truncated: false, max_jobs_per_log: 200, template_ready: true },
+    })
+  })
+
+  it('sits in the header right after the Discarded pill', async () => {
+    mockFetch.mockResolvedValue({ rows: [], total: 0 })
+    const w = mountView()
+    await flushPromises()
+
+    const headerButtons = w.get('header').findAll('button')
+    expect(headerButtons.map(b => b.attributes('data-testid'))).toEqual([
+      'discarded-jobs-pill-btn',
+      'create-shipping-log-btn',
+    ])
+    expect(headerButtons[1].text()).toBe('Create Shipping Log')
+  })
+
+  it('opens the log modal, which loads its own candidates, and closes it again', async () => {
+    mockFetch.mockResolvedValue({ rows: [makeJob({ id: 1, _pn: 'A' })], total: 1 })
+    const w = mountView()
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="shipping-log-modal"]')).toBeNull()
+    expect(mockFetchCandidates).not.toHaveBeenCalled()
+
+    await w.get('[data-testid="create-shipping-log-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="shipping-log-modal"]')).not.toBeNull()
+    expect(mockFetchCandidates).toHaveBeenCalledOnce()
+
+    ;(document.body.querySelector('[data-testid="shipping-log-cancel"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="shipping-log-modal"]')).toBeNull()
+    w.unmount()
+  })
+
+  it('is offered even when the grid failed to load', async () => {
+    mockFetch.mockRejectedValue(new Error('Network error'))
+    const w = mountView()
+    await flushPromises()
+
+    expect(w.text()).toContain('Could not load open jobs')
+    expect(w.find('[data-testid="create-shipping-log-btn"]').exists()).toBe(true)
+  })
+})

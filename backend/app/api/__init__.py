@@ -56,6 +56,10 @@ async def application_lifespan(app: FastAPI):
     app.state.hub = hub
     app.state.publisher = publisher
 
+    from ..services.shipping_log import load_bundled_shipping_log_template
+    # Immutable bytes and measurements only; each request loads its own Workbook.
+    app.state.shipping_log_template = load_bundled_shipping_log_template()
+
     async def drain_task():
         while True:
             try:
@@ -110,7 +114,8 @@ def create_app() -> FastAPI:
             allow_origins=list(_DEV_ORIGINS),
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["*"],
-            expose_headers=["X-Total-Count"],
+            # The Vite dev client can't read a response header unless it is exposed.
+            expose_headers=["X-Total-Count", "Content-Disposition", "X-Shipping-Log-Clipped"],
         )
 
     app.include_router(staging_router, prefix="/api/staging", tags=["staging"])
@@ -122,6 +127,10 @@ def create_app() -> FastAPI:
     app.include_router(photos_router, prefix="/api/photos", tags=["photos"])
     from .settings import settings_router
     app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+    # Its own router, not /api/jobs: that router already depends on declaration
+    # order to keep literal segments away from /{job_id}.
+    from .shipping_log import router as shipping_log_router
+    app.include_router(shipping_log_router, prefix="/api/shipping-log", tags=["shipping-log"])
 
     @app.websocket("/api/ws/updates")
     async def updates_ws(websocket: __import__('starlette').websockets.WebSocket, client_id: str | None = None):

@@ -14,7 +14,6 @@ const props = defineProps<{
   editLocked: boolean
   photoFolders: string[]
   photoStatus: PhotoDirectoryStatus | 'unknown'
-  openPhotosCallback: (date_folder: string) => Promise<any>
   openGalleryCallback: (date_folder: string) => Promise<void>
 }>()
 
@@ -63,8 +62,6 @@ watch(() => props.job.id, () => {
 const discardAvailable = computed(() => canDiscard(props.job))
 
 import { photo_folder_for } from '@/api/photos'
-import { useToast } from '@/composables/useToast'
-const { show: showToast } = useToast()
 
 const photoFolder = computed(() => photo_folder_for(props.job))
 
@@ -83,29 +80,6 @@ const photoDisabledTooltip = computed(() => {
   return `No photos folder for ${photoFolder.value}`
 })
 
-const photoOpening = ref(false)
-
-async function onOpenPhotos() {
-  if (!photoFolder.value || !photosAvailable.value) return
-  photoOpening.value = true
-  
-  const result = await props.openPhotosCallback(photoFolder.value)
-  photoOpening.value = false
-  
-  if (result.kind === 'ok') {
-    showToast(`Opened ${result.date_folder} on the production computer.`, 'success')
-  } else if (result.kind === 'rate_limited') {
-    showToast(`Please wait ${result.retry_after_seconds} seconds before opening another folder.`, 'error')
-  } else if (result.kind === 'not_found') {
-    showToast(`Photos folder ${photoFolder.value} no longer exists.`, 'error')
-  } else if (result.kind === 'unconfigured') {
-    showToast('Shipping photos directory is not configured.', 'error')
-  } else if (result.kind === 'unavailable') {
-    showToast('Shipping photos directory is unreachable.', 'error')
-  } else if (result.kind === 'shell_error' || result.kind === 'network') {
-    showToast('Failed to open photos folder.', 'error')
-  }
-}
 function enterEditMode(): void {
   const pre: HistoryEditDraft = {
     part_number:      props.job.assembly.part_number,
@@ -370,21 +344,6 @@ const curated = computed<CuratedField[]>(() => {
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
             Gallery
-          </button>
-          
-          <!-- Only show folder button if we are on loopback (isConsole), but actually the old button was always visible just didn't work over LAN. We can just keep it -->
-          <button
-            data-testid="inspect-photos-btn"
-            type="button"
-            :disabled="!photosAvailable || photoOpening"
-            :title="photoDisabledTooltip || 'Open photos folder on production computer'"
-            class="rounded px-3 py-1.5 text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors disabled:opacity-50 disabled:bg-slate-100 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-300 dark:disabled:bg-slate-800 flex items-center gap-2"
-            @click="onOpenPhotos"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-            </svg>
-            Folder
           </button>
         </div>
         <button

@@ -9,6 +9,7 @@ import SortHeader from '@/components/SortHeader.vue'
 import EyeIcon from '@/components/EyeIcon.vue'
 import InspectDrawer from '@/components/InspectDrawer.vue'
 import DiscardedJobsDrawer from '@/components/DiscardedJobsDrawer.vue'
+import CreateShippingLogModal from '@/components/CreateShippingLogModal.vue'
 import SecondOpsCell from '@/components/SecondOpsCell.vue'
 import SecondOpsEntryModal from '@/components/SecondOpsEntryModal.vue'
 import SecondOpsRecordModal from '@/components/SecondOpsRecordModal.vue'
@@ -23,6 +24,7 @@ const {
 const { formatShortDate, isShippingToday, buildLabel, identitySuffix, renderNotes } = useJobFormatters()
 
 const sort = ref<SortState>({ key: 'resolved_ship_date', direction: 'asc' })
+const shippingLogOpen = ref(false)
 const { sorted } = useShippingSort(jobs, sort)
 const { fontClass } = useFontSize()
 
@@ -54,6 +56,17 @@ onMounted(() => {
         @click="store.openDiscardedJobsDrawer()"
       >
         Discarded<span v-if="discardedTotal > 0" class="ml-1 tabular-nums">({{ discardedTotal }})</span>
+      </button>
+      <!-- Same pill geometry as Discarded so the row stays aligned; filled because
+           it is the view's main action. The modal loads its own candidate list. -->
+      <button
+        type="button"
+        data-testid="create-shipping-log-btn"
+        class="text-xs font-medium px-3 py-1 rounded-full border border-sky-600 bg-sky-600 text-white
+               hover:bg-accent-700 hover:border-accent-700 transition-colors focus-ring"
+        @click="shippingLogOpen = true"
+      >
+        Create Shipping Log
       </button>
     </header>
 
@@ -147,6 +160,10 @@ onMounted(() => {
       @close="store.closeInspect()"
     />
     <DiscardedJobsDrawer />
+    <CreateShippingLogModal
+      :open="shippingLogOpen"
+      @close="shippingLogOpen = false"
+    />
 
     <SecondOpsEntryModal
       :job="secondOpsJob"
