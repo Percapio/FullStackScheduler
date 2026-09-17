@@ -630,7 +630,9 @@ class TestPatchSplitSuffix:
         session.expire(row)
         assert row.review_split_suffix_override is None
 
-    def test_requires_canonical_first(self, client, session):
+    def test_seeds_part_number_override_when_canonical_not_set(self, client, session):
+        """Patch 06 §2.4: no PUT /canonical prerequisite — the part-number
+        override is seeded from the parse in the same commit (was 409)."""
         b = _make_batch(session)
         row = _make_review_row(session, b, review_status="pending")
         # No review_part_number_override set
@@ -639,7 +641,12 @@ class TestPatchSplitSuffix:
             f"/api/ingest/{b.id}/staging-row/{row.id}/split-suffix",
             json={"split_suffix": "-par"},
         )
-        assert resp.status_code == 409
+        assert resp.status_code == 200
+        session.expire(row)
+        assert row.review_part_number_override == "123456"
+        assert row.review_split_suffix_override == "-par"
+        assert row.review_split_suffix_source == "operator"
+        assert row.review_status == "edited"
 
     def test_too_long_suffix_returns_422(self, client, session):
         b = _make_batch(session)

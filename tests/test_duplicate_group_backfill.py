@@ -6,12 +6,10 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, text
 
-from backend.app.config import Settings
 from backend.app.models import Assembly, ImportBatch, ImportStagingRow, ImportStatus
 from backend.app.services.staging import _DUPLICATE_ERROR_PREFIX
 
@@ -49,19 +47,17 @@ def test_ingest_sets_duplicate_group_key_for_dup_rows(session, open_batch, workb
             {"JOB": "99999\nNEW",  "QTY": "3",  "SHIP DATE": "01/01", "CUSTOMER": "Cust C"},
         ]
     )
-    # Phase 18c: Stage 3.6 holds the batch; run Stage 4 directly with flag True.
+    # Phase 18c: Stage 3.6 holds the batch; run Stage 4 directly, bypassing the confirm gate.
     held = ingest_workbook(wb_path, session_factory=session_factory)
-    overridden = Settings(intra_file_collision_legacy_error_path=True)
-    with patch("backend.app.ingest.get_settings", return_value=overridden):
-        run_stages_4_to_6(
-            batch_id=held.batch_id,
-            rows_total=3,
-            sheet_kind=SheetKind.live,
-            source_sha256=held.source_sha256,
-            filename=held.filename,
-            duplicate_of=None,
-            session_factory=session_factory,
-        )
+    run_stages_4_to_6(
+        batch_id=held.batch_id,
+        rows_total=3,
+        sheet_kind=SheetKind.live,
+        source_sha256=held.source_sha256,
+        filename=held.filename,
+        duplicate_of=None,
+        session_factory=session_factory,
+    )
     session.expire_all()
 
     dup_rows = session.scalars(

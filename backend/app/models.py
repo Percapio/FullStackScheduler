@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -335,6 +336,10 @@ class ImportStagingRow(Base, TimestampMixin):
         Index("ix_import_staging_dup_group", "batch_id", "duplicate_group_key"),
         Index("ix_staging_batch_review_status", "batch_id", "review_status"),
         Index("ix_staging_batch_parsed_pn", "batch_id", "parsed_part_number"),
+        CheckConstraint(
+            "review_split_suffix_source IN ('computed', 'operator')",
+            name="ck_import_staging_split_suffix_source",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -394,6 +399,12 @@ class ImportStagingRow(Base, TimestampMixin):
     reviewed_at: Mapped[datetime | None] = deferred(mapped_column(DateTime, nullable=True))
     review_part_number_override: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
     review_split_suffix_override: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
+    # Patch 06 (migration 0013): who authored review_split_suffix_override.
+    # 'computed' — derived by PUT /canonical, recomputed on every canonical change.
+    # 'operator' — typed via PATCH /split-suffix, preserved across canonical changes
+    #              until DELETE /split-suffix returns it to 'computed'.
+    # Invariant: NULL iff review_part_number_override IS NULL.
+    review_split_suffix_source: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))
     # Populated at Stage 3.5 (classify_new_parts_for_review) post-migration 0010.
     # Enables indexed read path in _rows_for_pn instead of Python-side decomposition.
     parsed_part_number: Mapped[str | None] = deferred(mapped_column(Text, nullable=True))

@@ -1,21 +1,19 @@
 """Tests for Stage 4 intra-file duplicate collision behavior.
 
 Phase 18c: Stage 3.6 now catches duplicates and holds the batch for review
-before Stage 4 runs. These tests reach Stage 4 directly via run_stages_4_to_6
-with the legacy flag True to verify the pre-Phase-18c collision path still works.
+before Stage 4 runs. Patch 06: Stage 4 is an always-on effective-identity
+error-marker behind the POST /confirm gate. These tests reach Stage 4 directly
+via run_stages_4_to_6, bypassing the gate, to pin the marker's output.
 """
-from unittest.mock import patch
-
 from sqlalchemy import select
 
-from backend.app.config import Settings
 from backend.app.ingest import ingest_workbook, run_stages_4_to_6
 from backend.app.models import Assembly, ImportBatch, ImportStagingRow, ImportStatus, Job, SheetKind
 
 
 def _run_ingest_then_stage4(workbook_factory, session_factory, rows_spec):
     """Helper: ingest a workbook (which holds for review at Stage 3.6), then
-    run Stage 4 directly via run_stages_4_to_6 with the legacy collision flag True.
+    run Stage 4 directly via run_stages_4_to_6, bypassing the confirm gate.
 
     Returns the IngestResult from run_stages_4_to_6.
     """
@@ -27,21 +25,19 @@ def _run_ingest_then_stage4(workbook_factory, session_factory, rows_spec):
         f"Expected held_for_review but got {held.kind} — test setup incorrect"
     )
 
-    overridden = Settings(intra_file_collision_legacy_error_path=True)
-    with patch("backend.app.ingest.get_settings", return_value=overridden):
-        return run_stages_4_to_6(
-            batch_id=held.batch_id,
-            rows_total=len(rows_spec),
-            sheet_kind=SheetKind.live,
-            source_sha256=held.source_sha256,
-            filename=held.filename,
-            duplicate_of=None,
-            session_factory=session_factory,
-        )
+    return run_stages_4_to_6(
+        batch_id=held.batch_id,
+        rows_total=len(rows_spec),
+        sheet_kind=SheetKind.live,
+        source_sha256=held.source_sha256,
+        filename=held.filename,
+        duplicate_of=None,
+        session_factory=session_factory,
+    )
 
 
 def test_intra_file_duplicates_both_error(workbook_factory, session_factory):
-    # Phase 18c: with flag True (legacy path), Stage 4 errors both rows.
+    # Stage 4 errors both rows of an effective-identity collision.
     result = _run_ingest_then_stage4(workbook_factory, session_factory, [
         {"JOB": "137845\nNEW", "QTY": "10", "CUSTOMER": "ACME"},
         {"JOB": "137845\nNEW", "QTY": "5", "CUSTOMER": "ACME"},
@@ -76,7 +72,7 @@ def test_different_suffix_no_collision(workbook_factory, session_factory):
 
 
 def test_non_colliding_siblings_succeed(workbook_factory, session_factory):
-    # Phase 18c: with flag True (legacy path), Stage 4 errors duplicate rows.
+    # Stage 4 errors the colliding rows; the non-colliding sibling still inserts.
     result = _run_ingest_then_stage4(workbook_factory, session_factory, [
         {"JOB": "137845\nNEW", "QTY": "10", "CUSTOMER": "ACME"},
         {"JOB": "137845\nNEW", "QTY": "5", "CUSTOMER": "ACME"},
@@ -88,7 +84,7 @@ def test_non_colliding_siblings_succeed(workbook_factory, session_factory):
 
 
 def test_intrafile_duplicate_sets_suggested_correction(workbook_factory, session_factory):
-    # Phase 18c: with flag True (legacy path), Stage 4 sets suggested_correction.
+    # Stage 4 sets suggested_correction on each colliding row.
     result = _run_ingest_then_stage4(workbook_factory, session_factory, [
         {"JOB": "137845\nNEW", "QTY": "10", "CUSTOMER": "ACME"},
         {"JOB": "137845\nNEW", "QTY": "5", "CUSTOMER": "ACME"},

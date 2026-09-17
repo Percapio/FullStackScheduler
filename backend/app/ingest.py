@@ -21,7 +21,15 @@ from .config import get_settings
 from .extractors import decompose_job_string, decompose_job_string_with_diagnostic, DecomposeError
 from .models import Assembly, BuildQualifier, BuildType, ImportBatch, ImportStagingRow, ImportStatus, SheetKind, Job, JobStatus
 from .services.staging import _rollback_with_error_capture
-from .transform import transform_staging_row, _mark_decompose_error
+from .transform import (
+    CollisionSet,
+    IdentityTuple,
+    Unparseable,
+    _mark_decompose_error,
+    effective_identity,
+    group_by_effective_identity,
+    transform_staging_row,
+)
 
 import enum
 
@@ -183,30 +191,9 @@ def sweep_missing_planned_jobs(
 
 # ---------------------------------------------------------------------------
 # Review workflow types (Phase 18a §6.2 / Phase 18c §6.2)
+# IdentityTuple lives in transform.py beside effective_identity (Patch 06 §1.1)
+# and is re-exported here for Stage 3.6 callers.
 # ---------------------------------------------------------------------------
-
-@dataclass
-class IdentityTuple:
-    """Full job identity tuple used by Stage 3.6 intra-file duplicate detection.
-
-    Mirrors the five-column uniqueness key on the Job table.
-    """
-    part_number: str
-    build_type: BuildType
-    split_suffix: str | None
-    repeat_reference: str | None
-    build_qualifier: BuildQualifier | None
-
-    def as_key(self) -> tuple:
-        """Return a hashable tuple for dict-keying."""
-        return (
-            self.part_number,
-            self.build_type,
-            self.split_suffix,
-            self.repeat_reference,
-            self.build_qualifier,
-        )
-
 
 @dataclass
 class ReviewGroup:
@@ -357,13 +344,7 @@ def augment_with_intra_file_duplicates(
         decomp = decompose_job_string_with_diagnostic(row.raw_job)
         if decomp is None or isinstance(decomp, DecomposeError):
             continue
-        identity = IdentityTuple(
-            part_number=decomp.part_number,
-            build_type=decomp.build_type,
-            split_suffix=decomp.split_suffix,
-            repeat_reference=decomp.repeat_reference,
-            build_qualifier=decomp.build_qualifier,
-        )
+        identity = IdentityTuple.of(decomp)
         by_identity.setdefault(identity.as_key(), []).append((identity, row))
 
     duplicates: list[ReviewGroup] = []
@@ -614,6 +595,63 @@ def ingest_workbook(
     )
 
 
+def mark_identity_collisions(
+    pending: list[ImportStagingRow],
+) -> list[CollisionSet]:
+    """Stage 4: mark every row in an effective-identity collision as errored so
+    Stage 5 never overwrites one surviving row with another.
+
+    On the confirm path this is expected to find nothing — the POST /confirm gate
+    refuses first.  It covers the window the gate cannot see (a review mutation
+    committing between the gate and this read, Patch 06 §4.3), turning what would
+    be a silent Job overwrite into visible row errors.  On the immediate ingest
+    path it is unreachable: any raw collision holds the batch at Stage 3.6.
+
+    Pre:  pending is the Stage 4..6 row set (non-discarded, processing_status ==
+          pending).
+    Post: rows with an Unparseable identity are marked decompose-errored;
+          every row in a CollisionSet has processing_status = error,
+          duplicate_group_key set, and the intra-file-duplicate error text and
+          suggestion; no other row is modified.  Returns the sets it marked.
+          Does not touch batch counters — the caller's post-Stage-4 status tally
+          already counts every row marked here.
+    Raises: never.
+    """
+    for row in pending:
+        identity = effective_identity(row)
+        if isinstance(identity, DecomposeError):
+            _mark_decompose_error(row, identity)
+        elif identity is Unparseable.EMPTY:
+            _mark_decompose_error(row, None)
+
+    collisions = group_by_effective_identity(pending)
+    rows_by_id: dict[int, ImportStagingRow] = {row.id: row for row in pending}
+    for collision in collisions:
+        identity = collision.identity
+        qualifier_segment: str = identity.build_qualifier.value if identity.build_qualifier else ""
+        canonical_key: str = (
+            f"{identity.part_number}|{identity.build_type.value}"
+            f"|{identity.split_suffix or ''}|{identity.repeat_reference or ''}"
+            f"|{qualifier_segment}"
+        )
+        colliding_ids = sorted(collision.row_ids)
+        for row_id in collision.row_ids:
+            row = rows_by_id[row_id]
+            row.duplicate_group_key = canonical_key
+            row.processing_status = ImportStatus.error
+            row.processing_error = (
+                f"Intra-file duplicate JOB identity "
+                f"{canonical_key} "
+                f"(staging rows {colliding_ids})"
+            )
+            row.suggested_correction = (
+                "This JOB identity appears more than once in the workbook. "
+                "Add a split suffix to distinguish the builds — e.g., change the JOB to "
+                f"'{identity.part_number}-1par', '{identity.part_number}-2par', etc."
+            )
+    return collisions
+
+
 def run_stages_4_to_6(
     batch_id: int,
     rows_total: int,
@@ -652,42 +690,20 @@ def run_stages_4_to_6(
         stage5_registry = load_assembly_part_numbers(session)
 
         try:
-            # Stage 4 — intra-file collision scan.
-            # When intra_file_collision_legacy_error_path is False (default),
-            # Stage 3.6 has already surfaced duplicates for review; Stage 4
-            # short-circuits the collision block.  Setting it True restores
-            # the pre-Phase-18c behaviour as a rollback affordance (§6.3).
-            settings = get_settings()
-            by_identity: dict[tuple, list[ImportStagingRow]] = {}
-            for row in pending:
-                decomp_result = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
-                if decomp_result is None or isinstance(decomp_result, DecomposeError):
-                    _mark_decompose_error(row, decomp_result)
-                    continue
-                decomp = decomp_result
-                key = (decomp.part_number, decomp.build_type, decomp.split_suffix, decomp.repeat_reference, decomp.build_qualifier)
-                by_identity.setdefault(key, []).append(row)
-
-            if settings.intra_file_collision_legacy_error_path:
-                for identity, rows in by_identity.items():
-                    if len(rows) < 2:
-                        continue
-                    other_ids = sorted(r.id for r in rows)
-                    qualifier_segment: str = identity[4].value if identity[4] else ""
-                    canonical_key: str = f"{identity[0]}|{identity[1].value}|{identity[2] or ''}|{identity[3] or ''}|{qualifier_segment}"
-                    for row in rows:
-                        row.duplicate_group_key = canonical_key
-                        row.processing_status = ImportStatus.error
-                        row.processing_error = (
-                            f"Intra-file duplicate JOB identity "
-                            f"{canonical_key} "
-                            f"(staging rows {other_ids})"
-                        )
-                        row.suggested_correction = (
-                            "This JOB identity appears more than once in the workbook. "
-                            "Add a split suffix to distinguish the builds \u2014 e.g., change the JOB to "
-                            f"'{identity[0]}-1par', '{identity[0]}-2par', etc."
-                        )
+            # Stage 4 — effective-identity collision error-marker (Patch 06 §3.2).
+            # Always on.  The POST /confirm gate refuses a colliding batch before
+            # this runs; this catches only what the gate cannot see, so Stage 5
+            # never overwrites one surviving row's Job with another's.
+            collisions = mark_identity_collisions(pending)
+            if collisions:
+                log.warning(
+                    "ingest.stage4.identity_collisions",
+                    extra={
+                        "batch_id": batch_id,
+                        "collision_count": len(collisions),
+                        "row_ids": [list(c.row_ids) for c in collisions],
+                    },
+                )
 
             counters["errored"] += sum(
                 1 for r in pending if r.processing_status is ImportStatus.error

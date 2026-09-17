@@ -14,12 +14,21 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from fastapi import status as http_status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from .. import reader
+from ..extractors import DecomposeError, decompose_job_string_with_diagnostic
 from ..ingest import DuplicateBatchError, ReaderError, ingest_workbook, load_assembly_part_numbers, matches_b_number_shape, run_stages_4_to_6
 from ..models import Assembly, ImportBatch, ImportStagingRow, ImportStatus
+from ..transform import (
+    CollisionSet,
+    IdentityTuple,
+    effective_decomposition,
+    effective_identity,
+    group_by_effective_identity,
+)
 from .deps import get_session, get_session_factory
 
 router = APIRouter()
@@ -34,6 +43,23 @@ _ALLOWED_SUFFIXES: frozenset[str] = frozenset({".xlsx"})
 # reviewed_by should NOT be read as a real audit trail until then.
 # ---------------------------------------------------------------------------
 _OPERATOR_IDENTITY: str = "frontend"
+
+# Row endpoints accept exactly these review states (_require_row_in_review_states).
+_REVIEWABLE_STATUSES: frozenset[str] = frozenset({"pending", "verified", "edited"})
+
+_SPLIT_SUFFIX_MAX_CHARS: int = 32
+
+# Review columns are deferred on the model (historical migrations select the
+# ORM class before they exist).  Queries that read them for every row in a batch
+# load them in the same SELECT instead of one lazy load per row per column.
+_REVIEW_COLUMN_OPTIONS = (
+    undefer(ImportStagingRow.original_raw_job),
+    undefer(ImportStagingRow.review_status),
+    undefer(ImportStagingRow.review_part_number_override),
+    undefer(ImportStagingRow.review_split_suffix_override),
+    undefer(ImportStagingRow.review_split_suffix_source),
+    undefer(ImportStagingRow.parsed_part_number),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +241,7 @@ def _row_response(row: ImportStagingRow) -> dict[str, Any]:
         "reviewed_by": row.reviewed_by,
         "review_part_number_override": row.review_part_number_override,
         "review_split_suffix_override": row.review_split_suffix_override,
+        "review_split_suffix_source": row.review_split_suffix_source,
     }
 
 
@@ -359,8 +386,10 @@ def _group_view(
                 "staging_row_id": r.id,
                 "source_row_number": r.source_row_number,
                 "original_cell_text": r.original_raw_job or r.raw_job,
+                "parsed_part_number": _row_parsed_pn(r),
                 "review_part_number_override": r.review_part_number_override,
                 "review_split_suffix_override": r.review_split_suffix_override,
+                "review_split_suffix_source": r.review_split_suffix_source,
                 "review_status": r.review_status,
                 "shape_rule_fired": _shape_rule_fired_for_row(r),
             }
@@ -421,6 +450,193 @@ def _rows_for_pn_via_decomposition(
 def _get_non_deleted_group(session: Session, batch_id: int, pn: str) -> list[ImportStagingRow]:
     """Rows for the pn group that are not yet deleted."""
     return [r for r in _rows_for_pn(session, batch_id, pn) if r.review_status != "deleted"]
+
+
+# ---------------------------------------------------------------------------
+# Patch 06 — batch identity, duplicate section, shared review-status rule
+# ---------------------------------------------------------------------------
+
+def _identity_view(identity: IdentityTuple) -> dict[str, Any]:
+    """Serialize an IdentityTuple to the ReviewGroupIdentity shape."""
+    return {
+        "part_number": identity.part_number,
+        "build_type": identity.build_type.value,
+        "split_suffix": identity.split_suffix,
+        "repeat_reference": identity.repeat_reference,
+        "build_qualifier": (
+            identity.build_qualifier.value if identity.build_qualifier is not None else None
+        ),
+    }
+
+
+def derive_row_review_status(row: ImportStagingRow) -> str:
+    """The review_status a non-deleted row holds given its current overrides.
+
+    The one rule shared by PUT /canonical, PATCH /split-suffix and
+    DELETE /split-suffix.  An override pair equal to the raw parse is a retained
+    state that reads as 'verified'; overrides are never cleared on equality.
+
+    Pre:  row.review_status != 'deleted'.
+    Post: 'verified' when both overrides are null, or when the effective part
+          number and split suffix both equal the raw parse's; 'edited' otherwise
+          (including an override on a row whose raw_job does not parse).
+    Raises: never.
+    """
+    if row.review_part_number_override is None and row.review_split_suffix_override is None:
+        return "verified"
+    parsed = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
+    effective = effective_decomposition(row)
+    if (
+        parsed is None
+        or isinstance(parsed, DecomposeError)
+        or effective is None
+        or isinstance(effective, DecomposeError)
+    ):
+        return "edited"
+    if (
+        effective.part_number == parsed.part_number
+        and effective.split_suffix == parsed.split_suffix
+    ):
+        return "verified"
+    return "edited"
+
+
+def find_identity_collisions(session: Session, batch_id: int) -> list[CollisionSet]:
+    """Find every set of surviving rows in a batch that would write the same Job.
+
+    Row scope is exactly what run_stages_4_to_6 loads: non-discarded, pending
+    processing.  Deletion is filtered by discarded_at, which the review delete
+    endpoint writes in the same commit as review_status = 'deleted'.  It must
+    not filter by review_status: rows with review_status IS NULL (never shown for
+    review) can still be collided into by an operator's rename.
+
+    Pre:  session is open; batch_id exists.
+    Post: each CollisionSet has >= 2 rows, all with discarded_at IS NULL, all
+          sharing one effective identity; rows whose identity is unparseable are
+          excluded; sets are disjoint and ordered by lowest source_row_number.
+    Raises: never beyond propagated DB errors.
+    """
+    surviving = session.scalars(
+        select(ImportStagingRow)
+        .where(ImportStagingRow.batch_id == batch_id)
+        .where(ImportStagingRow.discarded_at.is_(None))
+        .where(ImportStagingRow.processing_status == ImportStatus.pending)
+        .order_by(ImportStagingRow.source_row_number, ImportStagingRow.id)
+        .options(*_REVIEW_COLUMN_OPTIONS)
+    ).all()
+    return group_by_effective_identity(surviving)
+
+
+def _duplicate_group_view(
+    session: Session,
+    batch_id: int,
+    identity: IdentityTuple,
+    rows: list[ImportStagingRow],
+    *,
+    origin: str,
+    resolved: bool,
+) -> dict[str, Any]:
+    """Build one DuplicateGroupView: the ReviewGroupView plus duplicate-only fields.
+
+    Pre:  rows are the group's members in display order.
+    Post: group review_status is derived from these rows only; every row carries
+          effective_identity (null when unparseable) and actionable, which is
+          true iff the row endpoints accept the row's review_status.
+    """
+    view = _group_view(
+        session, batch_id, identity.part_number, rows, identity=_identity_view(identity)
+    )
+    view["origin"] = origin
+    view["resolved"] = resolved
+    for row, row_view in zip(rows, view["rows"]):
+        row_identity = effective_identity(row)
+        row_view["effective_identity"] = (
+            _identity_view(row_identity) if isinstance(row_identity, IdentityTuple) else None
+        )
+        row_view["actionable"] = row.review_status in _REVIEWABLE_STATUSES
+    return view
+
+
+def build_duplicate_section(session: Session, batch_id: int) -> list[dict[str, Any]]:
+    """Build the intra_file_duplicates section of the review payload.
+
+    Membership of 'staged' groups is stable: it is re-derived from the raw parse
+    of rows with review_status IS NOT NULL (raw_job is immutable after staging;
+    review delete keeps review_status non-null), so a group never disappears when
+    the operator resolves it — it flips to resolved.  Collisions an operator edit
+    creates outside those groups surface as 'edit_induced' groups.
+
+    Pre:  session is open; batch is awaiting_review.
+    Post: every 'staged' group corresponds to one raw-identity tuple with >= 2
+          rows among rows with review_status IS NOT NULL (deleted rows retained);
+          staged.resolved is true iff no CollisionSet contains any of its
+          non-deleted rows; one 'edit_induced' group per CollisionSet not wholly
+          contained in a single staged group's row set, always resolved = false;
+          staged groups precede edit_induced groups.
+    Raises: never beyond propagated DB errors.
+    """
+    review_rows = session.scalars(
+        select(ImportStagingRow)
+        .where(ImportStagingRow.batch_id == batch_id)
+        .where(ImportStagingRow.review_status.isnot(None))
+        .order_by(ImportStagingRow.source_row_number, ImportStagingRow.id)
+        .options(*_REVIEW_COLUMN_OPTIONS)
+    ).all()
+
+    raw_members: dict[IdentityTuple, list[ImportStagingRow]] = {}
+    for row in review_rows:
+        if not row.raw_job:
+            continue
+        parsed = decompose_job_string_with_diagnostic(row.raw_job)
+        if isinstance(parsed, DecomposeError):
+            continue
+        raw_members.setdefault(IdentityTuple.of(parsed), []).append(row)
+    staged_groups = [
+        (identity, members) for identity, members in raw_members.items() if len(members) >= 2
+    ]
+
+    collisions = find_identity_collisions(session, batch_id)
+    colliding_row_ids: set[int] = {row_id for c in collisions for row_id in c.row_ids}
+
+    section: list[dict[str, Any]] = []
+    for identity, members in staged_groups:
+        resolved = not any(
+            r.id in colliding_row_ids for r in members if r.review_status != "deleted"
+        )
+        section.append(_duplicate_group_view(
+            session, batch_id, identity, members, origin="staged", resolved=resolved,
+        ))
+
+    staged_row_ids = [{r.id for r in members} for _, members in staged_groups]
+    for collision in collisions:
+        collision_ids = set(collision.row_ids)
+        if any(collision_ids <= member_ids for member_ids in staged_row_ids):
+            continue
+        members = [session.get(ImportStagingRow, row_id) for row_id in collision.row_ids]
+        section.append(_duplicate_group_view(
+            session, batch_id, collision.identity, members, origin="edit_induced", resolved=False,
+        ))
+    return section
+
+
+def _row_mutation_response(
+    session: Session, batch_id: int, row: ImportStagingRow
+) -> dict[str, Any]:
+    """RowMutationResponse for a committed single-row review mutation.
+
+    Pre:  the mutation is committed.
+    Post: group keeps its part-number-wide meaning (applied to new-part sections
+          only); intra_file_duplicates is recomputed from committed state.
+    Raises: propagates DB errors — the mutation is already committed, so a
+            failure here is a 500 over a landed write (Patch 06 §4.1).
+    """
+    pn = _row_parsed_pn(row)
+    all_rows = _rows_for_pn(session, batch_id, pn) if pn else []
+    return {
+        "row": _row_response(row),
+        "group": _group_status_response(pn or "", all_rows),
+        "intra_file_duplicates": build_duplicate_section(session, batch_id),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -585,9 +801,8 @@ def get_review_payload(batch_id: int, session: Session = Depends(get_session)):
             .where(ImportStagingRow.batch_id == batch_id)
             .where(ImportStagingRow.review_status.isnot(None))
             .order_by(ImportStagingRow.source_row_number)
+            .options(*_REVIEW_COLUMN_OPTIONS)
         ).all())
-
-        from ..extractors import decompose_job_string_with_diagnostic, DecomposeError
 
         # Load registry for B# vs non-B# new-part classification.
         registry = load_assembly_part_numbers(session)
@@ -616,46 +831,6 @@ def get_review_payload(batch_id: int, session: Session = Depends(get_session)):
             else:
                 non_b_groups_map.setdefault(pn, []).append(row)
 
-        # --- intra_file_duplicates ---
-        # Group rows by full identity tuple; any tuple with 2+ rows is a
-        # duplicate group.  Rows appear here regardless of registry membership.
-        by_identity: dict[tuple, list[tuple]] = {}
-        for row in review_rows:
-            if not row.raw_job:
-                continue
-            decomp = decompose_job_string_with_diagnostic(row.raw_job)
-            if decomp is None or isinstance(decomp, DecomposeError):
-                continue
-            key = (
-                decomp.part_number,
-                decomp.build_type,
-                decomp.split_suffix,
-                decomp.repeat_reference,
-                decomp.build_qualifier,
-            )
-            by_identity.setdefault(key, []).append((decomp, row))
-
-        intra_file_groups = []
-        for key, pairs in by_identity.items():
-            if len(pairs) < 2:
-                continue
-            first_decomp, _ = pairs[0]
-            identity_dict = {
-                "part_number": first_decomp.part_number,
-                "build_type": first_decomp.build_type.value,
-                "split_suffix": first_decomp.split_suffix,
-                "repeat_reference": first_decomp.repeat_reference,
-                "build_qualifier": (
-                    first_decomp.build_qualifier.value
-                    if first_decomp.build_qualifier is not None
-                    else None
-                ),
-            }
-            dup_rows = [r for _, r in pairs]
-            intra_file_groups.append(
-                _group_view(session, batch_id, first_decomp.part_number, dup_rows, identity=identity_dict)
-            )
-
         b_groups = [_group_view(session, batch_id, pn, rows) for pn, rows in b_groups_map.items()]
         non_b_groups = [_group_view(session, batch_id, pn, rows) for pn, rows in non_b_groups_map.items()]
 
@@ -663,7 +838,7 @@ def get_review_payload(batch_id: int, session: Session = Depends(get_session)):
             "batch_id": batch_id,
             "new_b_numbers": b_groups,
             "new_non_b_numbers": non_b_groups,
-            "intra_file_duplicates": intra_file_groups,
+            "intra_file_duplicates": build_duplicate_section(session, batch_id),
         }
 
 
@@ -678,7 +853,13 @@ def set_canonical(
     body: dict,
     session: Session = Depends(get_session),
 ):
-    """Apply a canonical part_number override to all non-deleted rows in a group."""
+    """Apply a canonical part_number override to all non-deleted rows in a group.
+
+    Operator-authored split suffixes (source 'operator') are preserved; every
+    other row's suffix is recomputed from its cell text and marked 'computed'.
+    Every row's suffix is computed and validated before any row is mutated, so a
+    422 leaves the whole group untouched.
+    """
     with _timed("set_canonical", batch_id=batch_id, pn=parsed_part_number):
         batch = session.get(ImportBatch, batch_id)
         _require_awaiting_review(batch, batch_id)
@@ -694,33 +875,26 @@ def set_canonical(
                 detail=f"No active rows for part_number '{parsed_part_number}' (all deleted)"
             )
 
+        computed_suffixes: dict[int, str | None] = {}
+        for row in rows:
+            if row.review_split_suffix_source == "operator":
+                continue
+            suffix = _compute_split_suffix(row.original_raw_job or row.raw_job or "", canonical)
+            if suffix is not None and len(suffix) > _SPLIT_SUFFIX_MAX_CHARS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Computed split_suffix '{suffix}' exceeds {_SPLIT_SUFFIX_MAX_CHARS} characters",
+                )
+            computed_suffixes[row.id] = suffix
+
         for row in rows:
             if row.original_raw_job is None:
                 row.original_raw_job = row.raw_job
-
-            suffix = _compute_split_suffix(row.original_raw_job or row.raw_job or "", canonical)
-
-            if suffix is not None and len(suffix) > 32:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Computed split_suffix '{suffix}' exceeds 32 characters",
-                )
-
             row.review_part_number_override = canonical
-            row.review_split_suffix_override = suffix
-
-            # Determine new review_status: 'verified' if operator reverted to parsed,
-            # 'edited' otherwise.
-            from ..extractors import decompose_job_string_with_diagnostic, DecomposeError
-            parsed_decomp = decompose_job_string_with_diagnostic(row.raw_job) if row.raw_job else None
-            parsed_pn = parsed_decomp.part_number if isinstance(parsed_decomp, type(parsed_decomp)) and not isinstance(parsed_decomp, DecomposeError) and parsed_decomp else None
-            parsed_suffix = parsed_decomp.split_suffix if parsed_decomp and not isinstance(parsed_decomp, DecomposeError) else None
-
-            if canonical == (parsed_pn or "") and suffix == parsed_suffix:
-                row.review_status = "verified"
-            else:
-                row.review_status = "edited"
-
+            if row.id in computed_suffixes:
+                row.review_split_suffix_override = computed_suffixes[row.id]
+                row.review_split_suffix_source = "computed"
+            row.review_status = derive_row_review_status(row)
             row.reviewed_by = _OPERATOR_IDENTITY
             row.reviewed_at = _now_utc()
 
@@ -729,6 +903,7 @@ def set_canonical(
         return {
             "updated_rows": [_row_response(r) for r in rows],
             "group": _group_status_response(parsed_part_number, all_rows),
+            "intra_file_duplicates": build_duplicate_section(session, batch_id),
         }
 
 
@@ -743,41 +918,101 @@ def patch_split_suffix(
     body: dict,
     session: Session = Depends(get_session),
 ):
-    """Override the split_suffix on a specific staging row."""
-    batch = session.get(ImportBatch, batch_id)
-    _require_awaiting_review(batch, batch_id)
+    """Set an operator-authored split suffix on one row.
 
-    row = session.get(ImportStagingRow, row_id)
-    _require_row_in_review_states(row, row_id, batch_id, {"pending", "verified", "edited"})
+    When the row has no part-number override, it is seeded from the parsed part
+    number in the same commit (effective_decomposition honours a suffix override
+    only alongside a part-number override).  A null or blank split_suffix means
+    "this row explicitly has no suffix", not "undo my suffix" — that is
+    DELETE /split-suffix.
+    """
+    with _timed("patch_split_suffix", batch_id=batch_id, row_id=row_id):
+        batch = session.get(ImportBatch, batch_id)
+        _require_awaiting_review(batch, batch_id)
 
-    if row.review_part_number_override is None:
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot set split_suffix before canonical part_number has been set. "
-                   "Call PUT /canonical first.",
-        )
+        row = session.get(ImportStagingRow, row_id)
+        _require_row_in_review_states(row, row_id, batch_id, set(_REVIEWABLE_STATUSES))
 
-    raw_suffix: str | None = body.get("split_suffix")
-    if raw_suffix is not None:
-        raw_suffix = raw_suffix.strip() if isinstance(raw_suffix, str) else None
-        if not raw_suffix:
-            raw_suffix = None
+        raw_suffix: str | None = body.get("split_suffix")
+        if raw_suffix is not None:
+            raw_suffix = raw_suffix.strip() if isinstance(raw_suffix, str) else None
+            if not raw_suffix:
+                raw_suffix = None
 
-    if raw_suffix is not None and len(raw_suffix) > 32:
-        raise HTTPException(status_code=422, detail=f"split_suffix '{raw_suffix}' exceeds 32 characters")
+        if raw_suffix is not None and len(raw_suffix) > _SPLIT_SUFFIX_MAX_CHARS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"split_suffix '{raw_suffix}' exceeds {_SPLIT_SUFFIX_MAX_CHARS} characters",
+            )
 
-    row.review_split_suffix_override = raw_suffix
-    row.review_status = "edited"
-    row.reviewed_by = _OPERATOR_IDENTITY
-    row.reviewed_at = _now_utc()
+        if row.review_part_number_override is None:
+            parsed_pn = _row_parsed_pn(row)
+            if parsed_pn is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Row {row_id} has no parsed part number: its JOB cell does not "
+                        "decompose, so a split suffix cannot be applied to it."
+                    ),
+                )
+            row.review_part_number_override = parsed_pn
 
-    session.commit()
-    pn = _row_parsed_pn(row)
-    all_rows = _rows_for_pn(session, batch_id, pn) if pn else []
-    return {
-        "row": _row_response(row),
-        "group": _group_status_response(pn or "", all_rows),
-    }
+        row.review_split_suffix_override = raw_suffix
+        row.review_split_suffix_source = "operator"
+        row.review_status = derive_row_review_status(row)
+        row.reviewed_by = _OPERATOR_IDENTITY
+        row.reviewed_at = _now_utc()
+
+        session.commit()
+        return _row_mutation_response(session, batch_id, row)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /ingest/{batch_id}/staging-row/{row_id}/split-suffix
+# ---------------------------------------------------------------------------
+
+@router.delete("/{batch_id}/staging-row/{row_id}/split-suffix")
+def revert_split_suffix(
+    batch_id: int,
+    row_id: int,
+    session: Session = Depends(get_session),
+):
+    """Discard an operator-authored split suffix and return the row to computed provenance.
+
+    The suffix is recomputed from the cell text and the row's current part-number
+    override, which is left unchanged.  Idempotent: a row without an operator
+    suffix (source 'computed' or null) is returned unchanged with 200.  The
+    recomputed suffix is validated here because PUT /canonical skips suffix
+    computation for operator rows, so this pairing may never have been checked.
+    """
+    with _timed("revert_split_suffix", batch_id=batch_id, row_id=row_id):
+        batch = session.get(ImportBatch, batch_id)
+        _require_awaiting_review(batch, batch_id)
+
+        row = session.get(ImportStagingRow, row_id)
+        _require_row_in_review_states(row, row_id, batch_id, set(_REVIEWABLE_STATUSES))
+
+        if row.review_split_suffix_source == "operator":
+            suffix = _compute_split_suffix(
+                row.original_raw_job or row.raw_job or "", row.review_part_number_override
+            )
+            if suffix is not None and len(suffix) > _SPLIT_SUFFIX_MAX_CHARS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Recomputed split_suffix '{suffix}' is {len(suffix)} characters, "
+                        f"exceeding {_SPLIT_SUFFIX_MAX_CHARS}. Set a shorter suffix or change "
+                        "the canonical part number."
+                    ),
+                )
+            row.review_split_suffix_override = suffix
+            row.review_split_suffix_source = "computed"
+            row.review_status = derive_row_review_status(row)
+            row.reviewed_by = _OPERATOR_IDENTITY
+            row.reviewed_at = _now_utc()
+            session.commit()
+
+        return _row_mutation_response(session, batch_id, row)
 
 
 # ---------------------------------------------------------------------------
@@ -811,12 +1046,7 @@ def verify_staging_row(
     row.reviewed_at = _now_utc()
 
     session.commit()
-    pn = _row_parsed_pn(row)
-    all_rows = _rows_for_pn(session, batch_id, pn) if pn else []
-    return {
-        "row": _row_response(row),
-        "group": _group_status_response(pn or "", all_rows),
-    }
+    return _row_mutation_response(session, batch_id, row)
 
 
 # ---------------------------------------------------------------------------
@@ -841,12 +1071,7 @@ def delete_staging_row_from_review(
         row.review_status = "deleted"
 
         session.commit()
-        pn = _row_parsed_pn(row)
-        all_rows = _rows_for_pn(session, batch_id, pn) if pn else []
-        return {
-            "row": _row_response(row),
-            "group": _group_status_response(pn or "", all_rows),
-        }
+        return _row_mutation_response(session, batch_id, row)
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +1085,14 @@ def confirm_review(
     session_factory: Callable[[], Session] = Depends(get_session_factory),
     x_client_id: str | None = Header(None, alias="X-Client-Id"),
 ):
-    """Run Stage 4..6 against the surviving staging rows and finalize the batch."""
+    """Run Stage 4..6 against the surviving staging rows and finalize the batch.
+
+    Refuses with 409 while any 'pending' row remains, and with a structured 409
+    (code 'identity_collision') while any two surviving rows share an effective
+    identity — confirming then would let Stage 5 overwrite one row's Job with
+    another's.  On either refusal nothing is written and the batch stays
+    awaiting_review.
+    """
     with _timed("confirm_review", batch_id=batch_id):
         # Open and close the gating session before delegating to run_stages_4_to_6,
         # which opens its own session internally.  This eliminates the double-session
@@ -881,6 +1113,28 @@ def confirm_review(
                     status_code=409,
                     detail=f"{pending_count} row(s) still in 'pending' review status. "
                            "Verify or delete each pending row before confirming.",
+                )
+
+            # Guard: no two surviving rows may write the same Job (Patch 06 §3.1).
+            collisions = find_identity_collisions(session, batch_id)
+            if collisions:
+                return JSONResponse(
+                    status_code=http_status.HTTP_409_CONFLICT,
+                    content={
+                        "code": "identity_collision",
+                        "detail": (
+                            f"{len(collisions)} set(s) of rows would write the same job. "
+                            "Rename or delete a row in each before confirming."
+                        ),
+                        "collisions": [
+                            {
+                                "identity": _identity_view(collision.identity),
+                                "row_ids": list(collision.row_ids),
+                            }
+                            for collision in collisions
+                        ],
+                        "intra_file_duplicates": build_duplicate_section(session, batch_id),
+                    },
                 )
 
             rows_total = batch.row_count

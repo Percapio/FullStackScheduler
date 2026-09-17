@@ -1,4 +1,5 @@
-"""Tests for Phase 18c §6 — Stage 3.6 intra-file duplicate detection and Stage 4 flag.
+"""Tests for Phase 18c §6 — Stage 3.6 intra-file duplicate detection — and the
+Patch 06 §7.1 regression: an unresolved duplicate can never overwrite a Job.
 
 Covers:
  - augment_with_intra_file_duplicates groups rows by full IdentityTuple key
@@ -6,29 +7,29 @@ Covers:
  - Rows without existing review_status get 'verified' (F7)
  - Stage 3.5 status is not clobbered by Stage 3.6
  - A row can appear in both new_b_numbers and intra_file_duplicates
- - Feature flag false (default): Stage 4 passes intra-file duplicates through
- - Feature flag true: Stage 4 errors on intra-file duplicates
+ - POST /confirm refuses an unresolved duplicate with 409 identity_collision
+ - Stage 4, reached without the gate, errors both rows instead of overwriting
 """
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.config import Settings
 from backend.app.ingest import (
     ReviewClassification,
     augment_with_intra_file_duplicates,
     classify_new_parts_for_review,
+    ingest_workbook,
+    run_stages_4_to_6,
 )
 from backend.app.models import (
     Base,
     ImportBatch,
     ImportStagingRow,
     ImportStatus,
+    Job,
     SheetKind,
 )
 
@@ -187,131 +188,65 @@ class TestAugmentWithIntraFileDuplicates:
 
 
 # ---------------------------------------------------------------------------
-# Stage 4 feature flag
+# Patch 06 §7.1 — the regression that motivated the patch
 # ---------------------------------------------------------------------------
 
-class TestIntraFileCollisionFlag:
-    def test_intra_file_collision_flag_off_passes_stage_4(self, session):
-        """With the legacy flag false (default), Stage 4 does not error on
-        intra-file collisions — no duplicate_group_key is set on rows.
-        """
-        from backend.app.ingest import run_stages_4_to_6
-        from backend.app.models import SheetKind
-        from sqlalchemy.orm import sessionmaker as sm
+class TestUnresolvedDuplicateCannotOverwrite:
+    """Two rows with one raw identity, both valid enough for Stage 5 to write,
+    with different quantities.  Before Patch 06 the second row silently
+    overwrote the first row's Job and the batch finished 'processed'."""
 
-        batch = ImportBatch(
-            source_file="test.xlsx",
-            source_sha256="a" * 64,
-            status=ImportStatus.awaiting_review,
-            sheet_kind=SheetKind.live,
-            row_count=2,
-        )
-        session.add(batch)
-        session.flush()
+    ROWS = [
+        {"JOB": "137845\nNEW", "QTY": "10", "CUSTOMER": "ACME"},
+        {"JOB": "137845\nNEW", "QTY": "25", "CUSTOMER": "ACME"},
+    ]
 
-        row1 = ImportStagingRow(
-            batch_id=batch.id,
-            source_row_number=1,
-            raw_job="123456\nNEW",
-            processing_status=ImportStatus.pending,
-        )
-        row2 = ImportStagingRow(
-            batch_id=batch.id,
-            source_row_number=2,
-            raw_job="123456\nNEW",
-            processing_status=ImportStatus.pending,
-        )
-        session.add_all([row1, row2])
-        session.commit()
+    def test_confirm_refuses_with_identity_collision(self, client, workbook_factory, session_factory):
+        held = ingest_workbook(workbook_factory(self.ROWS), session_factory=session_factory)
+        assert held.kind == "held_for_review"
 
-        engine = session.get_bind()
-        factory = sm(bind=engine, autoflush=False, expire_on_commit=False)
+        resp = client.post(f"/api/ingest/{held.batch_id}/confirm")
 
-        def _factory():
-            return factory()
+        assert resp.status_code == 409
+        body = resp.json()
+        assert body["code"] == "identity_collision"
+        assert len(body["collisions"]) == 1
+        assert len(body["collisions"][0]["row_ids"]) == 2
+        assert [g["resolved"] for g in body["intra_file_duplicates"]] == [False]
+        with session_factory() as s:
+            assert s.scalar(select(func.count()).select_from(Job)) == 0
+            assert s.get(ImportBatch, held.batch_id).status == ImportStatus.awaiting_review
+            statuses = s.scalars(
+                select(ImportStagingRow.processing_status)
+                .where(ImportStagingRow.batch_id == held.batch_id)
+            ).all()
+            assert statuses == [ImportStatus.pending, ImportStatus.pending]
 
-        run_stages_4_to_6(
-            batch_id=batch.id,
+    def test_stage_4_errors_both_rows_when_gate_is_bypassed(self, workbook_factory, session_factory):
+        held = ingest_workbook(workbook_factory(self.ROWS), session_factory=session_factory)
+        assert held.kind == "held_for_review"
+
+        result = run_stages_4_to_6(
+            batch_id=held.batch_id,
             rows_total=2,
             sheet_kind=SheetKind.live,
-            source_sha256="a" * 64,
-            filename="test.xlsx",
+            source_sha256=held.source_sha256,
+            filename=held.filename,
             duplicate_of=None,
-            session_factory=_factory,
+            session_factory=session_factory,
         )
 
-        # After run_stages_4_to_6, reload rows to verify Stage 4 did NOT set collision errors.
-        from sqlalchemy import select as sa_select
-        with factory() as s:
+        assert result.rows_errored == 2
+        assert result.rows_inserted == 0
+        assert result.rows_updated == 0
+        with session_factory() as s:
+            assert s.scalar(select(func.count()).select_from(Job)) == 0
+            assert s.get(ImportBatch, held.batch_id).status == ImportStatus.error
             rows = s.scalars(
-                sa_select(ImportStagingRow).where(ImportStagingRow.batch_id == batch.id)
+                select(ImportStagingRow).where(ImportStagingRow.batch_id == held.batch_id)
             ).all()
-            collision_errors = [
-                r for r in rows
-                if r.processing_error and "Intra-file duplicate" in r.processing_error
-            ]
-        assert collision_errors == [], (
-            "Stage 4 must not set intra-file collision errors when flag is False"
-        )
-
-    def test_intra_file_collision_flag_on_errors_stage_4(self, session):
-        """With the legacy flag true, Stage 4 sets intra-file collision errors on rows."""
-        from backend.app.ingest import run_stages_4_to_6
-        from backend.app.models import SheetKind
-        from sqlalchemy import select as sa_select
-        from sqlalchemy.orm import sessionmaker as sm
-
-        batch = ImportBatch(
-            source_file="test2.xlsx",
-            source_sha256="b" * 64,
-            status=ImportStatus.awaiting_review,
-            sheet_kind=SheetKind.live,
-            row_count=2,
-        )
-        session.add(batch)
-        session.flush()
-
-        row1 = ImportStagingRow(
-            batch_id=batch.id,
-            source_row_number=1,
-            raw_job="654321\nNEW",
-            processing_status=ImportStatus.pending,
-        )
-        row2 = ImportStagingRow(
-            batch_id=batch.id,
-            source_row_number=2,
-            raw_job="654321\nNEW",
-            processing_status=ImportStatus.pending,
-        )
-        session.add_all([row1, row2])
-        session.commit()
-
-        engine = session.get_bind()
-        factory = sm(bind=engine, autoflush=False, expire_on_commit=False)
-
-        def _factory():
-            return factory()
-
-        overridden_settings = Settings(intra_file_collision_legacy_error_path=True)
-        with patch("backend.app.ingest.get_settings", return_value=overridden_settings):
-            run_stages_4_to_6(
-                batch_id=batch.id,
-                rows_total=2,
-                sheet_kind=SheetKind.live,
-                source_sha256="b" * 64,
-                filename="test2.xlsx",
-                duplicate_of=None,
-                session_factory=_factory,
-            )
-
-        with factory() as s:
-            rows = s.scalars(
-                sa_select(ImportStagingRow).where(ImportStagingRow.batch_id == batch.id)
-            ).all()
-            collision_errors = [
-                r for r in rows
-                if r.processing_error and "Intra-file duplicate" in r.processing_error
-            ]
-        assert len(collision_errors) == 2, (
-            "Stage 4 must set intra-file collision errors when flag is True"
-        )
+            assert len(rows) == 2
+            for row in rows:
+                assert row.processing_status == ImportStatus.error
+                assert row.processing_error.startswith("Intra-file duplicate JOB identity")
+                assert row.duplicate_group_key == "137845|new|||"

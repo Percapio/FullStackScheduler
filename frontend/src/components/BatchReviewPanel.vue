@@ -6,16 +6,23 @@
  * with similar-assembly hints, per-row verify/delete, and a canonical-override
  * input. Emits `confirmed` with a ConfirmResult on successful confirmation, and
  * `abandoned` when the operator abandons the batch.
+ *
+ * Patch 06: the backend is the single source of truth for intra-file duplicate
+ * state. Every review mutation response carries the recomputed
+ * `intra_file_duplicates` section, which replaces the local one wholesale; only
+ * the new-part sections are spliced.
  */
 import { ref, computed, onMounted } from 'vue'
 import {
   fetchReviewPayload,
   setCanonical,
   patchSplitSuffix,
+  revertSplitSuffix,
   verifyRow,
   deleteRow,
   confirmReview,
   abandonReview,
+  isConfirmCollisionBody,
   type ReviewPayload,
   type ReviewGroup,
   type ReviewRow,
@@ -52,6 +59,11 @@ const mutationInFlightCount = ref(0)
 const canonicalInputs = ref<Record<string, string>>({})
 /** per-group loading flag for canonical set operations */
 const groupLoading    = ref<Record<string, boolean>>({})
+/**
+ * Row-keyed input state below lives for this component instance and is bounded
+ * by the batch's row count. It is not stored on group objects, so it survives
+ * wholesale replacement of the duplicates section (Patch 06 §5.2).
+ */
 /** split-suffix override input value, keyed by staging_row_id */
 const splitSuffixInputs = ref<Record<number, string>>({})
 /** Phase 18b: B# shape-rule state per row (seeded from row.shape_rule_fired) */
@@ -74,13 +86,20 @@ const allGroups = computed<ReviewGroup[]>(() => {
   ]
 })
 
-/** Confirm is allowed when all three guards pass (Phase 18b §6.4). */
+const unresolvedDuplicateCount = computed(() =>
+  payload.value ? payload.value.intra_file_duplicates.filter(g => !g.resolved).length : 0
+)
+
+/** Confirm is allowed when all four guards pass (Phase 18b §6.4, Patch 06 §5.4). */
 const canConfirm = computed(() => {
   if (!payload.value) return false
   // Guard 1: no 'pending' rows (back-compat for in-flight Phase 18a batches)
   if (anyRowPending()) return false
   // Guard 2: no unsaved canonical input (operator typed but not Applied)
   if (anyUnsavedCanonicalInput()) return false
+  // Guard 4: no duplicate group still collides. The server gate stays
+  // authoritative; this tells the operator before they click.
+  if (!payload.value.intra_file_duplicates.every(g => g.resolved)) return false
   // Guard 3: no mutation in flight (Patch 02 P-6)
   return mutationInFlightCount.value === 0
 })
@@ -89,32 +108,97 @@ const canConfirm = computed(() => {
  *  Returns undefined when the button is enabled; browsers suppress the tooltip.
  */
 const confirmDisabledReason = computed<string | undefined>(() => {
-  if (!payload.value) return 'Loading\u2026'
+  if (!payload.value) return 'Loading…'
   if (anyRowPending())
-    return 'Some rows are still pending \u2014 verify or delete each before confirming.'
+    return 'Some rows are still pending — verify or delete each before confirming.'
   if (anyUnsavedCanonicalInput())
     return 'Apply or revert pending canonical changes first.'
+  if (unresolvedDuplicateCount.value > 0)
+    return collisionMessage(unresolvedDuplicateCount.value)
   if (mutationInFlightCount.value > 0)
     return 'Waiting for an in-flight action to finish.'
   return undefined
 })
 
+function collisionMessage(unresolved: number): string {
+  return `${unresolved} duplicate group(s) still collide — rename or delete a row in each.`
+}
+
 function anyRowPending(): boolean {
   return allGroups.value.some(g => g.rows.some(r => r.review_status === 'pending'))
+}
+
+/**
+ * The part number PUT /canonical addresses for this row. An edit_induced
+ * duplicate group can hold rows parsed from different part numbers, so the
+ * row's own parse wins over the group's.
+ */
+function rowParsedPartNumber(group: ReviewGroup, row: ReviewRow): string {
+  return row.parsed_part_number ?? group.parsed_part_number
+}
+
+function persistedCanonical(group: ReviewGroup, row: ReviewRow): string {
+  return row.review_part_number_override ?? rowParsedPartNumber(group, row)
 }
 
 function anyUnsavedCanonicalInput(): boolean {
   return allGroups.value.some(g =>
     g.rows.some(r => {
       if (isBNumberByRow.value[r.staging_row_id]) return false
-      const typed     = (canonicalByRow.value[r.staging_row_id] ?? '').trim()
-      const persisted = r.review_part_number_override ?? g.parsed_part_number
-      return typed !== persisted
+      const typed = (canonicalByRow.value[r.staging_row_id] ?? '').trim()
+      return typed !== persistedCanonical(g, r)
     })
   )
 }
 
 const anyBusy = computed(() => confirming.value || abandoning.value || mutationInFlightCount.value > 0)
+
+// ---------------------------------------------------------------------------
+// Row input state sync
+// ---------------------------------------------------------------------------
+
+/** Persisted values a row's inputs were last synced against. */
+interface PersistedInputs {
+  canonical: string
+  suffix: string
+}
+
+function snapshotPersistedInputs(): Map<number, PersistedInputs> {
+  const snapshot = new Map<number, PersistedInputs>()
+  for (const g of allGroups.value) {
+    for (const r of g.rows) {
+      snapshot.set(r.staging_row_id, {
+        canonical: persistedCanonical(g, r),
+        suffix: r.review_split_suffix_override ?? '',
+      })
+    }
+  }
+  return snapshot
+}
+
+/**
+ * Brings row-keyed input state in line with the payload after it changed.
+ * A row not present in `previous` is seeded from the payload; an input still
+ * holding the value it was last synced to follows the server; an input the
+ * operator has edited since is left alone.
+ */
+function syncRowInputs(previous: Map<number, PersistedInputs>) {
+  for (const g of allGroups.value) {
+    for (const r of g.rows) {
+      const id = r.staging_row_id
+      const before = previous.get(id)
+      if (!(id in isBNumberByRow.value)) isBNumberByRow.value[id] = r.shape_rule_fired
+      const typedCanonical = canonicalByRow.value[id]
+      if (before === undefined || typedCanonical === undefined || typedCanonical.trim() === before.canonical) {
+        canonicalByRow.value[id] = persistedCanonical(g, r)
+      }
+      const typedSuffix = splitSuffixInputs.value[id]
+      if (before === undefined || typedSuffix === undefined || typedSuffix.trim() === before.suffix) {
+        splitSuffixInputs.value[id] = r.review_split_suffix_override ?? ''
+      }
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Load
@@ -128,14 +212,10 @@ async function load() {
     // Seed canonical inputs with the parsed value so operator sees the default
     for (const g of allGroups.value) {
       canonicalInputs.value[g.parsed_part_number] = g.parsed_part_number
-      for (const r of g.rows) {
-        isBNumberByRow.value[r.staging_row_id] = r.shape_rule_fired
-        // Seed from the persisted canonical so Guard 2 does not fire on load
-        // for rows whose override is already set from a prior session.
-        canonicalByRow.value[r.staging_row_id] = r.review_part_number_override ?? g.parsed_part_number
-        splitSuffixInputs.value[r.staging_row_id] = r.review_split_suffix_override ?? ''
-      }
     }
+    // Seed from the persisted canonical so Guard 2 does not fire on load
+    // for rows whose override is already set from a prior session.
+    syncRowInputs(new Map())
   } catch (err: any) {
     loadError.value = err?.response?.data?.detail ?? err?.message ?? 'Failed to load review data.'
   } finally {
@@ -164,26 +244,60 @@ async function runMutation<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Apply a MutationResponse or CanonicalMutationResponse directly to local
- * state, avoiding a full GET /review refetch on every action.
+ * state, avoiding a full GET /review refetch on every action (P-4).
+ *
+ * The duplicates section is replaced by the server's recomputed one and never
+ * spliced: resolution is batch-wide and only the backend can derive it. In the
+ * new-part sections every group whose parsed_part_number matches takes the
+ * part-number-wide status and the incoming rows.
  */
 function applyMutationResponse(resp: MutationResponse | CanonicalMutationResponse) {
   if (!payload.value) return
+  const previous = snapshotPersistedInputs()
+  payload.value.intra_file_duplicates = resp.intra_file_duplicates
   const pn = resp.group.parsed_part_number
-  for (const section of ['new_b_numbers', 'new_non_b_numbers', 'intra_file_duplicates'] as const) {
-    const groupIdx = payload.value[section].findIndex(g => g.parsed_part_number === pn)
-    if (groupIdx === -1) continue
-    // Update group-level status derived from the server response.
-    payload.value[section][groupIdx].review_status = resp.group.review_status as ReviewGroup['review_status']
-    const rowsToApply = 'updated_rows' in resp ? resp.updated_rows : [resp.row]
-    for (const incoming of rowsToApply) {
-      const rowIdx = payload.value[section][groupIdx].rows.findIndex(
-        r => r.staging_row_id === incoming.staging_row_id
-      )
-      if (rowIdx !== -1) {
-        Object.assign(payload.value[section][groupIdx].rows[rowIdx], incoming)
+  const rowsToApply = 'updated_rows' in resp ? resp.updated_rows : [resp.row]
+  for (const section of ['new_b_numbers', 'new_non_b_numbers'] as const) {
+    for (const group of payload.value[section]) {
+      if (group.parsed_part_number !== pn) continue
+      group.review_status = resp.group.review_status as ReviewGroup['review_status']
+      for (const incoming of rowsToApply) {
+        const row = group.rows.find(r => r.staging_row_id === incoming.staging_row_id)
+        if (row) Object.assign(row, incoming)
       }
     }
-    break
+  }
+  syncRowInputs(previous)
+}
+
+/**
+ * A 5xx — or no response at all — can follow a committed write (Patch 06 §4.1):
+ * the mutation lands, then building the response fails. The local view cannot
+ * be trusted, so reload it. A 4xx is a refusal with no write.
+ */
+function mayHaveCommitted(err: any): boolean {
+  const status = err?.response?.status
+  return typeof status !== 'number' || status >= 500
+}
+
+async function reportMutationError(err: any, fallback: string) {
+  const message = err?.response?.data?.detail ?? err?.message ?? fallback
+  if (!mayHaveCommitted(err)) {
+    actionError.value = message
+    return
+  }
+  actionError.value = `${message} The change may still have been saved — the review was reloaded from the server.`
+  await reloadAfterServerError()
+}
+
+async function reloadAfterServerError() {
+  try {
+    const fresh = await fetchReviewPayload(props.batchId)
+    const previous = snapshotPersistedInputs()
+    payload.value = fresh
+    syncRowInputs(previous)
+  } catch {
+    actionError.value = `${actionError.value ?? ''} Reloading also failed; refresh the page.`.trim()
   }
 }
 
@@ -199,7 +313,7 @@ async function handleVerify(_group: ReviewGroup, rowId: number) {
       const resp = await verifyRow(props.batchId, rowId)
       applyMutationResponse(resp)
     } catch (err: any) {
-      actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Verify failed.'
+      await reportMutationError(err, 'Verify failed.')
     }
   })
 }
@@ -211,7 +325,7 @@ async function handleDelete(_group: ReviewGroup, rowId: number) {
       const resp = await deleteRow(props.batchId, rowId)
       applyMutationResponse(resp)
     } catch (err: any) {
-      actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Delete failed.'
+      await reportMutationError(err, 'Delete failed.')
     }
   })
 }
@@ -221,7 +335,8 @@ async function handleDelete(_group: ReviewGroup, rowId: number) {
 // ---------------------------------------------------------------------------
 
 function canEditSplitSuffix(row: ReviewRow): boolean {
-  // PUT /canonical must have run first (review_status moves away from 'pending').
+  // Pending rows are verified first by UI choice (Phase 18a §6.4); the backend
+  // accepts them too, seeding the part-number override when absent.
   return row.review_status !== 'deleted' && row.review_status !== 'pending'
 }
 
@@ -234,7 +349,21 @@ async function handleSetSplitSuffix(_group: ReviewGroup, row: ReviewRow) {
       const resp = await patchSplitSuffix(props.batchId, row.staging_row_id, normalised)
       applyMutationResponse(resp)
     } catch (err: any) {
-      actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Set split suffix failed.'
+      await reportMutationError(err, 'Set split suffix failed.')
+    }
+  })
+}
+
+async function handleRevertSplitSuffix(row: ReviewRow) {
+  actionError.value = null
+  await runMutation(async () => {
+    try {
+      const resp = await revertSplitSuffix(props.batchId, row.staging_row_id)
+      applyMutationResponse(resp)
+      // The operator asked for the computed suffix: show it even over typed text.
+      splitSuffixInputs.value[row.staging_row_id] = resp.row.review_split_suffix_override ?? ''
+    } catch (err: any) {
+      await reportMutationError(err, 'Revert split suffix failed.')
     }
   })
 }
@@ -247,13 +376,14 @@ async function handleBNumberToggle(group: ReviewGroup, row: ReviewRow, checked: 
   isBNumberByRow.value[row.staging_row_id] = checked
   if (checked) {
     // Revert: re-apply the parsed canonical to restore 'verified' status.
+    const parsedPartNumber = rowParsedPartNumber(group, row)
     await runMutation(async () => {
       try {
-        const resp = await setCanonical(props.batchId, group.parsed_part_number, group.parsed_part_number)
+        const resp = await setCanonical(props.batchId, parsedPartNumber, parsedPartNumber)
         applyMutationResponse(resp)
-        canonicalByRow.value[row.staging_row_id] = group.parsed_part_number
+        canonicalByRow.value[row.staging_row_id] = parsedPartNumber
       } catch (err: any) {
-        actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Revert canonical failed.'
+        await reportMutationError(err, 'Revert canonical failed.')
       }
     })
   } else {
@@ -271,10 +401,10 @@ async function handleApplyCanonical(group: ReviewGroup, row: ReviewRow) {
   rowMutating.value[row.staging_row_id] = true
   await runMutation(async () => {
     try {
-      const resp = await setCanonical(props.batchId, group.parsed_part_number, desired)
+      const resp = await setCanonical(props.batchId, rowParsedPartNumber(group, row), desired)
       applyMutationResponse(resp)
     } catch (err: any) {
-      actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Apply canonical failed.'
+      await reportMutationError(err, 'Apply canonical failed.')
     } finally {
       rowMutating.value[row.staging_row_id] = false
     }
@@ -295,7 +425,7 @@ async function handleSetCanonical(group: ReviewGroup) {
       const resp = await setCanonical(props.batchId, group.parsed_part_number, canonical)
       applyMutationResponse(resp)
     } catch (err: any) {
-      actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Set canonical failed.'
+      await reportMutationError(err, 'Set canonical failed.')
     } finally {
       groupLoading.value[group.parsed_part_number] = false
     }
@@ -318,7 +448,16 @@ async function handleConfirm() {
     const result = await confirmReview(props.batchId)
     emit('confirmed', result)
   } catch (err: any) {
-    actionError.value = err?.response?.data?.detail ?? err?.message ?? 'Confirm failed.'
+    const body = err?.response?.data
+    if (err?.response?.status === 409 && isConfirmCollisionBody(body) && payload.value) {
+      // A stale view: the server still sees colliding rows. Land on its section.
+      const previous = snapshotPersistedInputs()
+      payload.value.intra_file_duplicates = body.intra_file_duplicates
+      syncRowInputs(previous)
+      actionError.value = `Import not confirmed: ${collisionMessage(unresolvedDuplicateCount.value)}`
+    } else {
+      actionError.value = body?.detail ?? err?.message ?? 'Confirm failed.'
+    }
     confirming.value = false
   }
 }
@@ -498,7 +637,7 @@ async function handleAbandon() {
                   </template>
                 </div>
 
-                <!-- Split-suffix override (visible after PUT /canonical has run) -->
+                <!-- Split-suffix override (hidden for pending rows: verify first) -->
                 <div v-if="canEditSplitSuffix(row)"
                      class="flex items-center gap-1.5 text-xs mt-1 w-full">
                   <label :for="`split-${row.staging_row_id}`"
@@ -515,9 +654,17 @@ async function handleAbandon() {
                   <button type="button"
                           class="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors duration-75 disabled:opacity-50"
                           :disabled="anyBusy"
-                          :title="'Set or clear the per-row split suffix override'"
+                          :title="'Set the per-row split suffix; empty means this row has no suffix'"
                           @click="handleSetSplitSuffix(group, row)">
                     Apply
+                  </button>
+                  <button v-if="row.review_split_suffix_source === 'operator'"
+                          type="button"
+                          class="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors duration-75 disabled:opacity-50"
+                          :disabled="anyBusy"
+                          :title="'Discard the typed suffix and recompute it from the cell text'"
+                          @click="handleRevertSplitSuffix(row)">
+                    Revert suffix
                   </button>
                 </div>
               </li>
@@ -527,23 +674,51 @@ async function handleAbandon() {
         </div>
       </div>
 
-      <!-- Intra-file duplicates section (Phase 18c §6.4) -->
+      <!-- Intra-file duplicates section (Phase 18c §6.4, Patch 06 §5.5) -->
       <div v-if="payload.intra_file_duplicates.length > 0">
         <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">
           Intra-file duplicates ({{ payload.intra_file_duplicates.length }})
         </h3>
         <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
-          These rows share a complete identity. Either give them distinct split suffixes,
-          delete a row, or leave them — Stage 4 will only error on remaining collisions.
+          These rows would write the same job. Give them distinct split suffixes or delete one —
+          the import cannot be confirmed while any group collides.
         </p>
 
         <section v-for="group in payload.intra_file_duplicates"
                  :key="intraFileDuplicateKey(group)"
-                 class="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/10 mb-3">
+                 data-testid="duplicate-group"
+                 :data-origin="group.origin"
+                 :data-resolved="group.resolved"
+                 :class="[
+                   'rounded-lg border mb-3',
+                   group.resolved
+                     ? 'border-emerald-200 dark:border-emerald-700 bg-emerald-50/40 dark:bg-emerald-900/10'
+                     : 'border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/10',
+                 ]">
 
           <!-- Identity header -->
-          <div class="px-4 py-2 border-b border-amber-200 dark:border-amber-700">
-            <h4 class="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-1">Duplicate identity</h4>
+          <div :class="[
+                 'px-4 py-2 border-b',
+                 group.resolved ? 'border-emerald-200 dark:border-emerald-700' : 'border-amber-200 dark:border-amber-700',
+               ]">
+            <div class="flex items-center justify-between gap-2 mb-1">
+              <h4 class="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                {{ group.origin === 'edit_induced' ? 'Created by an edit in this review' : 'Duplicate identity' }}
+              </h4>
+              <span data-testid="duplicate-group-state"
+                    :class="[
+                      'text-xs px-1.5 py-0.5 rounded-full font-medium',
+                      group.resolved
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-800/30 dark:text-emerald-200'
+                        : 'bg-red-100 text-red-800 dark:bg-red-800/30 dark:text-red-200',
+                    ]">
+                {{ group.resolved ? 'Resolved' : 'Collides' }}
+              </span>
+            </div>
+            <p v-if="group.origin === 'edit_induced'"
+               class="text-xs text-slate-500 dark:text-slate-400 mb-1">
+              An override applied in this review made these rows share one identity.
+            </p>
             <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
               <dt class="text-slate-500 dark:text-slate-400">Part number</dt>
               <dd class="font-mono text-slate-800 dark:text-slate-100">{{ group.identity?.part_number ?? group.parsed_part_number }}</dd>
@@ -560,13 +735,14 @@ async function handleAbandon() {
 
           <div class="px-4 py-3">
             <ul class="space-y-1">
+              <!-- Row key stays staging_row_id: keys need only be unique within one v-for (Patch 06 §5.5). -->
               <ReviewRowRenderer
                 v-for="row in group.rows"
                 :key="row.staging_row_id"
                 :group="group"
                 :row="row"
                 :is-b-number="isBNumberByRow[row.staging_row_id] ?? false"
-                :canonical-value="canonicalByRow[row.staging_row_id] ?? group.parsed_part_number"
+                :canonical-value="canonicalByRow[row.staging_row_id] ?? persistedCanonical(group, row)"
                 :split-suffix-value="splitSuffixInputs[row.staging_row_id] ?? ''"
                 :any-busy="anyBusy"
                 :row-mutating="rowMutating[row.staging_row_id] ?? false"
@@ -575,6 +751,7 @@ async function handleAbandon() {
                 @b-number-toggle="(_rowId, checked) => handleBNumberToggle(group, row, checked)"
                 @apply-canonical="handleApplyCanonical(group, row)"
                 @set-split-suffix="handleSetSplitSuffix(group, row)"
+                @revert-split-suffix="handleRevertSplitSuffix(row)"
                 @update:canonical-value="canonicalByRow[row.staging_row_id] = $event"
                 @update:split-suffix-value="splitSuffixInputs[row.staging_row_id] = $event"
               />

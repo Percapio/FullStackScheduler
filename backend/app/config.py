@@ -30,14 +30,6 @@ class Settings(BaseSettings):
     sqlite_pool_size: int = 16
     sqlite_max_overflow: int = 8
     sqlite_pool_timeout_seconds: int = 30
-    # Stage 4 intra-file collision path — Phase 18c §6.3 rollback affordance.
-    # False (default): Stage 3.6 surfaces duplicates for review; Stage 4 skips
-    #                  the collision block.
-    # True:            Restores pre-Phase-18c behaviour (Stage 4 errors on
-    #                  intra-file dupes) for rollback only.
-    # DELETE this setting and the Stage 4 collision block in the release after
-    # Phase 18c confirms no regression.
-    intra_file_collision_legacy_error_path: bool = False
     known_part_numbers_chunk: int = 1000
     similar_cache_max_entries: int = 2048
     similar_cache_idle_ttl_seconds: float = 3600.0

@@ -11,9 +11,6 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
-from unittest.mock import patch
-
-from backend.app.config import Settings
 from backend.app.ingest import ingest_workbook, run_stages_4_to_6
 from backend.app.models import (
     Assembly,
@@ -177,19 +174,17 @@ def test_apply_correction_sibling_collision_stamps_duplicate_error(
             {"JOB": "137845\nNEW", "QTY": "20", "CUSTOMER": "BETA"},
         ],
     )
-    # Phase 18c: Stage 3.6 holds the batch; run Stage 4 directly with flag True.
+    # Phase 18c: Stage 3.6 holds the batch; run Stage 4 directly, bypassing the confirm gate.
     held = ingest_workbook(path, session_factory=session_factory)
-    overridden = Settings(intra_file_collision_legacy_error_path=True)
-    with patch("backend.app.ingest.get_settings", return_value=overridden):
-        run_stages_4_to_6(
-            batch_id=held.batch_id,
-            rows_total=2,
-            sheet_kind=SheetKind.live,
-            source_sha256=held.source_sha256,
-            filename=held.filename,
-            duplicate_of=None,
-            session_factory=session_factory,
-        )
+    run_stages_4_to_6(
+        batch_id=held.batch_id,
+        rows_total=2,
+        sheet_kind=SheetKind.live,
+        source_sha256=held.source_sha256,
+        filename=held.filename,
+        duplicate_of=None,
+        session_factory=session_factory,
+    )
 
     with session_factory() as s:
         rows = s.scalars(
@@ -217,19 +212,17 @@ def test_apply_correction_sibling_collision_stamps_error_fields(
             {"JOB": "137845\nNEW", "QTY": "20", "CUSTOMER": "BETA"},
         ],
     )
-    # Phase 18c: Stage 3.6 holds the batch; run Stage 4 directly with flag True.
+    # Phase 18c: Stage 3.6 holds the batch; run Stage 4 directly, bypassing the confirm gate.
     held = ingest_workbook(path, session_factory=session_factory)
-    overridden = Settings(intra_file_collision_legacy_error_path=True)
-    with patch("backend.app.ingest.get_settings", return_value=overridden):
-        run_stages_4_to_6(
-            batch_id=held.batch_id,
-            rows_total=2,
-            sheet_kind=SheetKind.live,
-            source_sha256=held.source_sha256,
-            filename=held.filename,
-            duplicate_of=None,
-            session_factory=session_factory,
-        )
+    run_stages_4_to_6(
+        batch_id=held.batch_id,
+        rows_total=2,
+        sheet_kind=SheetKind.live,
+        source_sha256=held.source_sha256,
+        filename=held.filename,
+        duplicate_of=None,
+        session_factory=session_factory,
+    )
 
     with session_factory() as s:
         row = s.scalars(

@@ -10,16 +10,31 @@ import { apiClient } from './client'
 // Response types
 // ---------------------------------------------------------------------------
 
+/** Who authored a row's split-suffix override (Patch 06 §2.2). */
+export type SuffixSource = 'computed' | 'operator'
+
+/** Why a duplicate group exists (Patch 06 §1.3). */
+export type DuplicateOrigin = 'staged' | 'edit_induced'
+
 /** A single staging row inside a review group. */
 export interface ReviewRow {
   staging_row_id: number
   source_row_number: number
   original_cell_text: string
+  /** Part number parsed from the raw cell; target of PUT /canonical for this row. */
+  parsed_part_number?: string | null
   review_part_number_override: string | null
   review_split_suffix_override: string | null
-  review_status: 'pending' | 'verified' | 'edited' | 'deleted'
+  /** 'operator' suffixes survive PUT /canonical; DELETE /split-suffix returns them to 'computed'. */
+  review_split_suffix_source: SuffixSource | null
+  /** null only for a row outside review that an edit collided into (edit_induced groups). */
+  review_status: 'pending' | 'verified' | 'edited' | 'deleted' | null
   /** True iff the Phase 18b B# shape rule fired when the row was ingested. */
   shape_rule_fired: boolean
+  /** Duplicate groups only: the identity this row will be written under. */
+  effective_identity?: ReviewGroupIdentity | null
+  /** Duplicate groups only: false when the row endpoints reject this row. */
+  actionable?: boolean
 }
 
 /** An existing assembly close to a new parsed part number, by edit distance. */
@@ -45,6 +60,12 @@ export interface ReviewGroup {
   review_status: 'pending' | 'verified' | 'edited'
   /** Populated only for intra_file_duplicates groups; null/absent for new_b/non_b groups. */
   identity?: ReviewGroupIdentity | null
+  /**
+   * Optional only because new-part sections share this type; the backend always
+   * populates origin and resolved on intra_file_duplicates groups.
+   */
+  origin?: DuplicateOrigin
+  resolved?: boolean
 }
 
 /** Full review payload returned by GET /{batch_id}/review. */
@@ -118,6 +139,7 @@ export interface ReviewRowResponse {
   reviewed_by: string | null
   review_part_number_override: string | null
   review_split_suffix_override: string | null
+  review_split_suffix_source: SuffixSource | null
 }
 
 /** Derived group status returned alongside every mutation. */
@@ -127,16 +149,45 @@ export interface GroupStatusResponse {
   active_row_count: number
 }
 
-/** Returned by verify, delete, and patch-split-suffix. */
+/**
+ * Returned by verify, delete, patch-split-suffix, and revert-split-suffix.
+ * `group` is part-number-wide and applies to new-part sections only;
+ * `intra_file_duplicates` is the recomputed section, replaced wholesale (Patch 06 §2.6).
+ */
 export interface MutationResponse {
   row: ReviewRowResponse
   group: GroupStatusResponse
+  intra_file_duplicates: ReviewGroup[]
 }
 
 /** Returned by set-canonical (multiple rows updated at once). */
 export interface CanonicalMutationResponse {
   updated_rows: ReviewRowResponse[]
   group: GroupStatusResponse
+  intra_file_duplicates: ReviewGroup[]
+}
+
+/** Surviving rows that would write the same job. */
+export interface CollisionSet {
+  identity: ReviewGroupIdentity
+  row_ids: number[]
+}
+
+/** POST /confirm 409 body when surviving rows still collide (Patch 06 §3.1). */
+export interface ConfirmCollisionBody {
+  code: 'identity_collision'
+  detail: string
+  collisions: CollisionSet[]
+  intra_file_duplicates: ReviewGroup[]
+}
+
+export function isConfirmCollisionBody(body: unknown): body is ConfirmCollisionBody {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    (body as { code?: unknown }).code === 'identity_collision' &&
+    Array.isArray((body as { intra_file_duplicates?: unknown }).intra_file_duplicates)
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +232,17 @@ export async function patchSplitSuffix(
   return resp.data
 }
 
+/** DELETE /api/ingest/{batch_id}/staging-row/{row_id}/split-suffix */
+export async function revertSplitSuffix(
+  batchId: number,
+  rowId: number,
+): Promise<MutationResponse> {
+  const resp = await apiClient.delete<MutationResponse>(
+    `/api/ingest/${batchId}/staging-row/${rowId}/split-suffix`,
+  )
+  return resp.data
+}
+
 /** POST /api/ingest/{batch_id}/staging-row/{row_id}/verify */
 export async function verifyRow(
   batchId: number,
@@ -199,7 +261,11 @@ export async function deleteRow(
   return resp.data
 }
 
-/** POST /api/ingest/{batch_id}/confirm */
+/**
+ * POST /api/ingest/{batch_id}/confirm
+ * Rejects with a 409 whose body is a ConfirmCollisionBody when surviving rows
+ * still share an identity; any other 409 carries a `detail` string.
+ */
 export async function confirmReview(batchId: number): Promise<ConfirmResult> {
   const resp = await apiClient.post<ConfirmResult>(
     `/api/ingest/${batchId}/confirm`,

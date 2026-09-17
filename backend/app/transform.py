@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -23,6 +24,7 @@ from .config import get_settings
 from .models import (
     Assembly,
     BuildQualifier,
+    BuildType,
     Classification,
     Customer,
     ImportStagingRow,
@@ -376,6 +378,123 @@ def effective_decomposition(
         part_number=row.review_part_number_override,
         split_suffix=row.review_split_suffix_override,
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch identity (Patch 06 §1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class IdentityTuple:
+    """Full job identity: the five-column uniqueness key on the Job table.
+
+    Keyed by part-number string, not assembly_id — at review time the assembly
+    may not exist yet.  The one named identity type shared by Stage 3.6 (raw
+    parse), the review surface, and Stage 4 (effective identity).
+
+    Pre:  the fields are the outputs of one JobDecomposition.
+    Post: immutable and hashable; equality is structural.
+    """
+    part_number: str
+    build_type: BuildType
+    split_suffix: str | None
+    repeat_reference: str | None
+    build_qualifier: BuildQualifier | None
+
+    @classmethod
+    def of(cls, decomposition: JobDecomposition) -> IdentityTuple:
+        """Project a decomposition onto its five identity fields."""
+        return cls(
+            part_number=decomposition.part_number,
+            build_type=decomposition.build_type,
+            split_suffix=decomposition.split_suffix,
+            repeat_reference=decomposition.repeat_reference,
+            build_qualifier=decomposition.build_qualifier,
+        )
+
+    def as_key(self) -> tuple:
+        """Return a hashable tuple for dict-keying."""
+        return (
+            self.part_number,
+            self.build_type,
+            self.split_suffix,
+            self.repeat_reference,
+            self.build_qualifier,
+        )
+
+
+class Unparseable(enum.Enum):
+    """Why a row has no identity when there is no DecomposeError to report."""
+
+    EMPTY = "empty"
+
+
+def effective_identity(
+    row: ImportStagingRow,
+) -> IdentityTuple | DecomposeError | Unparseable:
+    """The identity Stage 5 will write this row under, including operator overrides.
+
+    Defined as the projection of effective_decomposition(row) onto the five
+    identity fields, so it can never disagree with what Stage 5 writes.
+
+    Pre:  none.
+    Post: returns the IdentityTuple when the row decomposes; returns the
+          DecomposeError as a value when it does not; returns
+          Unparseable.EMPTY when raw_job is null or empty.
+    Raises: never.
+    """
+    decomposition = effective_decomposition(row)
+    if decomposition is None:
+        return Unparseable.EMPTY
+    if isinstance(decomposition, DecomposeError):
+        return decomposition
+    return IdentityTuple.of(decomposition)
+
+
+@dataclass(frozen=True)
+class CollisionSet:
+    """Surviving staging rows that would write the same Job.
+
+    Post: row_ids has >= 2 entries, ordered by (source_row_number, id).
+    """
+    identity: IdentityTuple
+    row_ids: tuple[int, ...]
+
+
+def group_by_effective_identity(
+    rows: Iterable[ImportStagingRow],
+) -> list[CollisionSet]:
+    """Group rows by effective identity and return every group of two or more.
+
+    Pure over the rows it is given: the caller owns the row scope (Stage 4's
+    loaded pending set, or find_identity_collisions' query).
+
+    Pre:  every row has an id.
+    Post: each CollisionSet has >= 2 rows sharing one effective identity; rows
+          whose identity is Unparseable or a DecomposeError are excluded (they
+          error on their own); sets are disjoint; sets are ordered by the lowest
+          source_row_number they contain.
+    Raises: never.
+    """
+    members: dict[IdentityTuple, list[ImportStagingRow]] = {}
+    for row in rows:
+        identity = effective_identity(row)
+        if isinstance(identity, IdentityTuple):
+            members.setdefault(identity, []).append(row)
+
+    ordered_sets: list[tuple[tuple[int, int], CollisionSet]] = []
+    for identity, colliding in members.items():
+        if len(colliding) < 2:
+            continue
+        colliding.sort(key=lambda r: (r.source_row_number, r.id))
+        first = colliding[0]
+        ordered_sets.append((
+            (first.source_row_number, first.id),
+            CollisionSet(identity=identity, row_ids=tuple(r.id for r in colliding)),
+        ))
+    ordered_sets.sort(key=lambda entry: entry[0])
+    return [collision for _, collision in ordered_sets]
 
 
 # ---------------------------------------------------------------------------
